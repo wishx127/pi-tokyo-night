@@ -26,7 +26,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/wishx127/pi-tokyo-night"
+    "url": "git+https://github.com/wishx127/pi-tokyo-night.git"
   },
   "files": [
     "themes/**/*",
