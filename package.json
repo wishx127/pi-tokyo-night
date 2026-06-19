@@ -1,6 +1,6 @@
 {
   "name": "@wishx127/pi-tokyo-night",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Pi theme + extension bringing Tokyo Night color scheme with a Powerline-style status bar",
   "type": "module",
   "peerDependencies": {
