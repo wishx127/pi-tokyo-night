@@ -736,7 +736,19 @@ class BorderlessEditor extends CustomEditor {
     BorderlessEditor.activeInstance = this;
     selectorDetector.editorTui = tui;
     // Hide the top/bottom border lines using the official API.
-    this.borderColor = () => "";
+    // Use Object.defineProperty to make borderColor immutable — the getter
+    // always returns the empty-border function, and the setter is a no-op.
+    // This prevents Pi's setCustomEditorComponent from overwriting it with
+    // defaultEditor.borderColor, which would make the custom editor look like
+    // the default editor and break BorderlessEditor's assumption that
+    // super.render() produces invisible border lines.
+    const emptyBorderColor = () => "";
+    this.borderColor = emptyBorderColor;
+    Object.defineProperty(this, "borderColor", {
+      get() { return emptyBorderColor; },
+      set() { /* no-op: silently ignore external overwrites */ },
+      configurable: false,
+    });
 
     // Monkey-patch tui.doRender to detect when a selector (like /settings,
     // /model, /tree) replaces our editor. Pi's showSelector() clears
@@ -794,10 +806,8 @@ class BorderlessEditor extends CustomEditor {
         return super.render(width);
       }
 
-      // Pi copies defaultEditor.borderColor into the custom editor after
-      // construction, so we must re-apply the hidden border color on every
-      // render to keep the top/bottom borders invisible.
-      this.borderColor = () => "";
+      // borderColor is locked to the empty-border function via Object.defineProperty
+      // in the constructor — no need to re-assert on every render.
 
       return settingsController.isActive
         ? this.renderSettingsMode(width)
@@ -954,46 +964,56 @@ export default function (pi: ExtensionAPI) {
     // ── Register custom editor (wrapping previous) ────────────────────────
     ctx.ui.setEditorComponent(borderlessEditorFactory);
     ctx.ui.setWorkingVisible(false);
+    // Force a full render after editor registration to reset any accumulated
+    // viewport drift from previous differential rendering cycles. Without this,
+    // previousViewportTop may be stale from before the editor swap, causing
+    // computeLineDiff to position rain panel lines at wrong terminal positions.
+    // requestRender(true) clears previousLines/previousViewportTop and forces
+    // a full redraw — it's a public API on TUI (tui.d.ts: requestRender(force?: boolean)).
+    const rootTui = BorderlessEditor.activeInstance?.tuiRef;
+    rootTui?.requestRender(true);
 
-    // ── Poll for resetExtensionUI() only on startup/reload ────────────────
-    // Pi calls resetExtensionUI() during startup rebinding, which clears
-    // the custom editor. Only "startup" and "reload" trigger this; session
-    // switches (new/resume/fork) don't need the polling workaround.
-    const needsReapply = event.reason === "startup" || event.reason === "reload";
-    if (needsReapply) {
-      const MAX_REAPPLY_MS = 2000;
-      const POLL_INTERVAL_MS = 150;
-      const reapplyStart = Date.now();
+    // ── Poll for editor factory clearing on all session reasons ──────────────
+    // Another extension (pi-fff in "tools-only" mode) or Pi's resetExtensionUI()
+    // may call setEditorComponent(undefined), which clears our custom editor.
+    // We poll to detect this and re-register. The check uses === undefined
+    // so we only react to an explicit clear, not to another extension registering
+    // its own factory (which we should not overwrite).
+    const MAX_REAPPLY_MS = 2000;
+    const POLL_INTERVAL_MS = 150;
+    const reapplyStart = Date.now();
 
-      function pollEditorRegistration() {
-        const elapsed = Date.now() - reapplyStart;
-        if (elapsed >= MAX_REAPPLY_MS) {
-          reapplyEditorTimeout = undefined;
-          return;
-        }
-        reapplyEditorTimeout = setTimeout(() => {
-          try {
-            const currentFactory =
-              typeof ctx.ui.getEditorComponent === "function"
-                ? ctx.ui.getEditorComponent()
-                : undefined;
-            if (currentFactory !== borderlessEditorFactory) {
-              // Our factory was cleared by resetExtensionUI().
-              ctx.ui.setEditorComponent(borderlessEditorFactory);
-              ctx.ui.setWorkingVisible(false);
-            }
-          } catch (err) {
-            if (isStaleExtensionContextError(err)) {
-              reapplyEditorTimeout = undefined;
-              return; // stop polling on stale context
-            }
-            console.error(`${EXT_PREFIX} editor re-apply poll failed:`, err);
-          }
-          pollEditorRegistration();
-        }, POLL_INTERVAL_MS);
+    function pollEditorRegistration() {
+      const elapsed = Date.now() - reapplyStart;
+      if (elapsed >= MAX_REAPPLY_MS) {
+        reapplyEditorTimeout = undefined;
+        return;
       }
-      pollEditorRegistration();
+      reapplyEditorTimeout = setTimeout(() => {
+        try {
+          const currentFactory =
+            typeof ctx.ui.getEditorComponent === "function"
+              ? ctx.ui.getEditorComponent()
+              : undefined;
+          if (currentFactory === undefined) {
+            // Factory was explicitly cleared — re-register our editor.
+            ctx.ui.setEditorComponent(borderlessEditorFactory);
+            ctx.ui.setWorkingVisible(false);
+            // Force full render after re-registration to reset viewport tracking.
+            const reapplyTui = BorderlessEditor.activeInstance?.tuiRef;
+            reapplyTui?.requestRender(true);
+          }
+        } catch (err) {
+          if (isStaleExtensionContextError(err)) {
+            reapplyEditorTimeout = undefined;
+            return; // stop polling on stale context
+          }
+          console.error(`${EXT_PREFIX} editor re-apply poll failed:`, err);
+        }
+        pollEditorRegistration();
+      }, POLL_INTERVAL_MS);
     }
+    pollEditorRegistration();
 
     // ── Intercept setWidget to drop "agents" widget ───────────────────────
     // @tintinweb/pi-subagents registers an "agents" widget that duplicates
