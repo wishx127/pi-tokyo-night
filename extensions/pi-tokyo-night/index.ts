@@ -21,6 +21,12 @@ import {
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import fs from "node:fs";
 import path from "node:path";
+import {
+  isCodexModel,
+  captureFromHeaders,
+  getSnapshot,
+  formatStatus,
+} from "./codex-usage";
 
 // ── Infrastructure ──────────────────────────────────────────────────────────
 
@@ -138,6 +144,7 @@ const MODULE_FG: number[][] = [
 // Right module colors
 const TOKENS_BG = [109, 91, 170]; // Very light purple #6d5baa
 const COST_BG = [93, 93, 93]; // Gray #5d5d5d
+const CODEX_BG = [0, 90, 90]; // Teal — distinguishes codex usage from tokens/cost/progress
 
 // ── Tokyo Night User Config ────────────────────────────────────────────────
 // Persisted user personalization for the Tokyo Night extension. The panel
@@ -721,7 +728,7 @@ class BorderlessEditor extends CustomEditor {
    *  private `tui` field on Editor. CustomEditor inherits from Editor which
    *  declares `protected tui: TUI` — accessible from subclasses but we keep
    *  our own explicit copy for clarity and to avoid any `as any` casts. */
-  private tuiRef: TUI;
+  tuiRef: TUI;
 
   constructor(
     tui: TUI,
@@ -908,6 +915,16 @@ export default function (pi: ExtensionAPI) {
       ui.setWorkingVisible(false);
     } catch (err) {
       handleExtensionError(err, "agent_start guard");
+    }
+  });
+
+  pi.on("after_provider_response", async (event, ctx) => {
+    try {
+      if (isCodexModel(ctx.model)) {
+        captureFromHeaders(event.headers);
+      }
+    } catch (err) {
+      handleExtensionError(err, "codex usage capture");
     }
   });
 
@@ -1310,8 +1327,19 @@ function buildStatusLine(
     ...(branch ? [{ text: `\uE0A0 ${branch}`, bg: 3, fg: 3 }] : []),
   ];
 
-  // Build right modules (tokens, cost, progress)
+  // Codex subscription usage (only when directly connected to official Codex/GPT)
+  const codexSnapshot = isCodexModel(ctx.model) ? getSnapshot() : undefined;
+  const codexModule = codexSnapshot
+    ? [{
+        text: `GPT ${formatStatus(codexSnapshot)}`,
+        bgColor: CODEX_BG as number[],
+        textColor: [200, 255, 255] as number[],
+      }]
+    : [];
+
+  // Build right modules (codex usage, tokens, cost, progress)
   const rightModules = [
+    ...codexModule,
     {
       text: `Σ ${fmt(totalTokens)} tokens`,
       bgColor: TOKENS_BG as number[],
