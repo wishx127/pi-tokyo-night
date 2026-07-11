@@ -1,6 +1,6 @@
 {
   "name": "@wishx127/pi-tokyo-night",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Pi theme + extension bringing Tokyo Night color scheme with a Powerline-style status bar",
   "type": "module",
   "peerDependencies": {
@@ -34,10 +34,13 @@
     "README.md",
     "screenshot.png"
   ],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.79.6",
-    "@earendil-works/pi-coding-agent": "^0.79.6",
-    "@earendil-works/pi-tui": "^0.79.6",
+    "@earendil-works/pi-ai": "^0.80.3",
+    "@earendil-works/pi-coding-agent": "^0.80.3",
+    "@earendil-works/pi-tui": "^0.80.3",
     "@types/node": "^25.9.3",
     "typescript": "^6.0.3"
   }

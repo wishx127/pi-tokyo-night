@@ -2,7 +2,7 @@
  * Tokyo Night Extension
  */
 
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
   CustomEditor,
   type ExtensionAPI,
@@ -21,6 +21,13 @@ import {
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import fs from "node:fs";
 import path from "node:path";
+import {
+  isCodexModel,
+  captureFromHeaders,
+  getSnapshot,
+  formatStatus,
+  clearSnapshot,
+} from "./codex-usage";
 
 // ── Infrastructure ──────────────────────────────────────────────────────────
 
@@ -138,6 +145,7 @@ const MODULE_FG: number[][] = [
 // Right module colors
 const TOKENS_BG = [109, 91, 170]; // Very light purple #6d5baa
 const COST_BG = [93, 93, 93]; // Gray #5d5d5d
+const CODEX_BG = [101, 83, 162]; // Mid purple — between branch and tokens backgrounds
 
 // ── Tokyo Night User Config ────────────────────────────────────────────────
 // Persisted user personalization for the Tokyo Night extension. The panel
@@ -146,6 +154,8 @@ const COST_BG = [93, 93, 93]; // Gray #5d5d5d
 interface TokyoConfig {
   /** Show the top rain/moon/stars panel. */
   panel: boolean;
+  /** Show Codex limit in the status bar (requires Pi transport=sse). */
+  codexQuota: boolean;
   /** Height of the rain panel in rows. */
   rainRows: number;
   /** Milliseconds between rain animation frames. */
@@ -156,6 +166,7 @@ interface TokyoConfig {
 
 const DEFAULT_CONFIG: TokyoConfig = {
   panel: true,
+  codexQuota: false,
   rainRows: 3,
   rainTickMs: 130,
   maxRainDrops: 25,
@@ -196,6 +207,12 @@ const SETTINGS: SettingDescriptor[] = [
     id: "panel",
     label: "Top Panel",
     description: "Show the rain/moon/stars panel above the editor",
+    kind: "toggle",
+  },
+  {
+    id: "codexQuota",
+    label: "Codex Limit",
+    description: "Show Codex limit in status bar (requires Pi transport=sse)",
     kind: "toggle",
   },
   {
@@ -263,6 +280,10 @@ class TokyoConfigManager {
         this.config = {
           panel:
             typeof saved.panel === "boolean" ? saved.panel : DEFAULT_CONFIG.panel,
+          codexQuota:
+            typeof saved.codexQuota === "boolean"
+              ? saved.codexQuota
+              : DEFAULT_CONFIG.codexQuota,
           rainRows:
             typeof saved.rainRows === "number"
               ? saved.rainRows
@@ -558,6 +579,9 @@ class SettingsUIController {
         const setting = SETTINGS[this.selectedIndex];
         if (setting.kind === "toggle") {
           this.config.set(setting.id, !(this.config.get()[setting.id] as boolean));
+          if (setting.id === "codexQuota") {
+            onCodexQuotaConfigChange?.();
+          }
         } else {
           this.editValue = this.config.get()[setting.id] as number;
           this.editing = true;
@@ -692,6 +716,7 @@ const configManager = new TokyoConfigManager();
 const selectorDetector = new SelectorDetector();
 const settingsController = new SettingsUIController(configManager);
 const rainManager = new RainAnimationManager(configManager);
+let onCodexQuotaConfigChange: (() => void) | null = null;
 
 // ── Utility Functions ────────────────────────────────────────────────────────
 
@@ -721,7 +746,7 @@ class BorderlessEditor extends CustomEditor {
    *  private `tui` field on Editor. CustomEditor inherits from Editor which
    *  declares `protected tui: TUI` — accessible from subclasses but we keep
    *  our own explicit copy for clarity and to avoid any `as any` casts. */
-  private tuiRef: TUI;
+  tuiRef: TUI;
 
   constructor(
     tui: TUI,
@@ -889,6 +914,8 @@ export default function (pi: ExtensionAPI) {
   let origSetWidget: ((...args: any[]) => any) | null = null;
   let footerDataRef: ReadonlyFooterDataProvider | null = null;
   let statusRenderDebounceTimeout: ReturnType<typeof setTimeout> | undefined;
+  let requestStatusRenderRef: (() => void) | null = null;
+  let activeModel: Model<any> | undefined;
 
   // Stable factory so we can re-apply after resetExtensionUI() clears
   // setEditorComponent. Captures editorUIContext via closure.
@@ -911,6 +938,36 @@ export default function (pi: ExtensionAPI) {
     }
   });
 
+  const refreshCodexQuotaState = () => {
+    const enabled = configManager.get().codexQuota && isCodexModel(activeModel);
+    if (!enabled) {
+      clearSnapshot();
+    }
+    requestStatusRenderRef?.();
+  };
+
+  onCodexQuotaConfigChange = refreshCodexQuotaState;
+
+  pi.on("after_provider_response", async (event, ctx) => {
+    try {
+      if (configManager.get().codexQuota && isCodexModel(ctx.model) && captureFromHeaders(event.headers)) {
+        requestStatusRenderRef?.();
+      }
+    } catch (err) {
+      handleExtensionError(err, "codex usage capture");
+    }
+  });
+
+  pi.on("model_select", async (event, _ctx) => {
+    try {
+      activeModel = event.model;
+      clearSnapshot();
+      refreshCodexQuotaState();
+    } catch (err) {
+      handleExtensionError(err, "model_select Codex SSE force");
+    }
+  });
+
   // ── Async git branch detection ───────────────────────────────────────────
   const getGitBranchFallback = async (cwd: string): Promise<string> => {
     try {
@@ -929,6 +986,9 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (event, ctx) => {
     editorUIContext = ctx.ui;
     configManager.read();
+    activeModel = ctx.model;
+    clearSnapshot();
+    refreshCodexQuotaState();
 
     // Per-session branch cache (isolated from other sessions)
     let cachedBranch = "";
@@ -1055,6 +1115,7 @@ export default function (pi: ExtensionAPI) {
 
     // Store the requestStatusRender reference so selector state changes
     // can trigger status bar re-render.
+    requestStatusRenderRef = requestStatusRender;
     selectorDetector.setStatusRenderRef(requestStatusRender);
 
     ctx.ui.setWidget(
@@ -1234,6 +1295,10 @@ export default function (pi: ExtensionAPI) {
     // ── Reset all per-session state ────────────────────────────────────────
     editorUIContext = null;
     footerDataRef = null;
+    requestStatusRenderRef = null;
+    activeModel = undefined;
+    clearSnapshot();
+    onCodexQuotaConfigChange = null;
     selectorDetector.reset();
     settingsController.reset();
     BorderlessEditor.activeInstance = null;
@@ -1310,8 +1375,22 @@ function buildStatusLine(
     ...(branch ? [{ text: `\uE0A0 ${branch}`, bg: 3, fg: 3 }] : []),
   ];
 
-  // Build right modules (tokens, cost, progress)
+  // Codex subscription usage (only when directly connected to official Codex/GPT)
+  const codexSnapshot =
+    configManager.get().codexQuota && isCodexModel(ctx.model)
+      ? getSnapshot()
+      : undefined;
+  const codexModule = codexSnapshot
+    ? [{
+        text: `LIMIT ${formatStatus(codexSnapshot)}`,
+        bgColor: CODEX_BG as number[],
+        textColor: [245, 240, 255] as number[],
+      }]
+    : [];
+
+  // Build right modules (codex usage, tokens, cost, progress)
   const rightModules = [
+    ...codexModule,
     {
       text: `Σ ${fmt(totalTokens)} tokens`,
       bgColor: TOKENS_BG as number[],
