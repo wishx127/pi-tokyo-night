@@ -17,7 +17,9 @@
     "status-bar"
   ],
   "pi": {
-    "theme": "./themes/tokyo-night.json",
+    "themes": [
+      "./themes/tokyo-night.json"
+    ],
     "extensions": [
       "./extensions/pi-tokyo-night"
     ]

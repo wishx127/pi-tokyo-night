@@ -34,6 +34,8 @@ Activates automatically on install. Use `/tokyo-night` to control the extension:
 /tokyo-night          # toggle settings panel
 ```
 
+Codex usage is shown in the status bar only when `codexQuota` is enabled and the session is using a Codex-compatible model over `transport=sse`. 
+
 ### Status bar modules
 
 | Position | Module | Description |
@@ -42,6 +44,7 @@ Activates automatically on install. Use `/tokyo-night` to control the extension:
 | Left | Thinking | Thinking level (off / minimal / low / medium / high / xhigh) |
 | Left | Path | Shortened working directory |
 | Left | Branch | Current Git branch (hidden when not in a repo) |
+| Right | Codex Limit | Codex quota / reset status (SSE + Codex-compatible models only) |
 | Right | Tokens | Cumulative input + output token count |
 | Right | Cost | Session cost |
 | Right | Progress | Context window usage bar with percentage |
@@ -53,6 +56,7 @@ Open with `/tokyo-night`, then navigate with ↑/↓ and press Enter to toggle o
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Top Panel | On | Show rain/moon/stars above editor |
+| Codex Limit | Off | Show Codex quota in the status bar (requires Pi transport=sse) |
 | Rain Rows | 3 | Height of rain panel (1–10) |
 | Rain Tick (ms) | 130 | Animation speed (50–1000) |
 | Max Rain Drops | 25 | Simultaneous drops (5–100) |
@@ -63,6 +67,7 @@ Settings are persisted to `~/.pi/agent/settings.json` under the `pi-tokyo-night`
 {
   "pi-tokyo-night": {
     "panel": true,
+    "codexQuota": false,
     "rainRows": 3,
     "rainTickMs": 130,
     "maxRainDrops": 25
