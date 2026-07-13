@@ -17,3 +17,9 @@ Thumbs.db
 *.tmp
 *.temp
 *.bak
+
+# Documents
+docs/
+
+# Agents
+AGENTS.md
