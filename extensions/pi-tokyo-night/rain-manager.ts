@@ -1,40 +1,54 @@
-import type {
-  ExtensionUIContext,
-  Theme,
-} from "@earendil-works/pi-coding-agent";
-import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import {
   EXT_PREFIX,
-  handleExtensionError,
   isStaleExtensionContextError,
 } from "./errors";
 import { TokyoConfigManager } from "./config";
-import { BOX, CYAN, FRAME_RGB, PURPLE, RESET, fgRgb } from "./ui-primitives";
 
-interface RainDrop {
-  col: number;
-  row: number;
+// ── Types ──────────────────────────────────────────────────────────────────
+
+export interface RainFrameSnapshot {
+  readonly drops: readonly { readonly col: number; readonly row: number }[];
+  readonly stars: readonly { readonly col: number; readonly row: number }[];
 }
+
+export interface RainManagerDependencies {
+  /** Called once per animation tick (no arguments). */
+  requestRender(): void;
+}
+
+// ── Constants ─────────────────────────────────────────────────────────────
 
 const WIND_DRIFT = 1;
 const WIND_PERIOD = 2;
-const MOON = "🌙";
-const MOON_FG = "\x1b[38;2;255;235;170m";
-const MOON_COL = 2;
-const MOON_ROW = 0;
-const STAR = "✦";
 
-export interface RainManagerDependencies {
-  isSideBordersHidden(): boolean;
-}
+const INITIAL_STARS: ReadonlyArray<{ readonly col: number; readonly row: number }> = [
+  { col: 5, row: 1 },
+  { col: 8, row: 0 },
+];
 
+// ── RainAnimationManager ───────────────────────────────────────────────────
+
+/**
+ * Pure animation-state manager for the rain/moon/stars animation.
+ *
+ * Responsibilities:
+ *  - Raindrop positions, movement, and wind logic
+ *  - Star positions
+ *  - Last valid render width
+ *  - Spawn, clip, and density calculation
+ *  - Timer start, stop, restart, and idempotency guard
+ *  - Config read at runtime (rainTickMs, rainRows, maxRainDrops)
+ *  - Calling a no-arg requestRender callback every tick
+ *  - Stale extension context error handling
+ *
+ * Does NOT own: rendering, TUI/UI/Theme imports, widget registration.
+ */
 export class RainAnimationManager {
   private config: TokyoConfigManager;
   private dependencies: RainManagerDependencies;
   private interval: ReturnType<typeof setInterval> | undefined;
-  private drops: RainDrop[] = [];
+  private drops: Array<{ col: number; row: number }> = [];
   private lastWidth = 80;
-  private widgetTui: TUI | null = null;
   private stars: Array<{ col: number; row: number }> = [];
 
   constructor(
@@ -45,73 +59,88 @@ export class RainAnimationManager {
     this.dependencies = dependencies;
   }
 
-  /** Set up the rain widget above the editor and start the animation timer. */
-  setup(ui: ExtensionUIContext): void {
-    this.stars = [
-      { col: 5, row: 1 },
-      { col: 8, row: 0 },
-    ];
+  // ── Public lifecycle API ─────────────────────────────────────────────────
 
-    this.drops = [];
-    this.lastWidth = 80;
-    this.widgetTui = null;
-
-    if (this.interval) clearInterval(this.interval);
-    this.interval = setInterval(() => this.tick(), this.config.get().rainTickMs);
-
-    ui.setWidget(
-      "tokyo-rain",
-      (tui: TUI, _theme: Theme) => {
-        this.widgetTui = tui;
-        return {
-          invalidate() {},
-          render: (width: number): string[] => this.renderWidget(width),
-          // Called by Pi when the widget is replaced or removed. Stop the
-          // animation timer here so toggling the panel off via the slash
-          // command does not leave a dangling interval triggering renders.
-          dispose: (): void => this.disposeWidget(),
-        };
-      },
-      { placement: "aboveEditor" },
-    );
-  }
-
-  /** Remove the rain widget and stop the animation timer. Idempotent. */
-  teardown(ui: ExtensionUIContext): void {
-    // setWidget(undefined) triggers the previous component's dispose(), which
-    // clears the interval. We still clear here as a safety net for cases where
-    // dispose() is not invoked (e.g. process exit).
-    if (this.interval) {
+  /**
+   * Start the animation timer.
+   *
+   * Idempotent: clears any existing interval first so repeated calls never
+   * create multiple timers. Reads rainTickMs at call time.
+   */
+  start(): void {
+    // Clear any previously running timer first (idempotency).
+    if (this.interval !== undefined) {
       clearInterval(this.interval);
       this.interval = undefined;
     }
-    ui.setWidget("tokyo-rain", undefined);
+
+    // Reset animation state.
     this.drops = [];
-    this.widgetTui = null;
+    this.lastWidth = 80;
+    this.stars = INITIAL_STARS.map((s) => ({ ...s }));
+
+    // Start the interval using the current config value.
+    this.interval = setInterval(() => this.tick(), this.config.get().rainTickMs);
   }
 
-  /** Request a re-render of the rain widget TUI. Handles disposed TUI gracefully. */
-  requestRender(): void {
-    try {
-      this.widgetTui?.requestRender();
-    } catch (err) {
-      if (isStaleExtensionContextError(err)) return;
-      console.error(`${EXT_PREFIX} rain animation render request failed:`, err);
+  /**
+   * Stop the animation timer and clear animation state. Safe to call
+   * repeatedly (idempotent).
+   */
+  stop(): void {
+    if (this.interval !== undefined) {
+      clearInterval(this.interval);
+      this.interval = undefined;
     }
+    this.drops = [];
   }
 
-  /** Animation tick: advance drops, spawn new ones, request render. */
+  /** True iff a timer is currently active. */
+  get isRunning(): boolean {
+    return this.interval !== undefined;
+  }
+
+  /**
+   * Update the width used for spawn range and clipping.
+   * Should be called by the renderer with the current inner width before or
+   * after each render.
+   */
+  setRenderWidth(innerWidth: number): void {
+    this.lastWidth = innerWidth;
+  }
+
+  /**
+   * Return a deep copy of the current animation frame.
+   * The returned arrays and point objects are independent copies — external
+   * code cannot mutate manager internals through the snapshot.
+   */
+  getSnapshot(): RainFrameSnapshot {
+    return {
+      drops: this.drops.map((d) => ({ col: d.col, row: d.row })),
+      stars: this.stars.map((s) => ({ col: s.col, row: s.row })),
+    };
+  }
+
+  // ── Private tick ─────────────────────────────────────────────────────────
+
+  /** Animation tick: advance drops, spawn new ones, then notify the renderer. */
   private tick(): void {
     const cfg = this.config.get();
+
+    // Advance existing drops.
     for (const drop of this.drops) {
       drop.row += 1;
       if (drop.row % WIND_PERIOD === 0) {
         drop.col += WIND_DRIFT;
       }
     }
+
+    // Remove drops that are out of bounds.
     this.drops = this.drops.filter(
       (d) => d.row < cfg.rainRows && d.col < this.lastWidth + 4,
     );
+
+    // Spawn new drops if below the desired density.
     if (this.drops.length < cfg.maxRainDrops) {
       // Scale spawn rate with desired density. The default (maxRainDrops=25)
       // spawns 2-3 per tick; higher values spawn proportionally more so the
@@ -129,95 +158,14 @@ export class RainAnimationManager {
         });
       }
     }
-    this.requestRender();
-  }
 
-  /** Render the rain widget content. Delegated from the widget factory's render. */
-  renderWidget(width: number): string[] {
+    // Notify the renderer. Stale-context errors are expected during shutdown
+    // and silently discarded; all other errors are logged with the extension prefix.
     try {
-      if (width < 10) return [];
-      const cfg = this.config.get();
-      const frameFg = (s: string) => `${fgRgb(FRAME_RGB)}${s}${RESET}`;
-
-      // When a selector has replaced our editor, remove only the │ side
-      // borders from the rain widget. The ╭─╮ top border is kept — it
-      // provides visual continuity as a header decoration even when the
-      // middle area shows a selector. Only the │ side borders are removed
-      // because they would appear broken where the selector doesn't have them.
-      const hideSideBorders = this.dependencies.isSideBordersHidden();
-
-      // In selector mode (no │ borders), content fills the full width.
-      // In normal mode (│ on both sides), content fills width - 2.
-      const innerWidth = Math.max(1, hideSideBorders ? width : width - 2);
-      this.lastWidth = innerWidth;
-      const lines: string[] = [];
-
-      // Top border: ╭─╮ when │ side borders connect to the corners,
-      // plain ─ horizontal line without corners when │ sides are hidden
-      // (selector mode — corners look broken without connecting │).
-      if (hideSideBorders) {
-        lines.push(frameFg(BOX.h.repeat(width)));
-      } else {
-        lines.push(frameFg(`${BOX.tl}${BOX.h.repeat(width - 2)}${BOX.tr}`));
-      }
-
-      const dropSet = new Set<string>();
-      for (const drop of this.drops) {
-        if (
-          drop.col >= 0 &&
-          drop.col < innerWidth &&
-          drop.row >= 0 &&
-          drop.row < cfg.rainRows
-        ) {
-          dropSet.add(`${drop.col},${drop.row}`);
-        }
-      }
-
-      const starSet = new Set<string>();
-      for (const s of this.stars) {
-        if (s.col < innerWidth && s.row < cfg.rainRows) {
-          starSet.add(`${s.col},${s.row}`);
-        }
-      }
-
-      const RAIN_DROP = "`";
-
-      for (let r = 0; r < cfg.rainRows; r++) {
-        let row = hideSideBorders ? "" : frameFg(BOX.v);
-        for (let c = 0; c < innerWidth; c++) {
-          if (r === MOON_ROW && c === MOON_COL) {
-            row += `${MOON_FG}${MOON}${RESET}`;
-            const mw = visibleWidth(MOON);
-            if (mw > 1) c += mw - 1;
-            continue;
-          }
-          if (dropSet.has(`${c},${r}`)) {
-            row += `${CYAN}${RAIN_DROP}${RESET}`;
-          } else if (starSet.has(`${c},${r}`)) {
-            row += `${PURPLE}${STAR}${RESET}`;
-          } else {
-            row += " ";
-          }
-        }
-        if (!hideSideBorders) {
-          row += frameFg(BOX.v);
-        }
-        lines.push(row);
-      }
-
-      return lines;
+      this.dependencies.requestRender();
     } catch (err) {
-      handleExtensionError(err, "rain widget render");
-      return [];
+      if (isStaleExtensionContextError(err)) return;
+      console.error(`${EXT_PREFIX} rain animation render request failed:`, err);
     }
-  }
-
-  /** Dispose the rain widget: clear interval and null TUI reference. */
-  private disposeWidget(): void {
-    if (this.interval) {
-      clearInterval(this.interval);
-      this.interval = undefined;
-    }
-    this.widgetTui = null;
   }
 }

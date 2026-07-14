@@ -15,6 +15,10 @@ import {
   handleExtensionError,
 } from "./errors";
 import {
+  type RainAnimationManager,
+  type RainFrameSnapshot,
+} from "./rain-manager";
+import {
   getDoRender,
   setDoRender,
   type SelectorDetector,
@@ -24,16 +28,108 @@ import {
 } from "./settings-controller";
 import {
   BOX,
+  CYAN,
   FRAME_RGB,
   PURPLE,
   RESET,
   fgRgb,
 } from "./ui-primitives";
 
+// ── Rain visual constants ─────────────────────────────────────────────────────
+
+export const MOON = "🌙";
+export const MOON_FG = "\x1b[38;2;255;235;170m";
+export const MOON_COL = 2;
+export const MOON_ROW = 0;
+export const STAR = "✦";
+export const RAIN_DROP = "`";
+
+// ── renderRainLines ───────────────────────────────────────────────────────────
+
+/**
+ * Pure function: renders the rain panel lines (top border + body rows).
+ *
+ * This is the primary unit-test seam — no class state required.
+ *
+ * @param opts.width           Total terminal width including frame borders.
+ * @param opts.hideSideBorders When true (selector active), omit │ borders and
+ *                             render a plain horizontal line as the top border.
+ * @param opts.rainRows        Number of rain body rows (from config).
+ * @param opts.snapshot        Current animation frame from RainAnimationManager.
+ * @returns Array of ANSI-coloured strings; length = 1 + rainRows.
+ */
+export function renderRainLines(opts: {
+  width: number;
+  hideSideBorders: boolean;
+  rainRows: number;
+  snapshot: RainFrameSnapshot;
+}): string[] {
+  const { width, hideSideBorders, rainRows, snapshot } = opts;
+  const frameFg = (s: string) => `${fgRgb(FRAME_RGB)}${s}${RESET}`;
+
+  const innerWidth = Math.max(1, hideSideBorders ? width : width - 2);
+  const lines: string[] = [];
+
+  // Top border.
+  if (hideSideBorders) {
+    lines.push(frameFg(BOX.h.repeat(width)));
+  } else {
+    lines.push(frameFg(`${BOX.tl}${BOX.h.repeat(width - 2)}${BOX.tr}`));
+  }
+
+  // Build lookup sets for O(1) position queries.
+  const dropSet = new Set<string>();
+  for (const d of snapshot.drops) {
+    if (d.col >= 0 && d.col < innerWidth && d.row >= 0 && d.row < rainRows) {
+      dropSet.add(`${d.col},${d.row}`);
+    }
+  }
+  const starSet = new Set<string>();
+  for (const s of snapshot.stars) {
+    if (s.col >= 0 && s.col < innerWidth && s.row >= 0 && s.row < rainRows) {
+      starSet.add(`${s.col},${s.row}`);
+    }
+  }
+
+  // Body rows.
+  for (let r = 0; r < rainRows; r++) {
+    let row = hideSideBorders ? "" : frameFg(BOX.v);
+    let c = 0;
+    while (c < innerWidth) {
+      if (r === MOON_ROW && c === MOON_COL) {
+        row += MOON_FG + MOON + RESET;
+        const mw = visibleWidth(MOON);
+        if (mw > 1) {
+          c += mw - 1;
+        }
+        c++;
+        continue;
+      } else if (dropSet.has(`${c},${r}`)) {
+        row += CYAN + RAIN_DROP + RESET;
+      } else if (starSet.has(`${c},${r}`)) {
+        row += PURPLE + STAR + RESET;
+      } else {
+        row += " ";
+      }
+      c++;
+    }
+    if (!hideSideBorders) {
+      row += frameFg(BOX.v);
+    }
+    lines.push(row);
+  }
+
+  return lines;
+}
+
+// ── BorderlessEditorDependencies ──────────────────────────────────────────────
+
 export interface BorderlessEditorDependencies {
   config: TokyoConfigManager;
   selectorDetector: SelectorDetector;
   settingsController: SettingsUIController;
+  /** Rain animation state manager — used to read isRunning and getSnapshot(). */
+  rainManager: RainAnimationManager;
 }
 
 /**
@@ -158,6 +254,48 @@ export class BorderlessEditor extends CustomEditor {
     }
   }
 
+  /**
+   * Prepend either rain panel lines (when rain is running) or a plain top
+   * border (when rain is inactive or fails) to `result`.
+   *
+   * Extracted from `renderEditorMode` and `renderSettingsMode` to remove
+   * the near-identical duplicated block. Behavior is byte-for-byte identical
+   * to what each caller previously did inline.
+   *
+   * @param result    The output array being built by the caller — lines are pushed in-place.
+   * @param width     Total terminal width including frame borders.
+   * @param innerWidth Width inside the frame borders (= width - 2, pre-computed by caller).
+   */
+  private prependTopBorderOrRain(
+    result: string[],
+    width: number,
+    innerWidth: number,
+  ): void {
+    const frameFg = (s: string) => `${fgRgb(FRAME_RGB)}${s}${RESET}`;
+
+    if (this.dependencies.rainManager.isRunning) {
+      try {
+        const cfg = this.dependencies.config.get();
+        const snapshot = this.dependencies.rainManager.getSnapshot();
+        const rainLines = renderRainLines({
+          width,
+          hideSideBorders: false,
+          rainRows: cfg.rainRows,
+          snapshot,
+        });
+        for (const l of rainLines) {
+          result.push(l);
+        }
+        this.dependencies.rainManager.setRenderWidth(innerWidth);
+      } catch (err) {
+        handleExtensionError(err, "rain render");
+        result.push(frameFg(`${BOX.tl}${BOX.h.repeat(width - 2)}${BOX.tr}`));
+      }
+    } else {
+      result.push(frameFg(`${BOX.tl}${BOX.h.repeat(width - 2)}${BOX.tr}`));
+    }
+  }
+
   private renderEditorMode(width: number): string[] {
     const frameFg = (s: string) => `${fgRgb(FRAME_RGB)}${s}${RESET}`;
 
@@ -175,11 +313,11 @@ export class BorderlessEditor extends CustomEditor {
 
     const result: string[] = [];
 
-    // When the rain panel is disabled, the editor is the topmost element in
-    // the card and must render its own rounded top border.
-    if (!this.dependencies.config.get().panel) {
-      result.push(frameFg(`${BOX.tl}${BOX.h.repeat(width - 2)}${BOX.tr}`));
-    }
+    // Rain panel: when the manager is actively running, rain owns the single
+    // top rounded border. The editor must NOT draw its own top border in that
+    // case to avoid a duplicate ╭─╮. When rain is not running, the editor is
+    // the topmost element and must render its own top border.
+    this.prependTopBorderOrRain(result, width, innerWidth);
 
     // Render content lines: skip the editor's own top border (lines[0]) and
     // drop its bottom border so the status bar sits flush below.
@@ -202,10 +340,9 @@ export class BorderlessEditor extends CustomEditor {
     const innerWidth = Math.max(1, width - 2);
     const result: string[] = [];
 
-    // The settings panel is rendered inside the editor's rounded card frame.
-    if (!this.dependencies.config.get().panel) {
-      result.push(frameFg(`${BOX.tl}${BOX.h.repeat(width - 2)}${BOX.tr}`));
-    }
+    // Rain panel: when manager is actively running, rain owns the top border.
+    // When rain is not running, settings is topmost and draws its own border.
+    this.prependTopBorderOrRain(result, width, innerWidth);
 
     const settingsLines = this.dependencies.settingsController.buildLines(innerWidth);
     for (const line of settingsLines) {

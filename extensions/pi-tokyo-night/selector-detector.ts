@@ -12,7 +12,6 @@ export interface SelectorDetectorCallbacks {
   getEditorFocusTarget(): unknown;
   requestEditorRender(): void;
   requestStatusRender(): void;
-  requestRainRender(): void;
 }
 
 /** Cast TUI to the private properties used by selector detection. */
@@ -126,7 +125,6 @@ export class SelectorDetector {
     setTimeout(() => {
       this.callbacks.requestEditorRender();
       (this.requestStatusRenderRef ?? this.callbacks.requestStatusRender)();
-      this.callbacks.requestRainRender();
     }, 0);
   }
 

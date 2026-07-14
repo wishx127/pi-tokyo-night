@@ -54,17 +54,17 @@ const configManager = new TokyoConfigManager();
 let requestStatusRenderCallback: () => void = () => {};
 let refreshCodexQuotaState: () => void = () => {};
 let applyCurrentPanelState: () => void = () => {};
-let rainManager: RainAnimationManager | null = null;
 
 const selectorDetector = new SelectorDetector({
   getEditorFocusTarget: () => BorderlessEditor.activeInstance,
   requestEditorRender: () => BorderlessEditor.activeInstance?.requestRender(),
   requestStatusRender: () => requestStatusRenderCallback(),
-  requestRainRender: () => rainManager?.requestRender(),
 });
 
-rainManager = new RainAnimationManager(configManager, {
-  isSideBordersHidden: () => selectorDetector.isSideBordersHidden(),
+const rainManager = new RainAnimationManager(configManager, {
+  requestRender: () => {
+    BorderlessEditor.activeInstance?.requestRender();
+  },
 });
 
 const settingsController = new SettingsUIController(configManager, {
@@ -77,19 +77,18 @@ const borderlessEditorDependencies: BorderlessEditorDependencies = {
   config: configManager,
   selectorDetector,
   settingsController,
+  rainManager,
 };
 
-function applyPanelState(ui: ExtensionUIContext): void {
-  rainManager?.teardown(ui);
+function applyPanelState(): void {
+  rainManager.stop();
   if (configManager.get().panel) {
-    rainManager?.setup(ui);
+    rainManager.start();
   }
+  BorderlessEditor.activeInstance?.requestRender();
 }
 
-applyCurrentPanelState = () => {
-  const editor = BorderlessEditor.activeInstance;
-  if (editor) applyPanelState(editor.getUIContext());
-};
+applyCurrentPanelState = () => applyPanelState();
 
 export default function (pi: ExtensionAPI) {
   // ── Per-Extension State (scoped inside the function) ─────────────────────
@@ -283,10 +282,8 @@ export default function (pi: ExtensionAPI) {
       return origSetWidget!.call(ctx.ui, key, ...args as any[]);
     };
 
-    // ── Rain widget ───────────────────────────────────────────────────────
-    if (configManager.get().panel) {
-      rainManager?.setup(ctx.ui);
-    }
+    // ── Apply panel state (start/stop animation timer) ────────────────────
+    applyPanelState();
 
     // ── Status bar widget with debounce ────────────────────────────────────
     const STATUS_DEBOUNCE_MS = 33;
@@ -431,7 +428,7 @@ export default function (pi: ExtensionAPI) {
         configManager.write();
         if (!ctx.hasUI) return;
         try {
-          applyPanelState(ctx.ui);
+          applyPanelState();
           ctx.ui.notify(`Tokyo Night panel ${arg}`, "info");
         } catch (err) {
           handleExtensionError(err, "panel toggle");
@@ -447,7 +444,7 @@ export default function (pi: ExtensionAPI) {
       if (settingsController.isActive) {
         settingsController.exit();
         try {
-          applyPanelState(ctx.ui);
+          applyPanelState();
         } catch (err) {
           handleExtensionError(err, "settings save");
         }
@@ -493,6 +490,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     // ── Reset all per-session state ────────────────────────────────────────
+    rainManager.stop();
     editorUIContext = null;
     footerDataRef = null;
     requestStatusRenderRef = null;
@@ -507,12 +505,10 @@ export default function (pi: ExtensionAPI) {
 
     // ── Guard non-interactive modes ────────────────────────────────────────
     if (!ctx.hasUI) {
-      rainManager?.teardown(ctx.ui);
       return;
     }
 
     // ── Full UI teardown ───────────────────────────────────────────────────
-    rainManager?.teardown(ctx.ui);
     ctx.ui.setWidget("tokyo-status", undefined);
     ctx.ui.setEditorComponent(undefined);
     ctx.ui.setFooter(undefined);
