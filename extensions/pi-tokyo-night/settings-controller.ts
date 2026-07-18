@@ -94,8 +94,13 @@ export class SettingsUIController {
 
   /** Build the settings panel content lines for rendering. */
   buildLines(innerWidth: number): string[] {
+    const outputWidth = Number.isFinite(innerWidth)
+      ? Math.max(0, Math.floor(innerWidth))
+      : 0;
+    const truncate = (line: string): string =>
+      truncateToWidth(line, outputWidth);
     const lines: string[] = [];
-    lines.push(`${CYAN}  Tokyo Night Settings`);
+    lines.push(truncate(`${CYAN}  Tokyo Night Settings${RESET}`));
 
     for (let i = 0; i < SETTINGS.length; i++) {
       const setting = SETTINGS[i];
@@ -114,13 +119,13 @@ export class SettingsUIController {
       if (selected) {
         line += `  ${fgRgb(FRAME_RGB)}${setting.description}${RESET}`;
       }
-      lines.push(truncateToWidth(line, innerWidth));
+      lines.push(truncate(line));
     }
 
     const help = this.editing
       ? "  ↑/↓ adjust value, Enter confirm, Esc cancel"
       : "  ↑/↓ navigate, Enter toggle/edit, Esc save";
-    lines.push(`${fgRgb(FRAME_RGB)}${help}${RESET}`);
+    lines.push(truncate(`${fgRgb(FRAME_RGB)}${help}${RESET}`));
     return lines;
   }
 

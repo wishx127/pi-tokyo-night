@@ -12,7 +12,6 @@ export interface SelectorDetectorCallbacks {
   getEditorFocusTarget(): unknown;
   requestEditorRender(): void;
   requestStatusRender(): void;
-  requestRainRender(): void;
 }
 
 /** Cast TUI to the private properties used by selector detection. */
@@ -75,6 +74,7 @@ export class SelectorDetector {
   private _active = false;
   private readonly callbacks: SelectorDetectorCallbacks;
   private requestStatusRenderRef: (() => void) | null = null;
+  private rerenderTimeout: ReturnType<typeof setTimeout> | undefined;
 
   /** The editor's own TUI. */
   editorTui: TUI | null = null;
@@ -123,15 +123,22 @@ export class SelectorDetector {
 
   /** Schedule coordinated rendering after the current render cycle. */
   private scheduleRerender(): void {
-    setTimeout(() => {
+    if (this.rerenderTimeout !== undefined) {
+      clearTimeout(this.rerenderTimeout);
+    }
+    this.rerenderTimeout = setTimeout(() => {
+      this.rerenderTimeout = undefined;
       this.callbacks.requestEditorRender();
       (this.requestStatusRenderRef ?? this.callbacks.requestStatusRender)();
-      this.callbacks.requestRainRender();
     }, 0);
   }
 
   /** Reset all selector detection state. */
   reset(): void {
+    if (this.rerenderTimeout !== undefined) {
+      clearTimeout(this.rerenderTimeout);
+      this.rerenderTimeout = undefined;
+    }
     this._active = false;
     this.requestStatusRenderRef = null;
     this.editorTui = null;

@@ -11,6 +11,7 @@ import {
   formatStatus,
   getSnapshot,
   isCodexModel,
+  type CodexUsageStore,
 } from "./codex-usage";
 import type { TokyoConfigManager } from "./config";
 import { handleExtensionError } from "./errors";
@@ -45,6 +46,71 @@ const CODEX_BG = [101, 83, 162]; // Mid purple — between branch and tokens bac
 type Module =
   | { text: string; bg: number; fg: number }
   | { text: string; bgColor: number[] | null; textColor: number[] };
+
+type SessionStats = { input: number; output: number; cost: number };
+
+type StatsCacheEntry = {
+  sessionId: string | undefined;
+  leafId: string;
+  stats: SessionStats;
+};
+
+// Session branches are immutable between leaf changes. Keep this cache keyed by
+// manager identity so a reused module can never share stats between sessions.
+const sessionStatsCache = new WeakMap<object, StatsCacheEntry>();
+
+function calculateSessionStats(ctx: ExtensionContext): SessionStats {
+  let input = 0;
+  let output = 0;
+  let cost = 0;
+  try {
+    for (const e of ctx.sessionManager.getBranch()) {
+      if (e.type === "message" && e.message.role === "assistant") {
+        const m = e.message as AssistantMessage;
+        input += m.usage.input;
+        output += m.usage.output;
+        cost += m.usage.cost.total;
+      }
+    }
+  } catch (err) {
+    handleExtensionError(err, "session stats");
+  }
+  return { input, output, cost };
+}
+
+function getSessionStats(ctx: ExtensionContext): SessionStats {
+  const manager = ctx.sessionManager as unknown as object;
+  const getLeafId = (
+    ctx.sessionManager as unknown as { getLeafId?: () => string | null }
+  ).getLeafId;
+  if (typeof getLeafId !== "function") return calculateSessionStats(ctx);
+
+  try {
+    const leafId = getLeafId.call(ctx.sessionManager);
+    if (leafId == null) return calculateSessionStats(ctx);
+    const getSessionId = (
+      ctx.sessionManager as unknown as { getSessionId?: () => string }
+    ).getSessionId;
+    const sessionId = typeof getSessionId === "function"
+      ? getSessionId.call(ctx.sessionManager)
+      : undefined;
+    const cached = sessionStatsCache.get(manager);
+    if (
+      cached &&
+      cached.leafId === leafId &&
+      cached.sessionId === sessionId
+    ) {
+      return cached.stats;
+    }
+
+    const stats = calculateSessionStats(ctx);
+    sessionStatsCache.set(manager, { sessionId, leafId, stats });
+    return stats;
+  } catch (err) {
+    handleExtensionError(err, "session stats cache");
+    return calculateSessionStats(ctx);
+  }
+}
 
 const getModuleBg = (m: Module): number[] | null =>
   "bg" in m ? MODULE_BG[m.bg] : m.bgColor;
@@ -94,26 +160,13 @@ export function buildStatusLine(
   branch: string,
   thinkingLevel: string,
   config: TokyoConfigManager,
+  codexUsageStore?: Pick<CodexUsageStore, "getSnapshot">,
 ): string {
   // Use a slightly smaller width to account for potential width miscalculations
   // with Nerd Font glyphs that may be rendered as double-width by the terminal
   // but counted as single-width by visibleWidth()
   const safeWidth = Math.max(1, width - 2);
-  let input = 0,
-    output = 0,
-    cost = 0;
-  try {
-    for (const e of ctx.sessionManager.getBranch()) {
-      if (e.type === "message" && e.message.role === "assistant") {
-        const m = e.message as AssistantMessage;
-        input += m.usage.input;
-        output += m.usage.output;
-        cost += m.usage.cost.total;
-      }
-    }
-  } catch (err) {
-    handleExtensionError(err, "session stats");
-  }
+  const { input, output, cost } = getSessionStats(ctx);
 
   const fmt = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`);
   const fmtCost = (c: number) =>
@@ -126,10 +179,38 @@ export function buildStatusLine(
   const totalTokens = input + output;
   let maxCtx = 128000;
   if (ctx.model?.contextWindow) maxCtx = ctx.model.contextWindow;
-  const pct =
+  let pct =
     totalTokens > 0
       ? Math.min(100, Math.round((totalTokens / maxCtx) * 100))
       : 0;
+
+  const getContextUsage = (
+    ctx as unknown as { getContextUsage?: () => {
+      tokens: number | null;
+      contextWindow: number;
+      percent: number | null;
+    } | undefined }
+  ).getContextUsage;
+  if (typeof getContextUsage === "function") {
+    try {
+      const usage = getContextUsage.call(ctx);
+      if (usage) {
+        if (Number.isFinite(usage.contextWindow) && usage.contextWindow > 0) {
+          maxCtx = usage.contextWindow;
+        }
+        pct = usage.tokens != null && Number.isFinite(usage.tokens)
+          ? Math.min(100, Math.max(0, Math.round((usage.tokens / maxCtx) * 100)))
+          : usage.percent != null && Number.isFinite(usage.percent)
+            ? Math.min(100, Math.max(0, Math.round(usage.percent)))
+            : 0;
+      } else {
+        pct = 0;
+      }
+    } catch (err) {
+      handleExtensionError(err, "context usage");
+      pct = 0;
+    }
+  }
 
   const barColor = pct >= 50 ? "error" : pct >= 30 ? "warning" : "accent";
   const filled = Math.round((pct / 100) * 8);
@@ -147,7 +228,11 @@ export function buildStatusLine(
 
   // Codex subscription usage (only when directly connected to official Codex/GPT)
   const codexSnapshot =
-    config.get().codexQuota && isCodexModel(ctx.model) ? getSnapshot() : undefined;
+    config.get().codexQuota && isCodexModel(ctx.model)
+      ? codexUsageStore
+        ? codexUsageStore.getSnapshot()
+        : getSnapshot()
+      : undefined;
   const codexModule = codexSnapshot
     ? [{
         text: `LIMIT ${formatStatus(codexSnapshot)}`,

@@ -20,13 +20,13 @@ export interface TokyoConfig {
   maxRainDrops: number;
 }
 
-export const DEFAULT_CONFIG: TokyoConfig = {
+export const DEFAULT_CONFIG: Readonly<TokyoConfig> = Object.freeze({
   panel: true,
   codexQuota: false,
   rainRows: 3,
   rainTickMs: 130,
   maxRainDrops: 25,
-};
+});
 
 // ── Settings Panel Types ───────────────────────────────────────────────────
 
@@ -84,15 +84,53 @@ export const SETTINGS: SettingDescriptor[] = [
   },
 ];
 
+function freezeConfig(config: TokyoConfig): Readonly<TokyoConfig> {
+  return Object.freeze(config);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return (
+    isRecord(error) &&
+    error.code === "ENOENT"
+  );
+}
+
+function isValidSettingValue(key: keyof TokyoConfig, value: unknown): boolean {
+  const setting = SETTINGS.find((candidate) => candidate.id === key);
+  if (!setting) return false;
+
+  if (setting.kind === "toggle") return typeof value === "boolean";
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    Number.isInteger(value) &&
+    value >= setting.min! &&
+    value <= setting.max!
+  );
+}
+
+function validatedValue<K extends keyof TokyoConfig>(
+  key: K,
+  value: unknown,
+): TokyoConfig[K] {
+  return isValidSettingValue(key, value)
+    ? (value as TokyoConfig[K])
+    : DEFAULT_CONFIG[key];
+}
+
 /**
  * Manages Tokyo Night user configuration. Handles reading/writing
- * settings.json and provides access to the mutable config object.
+ * settings.json and provides access to an immutable config snapshot.
  */
 export class TokyoConfigManager {
-  private config: TokyoConfig = { ...DEFAULT_CONFIG };
+  private config: Readonly<TokyoConfig> = freezeConfig({ ...DEFAULT_CONFIG });
 
-  /** Get the mutable config object. Callers may read properties directly. */
-  get(): TokyoConfig {
+  /** Get the immutable config snapshot. Callers may read properties directly. */
+  get(): Readonly<TokyoConfig> {
     return this.config;
   }
 
@@ -101,10 +139,14 @@ export class TokyoConfigManager {
    *  runtime guards (setting.kind). This method centralizes the necessary
    *  type escape, keeping external callers type-safe. */
   set(key: keyof TokyoConfig, value: boolean | number): void {
-    // Cast through `unknown` to bypass TypeScript's strict index signature check.
-    // Runtime safety is guaranteed: callers only invoke this with valid key/value
-    // pairs (guarded by setting.kind checks in SettingsUIController).
-    (this.config as unknown as Record<string, boolean | number>)[key] = value;
+    if (!Object.hasOwn(DEFAULT_CONFIG, key)) return;
+
+    // Invalid runtime values are reset rather than allowed into the live config.
+    const safeValue = validatedValue(key, value);
+    this.config = freezeConfig({
+      ...this.config,
+      [key]: safeValue,
+    });
   }
 
   /** Read config from settings.json. Falls back to defaults on error. */
@@ -112,51 +154,74 @@ export class TokyoConfigManager {
     try {
       const settingsPath = path.join(getAgentDir(), "settings.json");
       const content = fs.readFileSync(settingsPath, "utf-8");
-      const settings = JSON.parse(content);
-      const saved = settings["pi-tokyo-night"];
-      if (saved && typeof saved === "object") {
-        this.config = {
-          panel:
-            typeof saved.panel === "boolean" ? saved.panel : DEFAULT_CONFIG.panel,
-          codexQuota:
-            typeof saved.codexQuota === "boolean"
-              ? saved.codexQuota
-              : DEFAULT_CONFIG.codexQuota,
-          rainRows:
-            typeof saved.rainRows === "number"
-              ? saved.rainRows
-              : DEFAULT_CONFIG.rainRows,
-          rainTickMs:
-            typeof saved.rainTickMs === "number"
-              ? saved.rainTickMs
-              : DEFAULT_CONFIG.rainTickMs,
-          maxRainDrops:
-            typeof saved.maxRainDrops === "number"
-              ? saved.maxRainDrops
-              : DEFAULT_CONFIG.maxRainDrops,
-        };
+      const settings: unknown = JSON.parse(content);
+      if (!isRecord(settings)) {
+        throw new Error("settings.json must contain an object");
       }
+
+      const nextConfig = { ...DEFAULT_CONFIG };
+      const saved = settings["pi-tokyo-night"];
+      if (isRecord(saved)) {
+        nextConfig.panel = validatedValue("panel", saved.panel);
+        nextConfig.codexQuota = validatedValue("codexQuota", saved.codexQuota);
+        nextConfig.rainRows = validatedValue("rainRows", saved.rainRows);
+        nextConfig.rainTickMs = validatedValue("rainTickMs", saved.rainTickMs);
+        nextConfig.maxRainDrops = validatedValue("maxRainDrops", saved.maxRainDrops);
+      }
+      this.config = freezeConfig(nextConfig);
     } catch (err) {
       handleExtensionError(err, "readTokyoConfig");
-      this.config = { ...DEFAULT_CONFIG };
+      this.config = freezeConfig({ ...DEFAULT_CONFIG });
     }
   }
 
   /** Persist current config to settings.json. */
-  write(): void {
+  write(): boolean {
+    let temporaryPath: string | undefined;
     try {
-      const settingsPath = path.join(getAgentDir(), "settings.json");
-      const content = fs.readFileSync(settingsPath, "utf-8");
-      const settings = JSON.parse(content);
+      const agentDir = getAgentDir();
+      const settingsPath = path.join(agentDir, "settings.json");
+      fs.mkdirSync(agentDir, { recursive: true });
+
+      let settings: Record<string, unknown> = {};
+      try {
+        const content = fs.readFileSync(settingsPath, "utf-8");
+        const parsed: unknown = JSON.parse(content);
+        if (!isRecord(parsed)) {
+          throw new Error("settings.json must contain an object");
+        }
+        settings = parsed;
+      } catch (err) {
+        if (!isMissingFileError(err)) throw err;
+      }
+
       settings["pi-tokyo-night"] = { ...this.config };
-      fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf-8");
+      temporaryPath = `${settingsPath}.${process.pid}.${Date.now()}.${Math.random()
+        .toString(36)
+        .slice(2)}.tmp`;
+      fs.writeFileSync(
+        temporaryPath,
+        JSON.stringify(settings, null, 2),
+        "utf-8",
+      );
+      fs.renameSync(temporaryPath, settingsPath);
+      temporaryPath = undefined;
+      return true;
     } catch (err) {
+      if (temporaryPath) {
+        try {
+          fs.unlinkSync(temporaryPath);
+        } catch {
+          // Best-effort cleanup must not mask the persistence error.
+        }
+      }
       handleExtensionError(err, "writeTokyoConfig");
+      return false;
     }
   }
 
   /** Reset config to defaults (does NOT persist). */
   resetToDefaults(): void {
-    this.config = { ...DEFAULT_CONFIG };
+    this.config = freezeConfig({ ...DEFAULT_CONFIG });
   }
 }

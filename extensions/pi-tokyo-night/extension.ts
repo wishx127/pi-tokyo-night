@@ -5,6 +5,7 @@
 import type { Model } from "@earendil-works/pi-ai";
 import {
   type ExtensionAPI,
+  type ExtensionContext,
   type ExtensionUIContext,
   type KeybindingsManager,
   type ReadonlyFooterDataProvider,
@@ -16,8 +17,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import {
-  captureFromHeaders,
-  clearSnapshot,
+  createCodexUsageStore,
   isCodexModel,
 } from "./codex-usage";
 import { TokyoConfigManager } from "./config";
@@ -35,7 +35,6 @@ import {
 } from "./rain-manager";
 import {
   SelectorDetector,
-  setDoRender,
 } from "./selector-detector";
 import {
   SettingsUIController,
@@ -48,73 +47,327 @@ import {
   fgRgb,
 } from "./ui-primitives";
 
-// ── Composition Root ────────────────────────────────────────────────────────
+export type TokyoNightMode = "tui" | "rpc" | "json" | "print";
 
-const configManager = new TokyoConfigManager();
-let requestStatusRenderCallback: () => void = () => {};
-let refreshCodexQuotaState: () => void = () => {};
-let applyCurrentPanelState: () => void = () => {};
-let rainManager: RainAnimationManager | null = null;
-
-const selectorDetector = new SelectorDetector({
-  getEditorFocusTarget: () => BorderlessEditor.activeInstance,
-  requestEditorRender: () => BorderlessEditor.activeInstance?.requestRender(),
-  requestStatusRender: () => requestStatusRenderCallback(),
-  requestRainRender: () => rainManager?.requestRender(),
-});
-
-rainManager = new RainAnimationManager(configManager, {
-  isSideBordersHidden: () => selectorDetector.isSideBordersHidden(),
-});
-
-const settingsController = new SettingsUIController(configManager, {
-  requestEditorRender: () => BorderlessEditor.activeInstance?.requestRender(),
-  applyPanelState: () => applyCurrentPanelState(),
-  onCodexQuotaConfigChange: () => refreshCodexQuotaState(),
-});
-
-const borderlessEditorDependencies: BorderlessEditorDependencies = {
-  config: configManager,
-  selectorDetector,
-  settingsController,
+type BranchState = {
+  cachedBranch: string;
+  cacheTime: number;
+  pending: boolean;
+  requestToken: number;
+  requestController: AbortController | undefined;
+  cwd: string | undefined;
 };
 
-function applyPanelState(ui: ExtensionUIContext): void {
-  rainManager?.teardown(ui);
-  if (configManager.get().panel) {
-    rainManager?.setup(ui);
-  }
+type SessionState = {
+  generation: number;
+  ui: ExtensionUIContext;
+  mode: TokyoNightMode;
+  hasUI: boolean;
+  cwd: string;
+  disposed: boolean;
+  editorPollTimeout: ReturnType<typeof setTimeout> | undefined;
+  editorPollDelay: number;
+  editorWasDetached: boolean;
+  footerData: ReadonlyFooterDataProvider | null;
+  branch: BranchState;
+  statusRenderDebounceTimeout: ReturnType<typeof setTimeout> | undefined;
+  statusTui: TUI | null;
+  requestStatusRender: (() => void) | null;
+  origSetWidget: ((...args: any[]) => any) | null;
+  setWidgetWrapper: ((...args: any[]) => any) | null;
+  editor: BorderlessEditor | null;
+  manager: object;
+  identityKey: string;
+  codexCountdownRefreshTimeout: ReturnType<typeof setTimeout> | undefined;
+};
+
+/** Rain can only run while this extension owns an interactive TUI session. */
+export function shouldRunRainAnimation(
+  mode: TokyoNightMode,
+  panelEnabled: boolean,
+): boolean {
+  return mode === "tui" && panelEnabled;
 }
 
-applyCurrentPanelState = () => {
-  const editor = BorderlessEditor.activeInstance;
-  if (editor) applyPanelState(editor.getUIContext());
-};
+function safeTerminalWidth(width: number): number {
+  return Number.isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
+}
+
+function isAbortError(err: unknown): boolean {
+  return (
+    (err instanceof Error && err.name === "AbortError") ||
+    (typeof err === "object" &&
+      err !== null &&
+      "name" in err &&
+      (err as { name?: unknown }).name === "AbortError")
+  );
+}
+
+/**
+ * Render the status widget's body and bottom border without assuming that the
+ * terminal can fit the normal two side borders. This is kept as a public,
+ * observable seam because terminals can report widths of 0, 1, or 2 during
+ * resize and redraw races.
+ */
+export function buildStatusWidgetLines(
+  width: number,
+  hideSideBorders: boolean,
+  statusContent: string,
+): string[] {
+  const outputWidth = safeTerminalWidth(width);
+  const frameHasSideBorders = !hideSideBorders && outputWidth >= 2;
+  const innerWidth = frameHasSideBorders ? outputWidth - 2 : outputWidth;
+  const content = truncateToWidth(statusContent, innerWidth);
+  const padLen = Math.max(0, innerWidth - visibleWidth(content));
+  const frameFg = (s: string) => `${fgRgb(FRAME_RGB)}${s}${RESET}`;
+
+  const bottomLine = hideSideBorders
+    ? frameFg(BOX.h.repeat(outputWidth))
+    : outputWidth >= 2
+      ? frameFg(`${BOX.bl}${BOX.h.repeat(outputWidth - 2)}${BOX.br}`)
+      : frameFg(outputWidth === 1 ? BOX.bl : "");
+
+  if (!frameHasSideBorders) {
+    return [content + " ".repeat(padLen), bottomLine];
+  }
+
+  return [
+    frameFg(BOX.v) + content + " ".repeat(padLen) + frameFg(BOX.v),
+    bottomLine,
+  ];
+}
 
 export default function (pi: ExtensionAPI) {
-  // ── Per-Extension State (scoped inside the function) ─────────────────────
+  // Every invocation gets its own composition root. Do not move these values
+  // to module scope: Pi can replace an extension runtime while old callbacks
+  // and asynchronous work are still unwinding.
+  const configManager = new TokyoConfigManager();
+  const codexUsageStore = createCodexUsageStore();
   let editorUIContext: ExtensionUIContext | null = null;
-  let reapplyEditorTimeout: ReturnType<typeof setTimeout> | undefined;
-  // The setWidget interception forwards calls to the original overloaded method.
-  // TypeScript can't verify that a single function signature satisfies both
-  // overloads of setWidget, so we use a documented minimal type escape for the
-  // forwarding. This is one of the few remaining `any` usages, justified by
-  // the overloaded method forwarding pattern.
-  let origSetWidget: ((...args: any[]) => any) | null = null;
-  let footerDataRef: ReadonlyFooterDataProvider | null = null;
-  let statusRenderDebounceTimeout: ReturnType<typeof setTimeout> | undefined;
+  let requestStatusRenderCallback: () => void = () => {};
   let requestStatusRenderRef: (() => void) | null = null;
+  let requestRainOverlayRenderCallback: () => void = () => {};
+  let refreshCodexQuotaState: () => void = () => {};
+  let applyCurrentPanelState: () => void = () => {};
+  let panelSessionMode: TokyoNightMode = "print";
   let activeModel: Model<any> | undefined;
+  let sessionGeneration = 0;
+  let activeSession: SessionState | null = null;
+  let ownedEditor: BorderlessEditor | null = null;
+  // Pi creates a fresh ExtensionContext for every event. SessionManager itself
+  // can be reused by in-memory new/fork flows, so object identity is not a
+  // session identity. Pi's session id is stable for the session and is also
+  // present for ephemeral sessions; include the file when one exists so a
+  // reused manager with a new session cannot hit an old state entry.
+  const sessionsByIdentity = new Map<string, SessionState>();
+  // This is only a fallback for Pi's in-memory fork path: that path mutates a
+  // reused manager before emitting the old session's shutdown, so its old
+  // stable id is no longer observable in that shutdown context. It is never
+  // used as the primary cross-event identity.
+  const currentSessionByManager = new WeakMap<object, SessionState>();
+  const reusedManagers = new WeakSet<object>();
+
+  const getSessionIdentity = (ctx: ExtensionContext): string => {
+    const manager = ctx.sessionManager;
+    const sessionId = manager.getSessionId();
+    const sessionFile = manager.getSessionFile();
+    return `id:${sessionId}|file:${sessionFile ?? ""}`;
+  };
+
+  const isInteractiveTui = (ctx: ExtensionContext): boolean =>
+    ctx.mode === "tui" && ctx.hasUI;
+
+  const isCurrentSession = (session: SessionState): boolean =>
+    activeSession === session &&
+    !session.disposed &&
+    session.generation === sessionGeneration;
+
+  const abortBranchRequest = (branch: BranchState): void => {
+    branch.requestController?.abort();
+    branch.requestController = undefined;
+  };
+
+  const clearSessionTimers = (session: SessionState): void => {
+    if (session.editorPollTimeout !== undefined) {
+      clearTimeout(session.editorPollTimeout);
+      session.editorPollTimeout = undefined;
+    }
+    if (session.statusRenderDebounceTimeout !== undefined) {
+      clearTimeout(session.statusRenderDebounceTimeout);
+      session.statusRenderDebounceTimeout = undefined;
+    }
+    if (session.codexCountdownRefreshTimeout !== undefined) {
+      clearTimeout(session.codexCountdownRefreshTimeout);
+      session.codexCountdownRefreshTimeout = undefined;
+    }
+    abortBranchRequest(session.branch);
+    session.branch.requestToken += 1;
+    session.branch.pending = false;
+    session.requestStatusRender = null;
+  };
+
+  const resetActiveComposition = (session: SessionState): void => {
+    clearSessionTimers(session);
+    panelSessionMode = "print";
+    editorUIContext = null;
+    activeModel = undefined;
+    codexUsageStore.clearSnapshot();
+    requestStatusRenderCallback = () => {};
+    requestStatusRenderRef = null;
+    requestRainOverlayRenderCallback = () => {};
+    selectorDetector.reset();
+    settingsController.reset();
+
+    const editor = session.editor;
+    session.editor = null;
+    if (editor && ownedEditor === editor) {
+      ownedEditor = null;
+      editor.dispose();
+    }
+  };
+
+  const retireActiveSession = (session: SessionState): void => {
+    if (sessionsByIdentity.get(session.identityKey) === session) {
+      sessionsByIdentity.delete(session.identityKey);
+    }
+    if (currentSessionByManager.get(session.manager) === session) {
+      currentSessionByManager.delete(session.manager);
+    }
+    const wasDisposed = session.disposed;
+    session.disposed = true;
+    if (activeSession === session) {
+      rainManager.stop();
+      if (!wasDisposed) resetActiveComposition(session);
+      activeSession = null;
+    } else if (!wasDisposed) {
+      clearSessionTimers(session);
+      const editor = session.editor;
+      session.editor = null;
+      if (editor && ownedEditor === editor) {
+        ownedEditor = null;
+        editor.dispose();
+      }
+    }
+  };
+
+  const restoreSetWidgetPatch = (session: SessionState): void => {
+    const { origSetWidget, setWidgetWrapper } = session;
+    try {
+      if (
+        session.hasUI &&
+        origSetWidget &&
+        setWidgetWrapper &&
+        session.ui.setWidget === setWidgetWrapper
+      ) {
+        session.ui.setWidget = origSetWidget as typeof session.ui.setWidget;
+      }
+    } catch (err) {
+      if (!isStaleExtensionContextError(err)) {
+        console.error(`${EXT_PREFIX} setWidget restore failed:`, err);
+      }
+    } finally {
+      // Do not retain stale methods after the session has retired, even if its
+      // UI context was already invalidated by the host.
+      session.origSetWidget = null;
+      session.setWidgetWrapper = null;
+    }
+  };
+
+  const requestStatusRenderFor = (session: SessionState): void => {
+    if (!isCurrentSession(session)) return;
+    session.requestStatusRender?.();
+  };
+
+  const CODEX_COUNTDOWN_REFRESH_MS = 30_000;
+
+  const shouldRefreshCodexCountdown = (session: SessionState): boolean =>
+    isCurrentSession(session) &&
+    session.mode === "tui" &&
+    session.hasUI &&
+    configManager.get().codexQuota &&
+    isCodexModel(activeModel) &&
+    codexUsageStore.getSnapshot() !== undefined;
+
+  const scheduleCodexCountdownRefresh = (session: SessionState): void => {
+    if (!shouldRefreshCodexCountdown(session)) {
+      if (session.codexCountdownRefreshTimeout !== undefined) {
+        clearTimeout(session.codexCountdownRefreshTimeout);
+        session.codexCountdownRefreshTimeout = undefined;
+      }
+      return;
+    }
+    if (session.codexCountdownRefreshTimeout !== undefined) return;
+
+    session.codexCountdownRefreshTimeout = setTimeout(() => {
+      session.codexCountdownRefreshTimeout = undefined;
+      if (!shouldRefreshCodexCountdown(session)) return;
+      requestStatusRenderFor(session);
+      scheduleCodexCountdownRefresh(session);
+    }, CODEX_COUNTDOWN_REFRESH_MS);
+  };
+
+  // These collaborators are deliberately constructed inside the extension
+  // factory. Their callbacks can therefore only reach this factory's editor,
+  // rain manager, settings controller, and render request functions.
+  const selectorDetector = new SelectorDetector({
+    getEditorFocusTarget: () => ownedEditor,
+    requestEditorRender: () => {
+      ownedEditor?.requestRender();
+      requestRainOverlayRenderCallback();
+    },
+    requestStatusRender: () => requestStatusRenderCallback(),
+  });
+
+  const rainManager = new RainAnimationManager(configManager, {
+    requestRender: () => {
+      ownedEditor?.requestRender();
+      requestRainOverlayRenderCallback();
+    },
+  });
+
+  const settingsController = new SettingsUIController(configManager, {
+    requestEditorRender: () => ownedEditor?.requestRender(),
+    applyPanelState: () => applyCurrentPanelState(),
+    onCodexQuotaConfigChange: () => refreshCodexQuotaState(),
+  });
+
+  const borderlessEditorDependencies: BorderlessEditorDependencies = {
+    config: configManager,
+    selectorDetector,
+    settingsController,
+    rainManager,
+  };
+
+  function applyPanelState(): void {
+    if (!activeSession || activeSession.disposed) return;
+    rainManager.stop();
+    if (shouldRunRainAnimation(panelSessionMode, configManager.get().panel)) {
+      rainManager.start();
+    }
+    ownedEditor?.requestRender();
+    requestRainOverlayRenderCallback();
+  }
+
+  applyCurrentPanelState = applyPanelState;
 
   // Stable factory so we can re-apply after resetExtensionUI() clears
-  // setEditorComponent. Captures editorUIContext via closure.
+  // setEditorComponent. It captures this factory's editor UI context.
   const borderlessEditorFactory = (
     tui: TUI,
     theme: EditorTheme,
     keybindings: KeybindingsManager,
     options?: EditorOptions,
-  ) =>
-    new BorderlessEditor(
+  ) => {
+    // BorderlessEditor keeps a compatibility static handle for its own
+    // rendering patch. Do not let constructing this factory's editor dispose
+    // an editor owned by a different extension factory instance.
+    if (
+      BorderlessEditor.activeInstance &&
+      BorderlessEditor.activeInstance !== ownedEditor
+    ) {
+      BorderlessEditor.activeInstance = null;
+    }
+    const editor = new BorderlessEditor(
       tui,
       theme,
       keybindings,
@@ -122,13 +375,135 @@ export default function (pi: ExtensionAPI) {
       borderlessEditorDependencies,
       options,
     );
+    ownedEditor = editor;
+    if (activeSession) activeSession.editor = editor;
+    return editor;
+  };
 
-  // ── agent_start guard (registered once at extension level) ───────────────
-  // resetExtensionUI() re-enables workingVisible, and agent_start creates a
-  // loader when it is true. We keep it off by re-hiding on every agent start.
-  pi.on("agent_start", async (_event, _ctx) => {
+  const getGitBranchFallback = async (
+    cwd: string,
+    signal: AbortSignal,
+  ): Promise<string | null> => {
     try {
-      const ui = editorUIContext ?? _ctx.ui;
+      const result = await pi.exec(
+        "git",
+        ["rev-parse", "--abbrev-ref", "HEAD"],
+        { cwd, timeout: 2000, signal },
+      );
+      return result.code === 0 ? result.stdout.trim() : null;
+    } catch (err) {
+      if (
+        !signal.aborted &&
+        !isAbortError(err) &&
+        !isStaleExtensionContextError(err)
+      ) {
+        handleExtensionError(err, "getGitBranch fallback");
+      }
+      return null;
+    }
+  };
+
+  const syncFooterBranch = (
+    session: SessionState,
+    footerData: ReadonlyFooterDataProvider,
+  ): void => {
+    if (!isCurrentSession(session)) return;
+    abortBranchRequest(session.branch);
+    session.branch.requestToken += 1;
+    session.branch.pending = false;
+    session.branch.cacheTime = Date.now();
+
+    let branch = "";
+    try {
+      branch = footerData.getGitBranch() ?? "";
+    } catch (err) {
+      if (!isStaleExtensionContextError(err)) {
+        handleExtensionError(err, "footer git branch");
+      }
+      return;
+    }
+    if (branch !== session.branch.cachedBranch) {
+      session.branch.cachedBranch = branch;
+      requestStatusRenderFor(session);
+    }
+  };
+
+  const updateBranch = async (
+    session: SessionState,
+    cwd: string,
+  ): Promise<void> => {
+    if (!isCurrentSession(session)) return;
+
+    if (session.branch.cwd !== cwd) {
+      session.branch.cwd = cwd;
+      abortBranchRequest(session.branch);
+      session.branch.cachedBranch = "";
+      session.branch.cacheTime = 0;
+      session.branch.pending = false;
+      session.branch.requestToken += 1;
+    }
+
+    // Footer data is Pi's cached source of truth. In particular, do not start
+    // a git process while the footer provider is available.
+    if (session.footerData) {
+      syncFooterBranch(session, session.footerData);
+      return;
+    }
+
+    const now = Date.now();
+    const BRANCH_CACHE_TTL = 5000;
+    if (
+      session.branch.pending ||
+      now - session.branch.cacheTime <= BRANCH_CACHE_TTL
+    ) {
+      return;
+    }
+
+    abortBranchRequest(session.branch);
+    session.branch.pending = true;
+    session.branch.cacheTime = now;
+    const requestToken = ++session.branch.requestToken;
+    const generation = session.generation;
+    const requestController = new AbortController();
+    session.branch.requestController = requestController;
+    try {
+      const branch = await getGitBranchFallback(cwd, requestController.signal);
+      if (
+        !isCurrentSession(session) ||
+        session.generation !== generation ||
+        session.branch.requestToken !== requestToken ||
+        session.footerData ||
+        branch === null
+      ) {
+        return;
+      }
+      if (branch !== session.branch.cachedBranch) {
+        session.branch.cachedBranch = branch;
+        requestStatusRenderFor(session);
+      }
+      session.branch.cacheTime = Date.now();
+    } catch (err) {
+      if (!isAbortError(err) && !isStaleExtensionContextError(err)) {
+        console.error(`${EXT_PREFIX} branch update failed:`, err);
+      }
+    } finally {
+      if (
+        isCurrentSession(session) &&
+        session.branch.requestToken === requestToken &&
+        session.branch.requestController === requestController
+      ) {
+        session.branch.pending = false;
+        session.branch.cacheTime = Date.now();
+        session.branch.requestController = undefined;
+      }
+    }
+  };
+
+  // ── agent_start guard (registered once per extension instance) ──────────
+  pi.on("agent_start", async (_event, ctx) => {
+    if (!isInteractiveTui(ctx)) return;
+    try {
+      const ui = editorUIContext ?? ctx.ui;
       ui.setWorkingVisible(false);
     } catch (err) {
       handleExtensionError(err, "agent_start guard");
@@ -138,169 +513,281 @@ export default function (pi: ExtensionAPI) {
   refreshCodexQuotaState = () => {
     const enabled = configManager.get().codexQuota && isCodexModel(activeModel);
     if (!enabled) {
-      clearSnapshot();
+      codexUsageStore.clearSnapshot();
     }
+    if (activeSession) scheduleCodexCountdownRefresh(activeSession);
     requestStatusRenderRef?.();
   };
 
   pi.on("after_provider_response", async (event, ctx) => {
     try {
-      if (configManager.get().codexQuota && isCodexModel(ctx.model) && captureFromHeaders(event.headers)) {
-        requestStatusRenderRef?.();
+      const session = sessionsByIdentity.get(getSessionIdentity(ctx));
+      if (!session || !isCurrentSession(session)) return;
+      if (
+        configManager.get().codexQuota &&
+        isCodexModel(ctx.model) &&
+        codexUsageStore.captureFromHeaders(event.headers)
+      ) {
+        scheduleCodexCountdownRefresh(session);
+        requestStatusRenderFor(session);
       }
     } catch (err) {
       handleExtensionError(err, "codex usage capture");
     }
   });
 
-  pi.on("model_select", async (event, _ctx) => {
+  pi.on("model_select", async (event, ctx) => {
     try {
+      const session = sessionsByIdentity.get(getSessionIdentity(ctx));
+      if (!session || !isCurrentSession(session)) return;
       activeModel = event.model;
-      clearSnapshot();
+      codexUsageStore.clearSnapshot();
       refreshCodexQuotaState();
     } catch (err) {
       handleExtensionError(err, "model_select Codex SSE force");
     }
   });
 
-  // ── Async git branch detection ───────────────────────────────────────────
-  const getGitBranchFallback = async (cwd: string): Promise<string> => {
-    try {
-      const result = await pi.exec(
-        "git",
-        ["rev-parse", "--abbrev-ref", "HEAD"],
-        { cwd, timeout: 2000 },
-      );
-      return result.code === 0 ? result.stdout.trim() : "";
-    } catch (err) {
-      handleExtensionError(err, "getGitBranch fallback");
-      return "";
-    }
-  };
+  pi.on("session_start", async (_event, ctx) => {
+    const sessionIdentity = getSessionIdentity(ctx);
+    const ui = ctx.ui;
+    const mode = ctx.mode;
+    const hasUI = ctx.hasUI;
+    const cwd = ctx.cwd;
+    const model = ctx.model;
 
-  pi.on("session_start", async (event, ctx) => {
-    editorUIContext = ctx.ui;
+    // Session replacement can race the previous context's asynchronous work.
+    // Retire only this factory's previous session before installing the new
+    // generation; its old shutdown can still restore its own UI below.
+    const replacedSession = activeSession;
+    const sessionManager = ctx.sessionManager as unknown as object;
+    const existingSession = sessionsByIdentity.get(sessionIdentity);
+    if (
+      replacedSession &&
+      replacedSession.manager === sessionManager &&
+      replacedSession.identityKey !== sessionIdentity
+    ) {
+      reusedManagers.add(sessionManager);
+    }
+    if (replacedSession) {
+      retireActiveSession(replacedSession);
+      if (replacedSession.ui === ui) restoreSetWidgetPatch(replacedSession);
+    }
+    if (existingSession && existingSession !== replacedSession) {
+      retireActiveSession(existingSession);
+      restoreSetWidgetPatch(existingSession);
+    }
+
+    const session: SessionState = {
+      generation: ++sessionGeneration,
+      ui,
+      mode,
+      hasUI,
+      cwd,
+      disposed: false,
+      editorPollTimeout: undefined,
+      editorPollDelay: 150,
+      editorWasDetached: false,
+      footerData: null,
+      branch: {
+        cachedBranch: "",
+        cacheTime: 0,
+        pending: false,
+        requestToken: 0,
+        requestController: undefined,
+        cwd: undefined,
+      },
+      statusRenderDebounceTimeout: undefined,
+      statusTui: null,
+      requestStatusRender: null,
+      origSetWidget: null,
+      setWidgetWrapper: null,
+      editor: null,
+      manager: sessionManager,
+      identityKey: sessionIdentity,
+      codexCountdownRefreshTimeout: undefined,
+    };
+    activeSession = session;
+    sessionsByIdentity.set(sessionIdentity, session);
+    currentSessionByManager.set(sessionManager, session);
+    panelSessionMode = mode;
     configManager.read();
-    activeModel = ctx.model;
-    clearSnapshot();
+    activeModel = model;
+    codexUsageStore.clearSnapshot();
     refreshCodexQuotaState();
 
-    // Per-session branch cache (isolated from other sessions)
-    let cachedBranch = "";
-    let branchCacheTime = 0;
-    let branchPending = false;
-    const BRANCH_CACHE_TTL = 5000;
+    if (mode !== "tui" || !hasUI) return;
+    editorUIContext = ui;
 
-    const updateBranch = async (cwd: string) => {
-      const now = Date.now();
-      if (!branchPending && now - branchCacheTime > BRANCH_CACHE_TTL) {
-        branchPending = true;
-        branchCacheTime = now;
-        try {
-          // Prefer footerData.getGitBranch() (Pi's built-in, cached, robust);
-          // note: getGitBranch() is synchronous in the SDK (returns string | null),
-          // but we await the result for uniform handling with the async fallback.
-          // fall back to manual git exec if footerData is unavailable.
-          cachedBranch = footerDataRef
-            ? (footerDataRef.getGitBranch() ?? "")
-            : await getGitBranchFallback(cwd);
-        } catch (err) {
-          if (isStaleExtensionContextError(err)) {
-            // Stale context is expected during shutdown — skip silently.
-            return;
+    if (mode === "tui") {
+      // ── Register custom editor (wrapping previous) ──────────────────────
+      ui.setEditorComponent(borderlessEditorFactory);
+      ui.setWorkingVisible(false);
+      const rootTui = ownedEditor?.tuiRef;
+      rootTui?.requestRender(true);
+
+      // Poll ownership with exponential backoff. A 150ms first check keeps
+      // resetExtensionUI responsive, while stable ownership quickly drops to
+      // a low-frequency safety check for the rest of the session.
+      const BASE_POLL_MS = 150;
+      const MAX_POLL_MS = 5000;
+      const pollEditorRegistration = (): void => {
+        if (!isCurrentSession(session)) return;
+        session.editorPollTimeout = setTimeout(() => {
+          session.editorPollTimeout = undefined;
+          if (!isCurrentSession(session)) return;
+
+          try {
+            const currentFactory =
+              typeof ui.getEditorComponent === "function"
+                ? ui.getEditorComponent()
+                : undefined;
+
+            if (currentFactory !== borderlessEditorFactory) {
+              if (!session.editorWasDetached) {
+                rainManager.stop();
+                if (session.editor && ownedEditor === session.editor) {
+                  ownedEditor = null;
+                  session.editor.dispose();
+                  session.editor = null;
+                }
+                requestRainOverlayRenderCallback();
+                session.editorWasDetached = true;
+                session.editorPollDelay = BASE_POLL_MS;
+              }
+
+              if (currentFactory === undefined) {
+                ui.setEditorComponent(borderlessEditorFactory);
+                ui.setWorkingVisible(false);
+                session.editorPollDelay = BASE_POLL_MS;
+              } else {
+                // Never replace another extension's editor. Keep observing it,
+                // but use the backoff rather than a permanent 150ms loop.
+                session.editorPollDelay = Math.min(
+                  MAX_POLL_MS,
+                  session.editorPollDelay * 2,
+                );
+              }
+            } else {
+              if (session.editorWasDetached) {
+                session.editorWasDetached = false;
+                if (session.editor) {
+                  applyPanelState();
+                  session.editor.requestRender();
+                }
+              }
+              session.editorPollDelay = Math.min(
+                MAX_POLL_MS,
+                session.editorPollDelay * 2,
+              );
+            }
+          } catch (err) {
+            if (isStaleExtensionContextError(err)) {
+              session.disposed = true;
+              clearSessionTimers(session);
+              if (activeSession === session) {
+                rainManager.stop();
+                // Keep the disposed session until session_shutdown so that
+                // shutdown can still restore its UI resources.
+                resetActiveComposition(session);
+              }
+              return;
+            }
+            console.error(`${EXT_PREFIX} editor ownership poll failed:`, err);
+            session.editorPollDelay = Math.min(
+              MAX_POLL_MS,
+              session.editorPollDelay * 2,
+            );
           }
-          console.error(`${EXT_PREFIX} branch update failed:`, err);
-        } finally {
-          branchPending = false;
-        }
-      }
-    };
-
-    // ── Register custom editor (wrapping previous) ────────────────────────
-    ctx.ui.setEditorComponent(borderlessEditorFactory);
-    ctx.ui.setWorkingVisible(false);
-    // Force a full render after editor registration to reset any accumulated
-    // viewport drift from previous differential rendering cycles. Without this,
-    // previousViewportTop may be stale from before the editor swap, causing
-    // computeLineDiff to position rain panel lines at wrong terminal positions.
-    // requestRender(true) clears previousLines/previousViewportTop and forces
-    // a full redraw — it's a public API on TUI (tui.d.ts: requestRender(force?: boolean)).
-    const rootTui = BorderlessEditor.activeInstance?.tuiRef;
-    rootTui?.requestRender(true);
-
-    // ── Poll for editor factory clearing on all session reasons ──────────────
-    // Another extension (pi-fff in "tools-only" mode) or Pi's resetExtensionUI()
-    // may call setEditorComponent(undefined), which clears our custom editor.
-    // We poll to detect this and re-register. The check uses === undefined
-    // so we only react to an explicit clear, not to another extension registering
-    // its own factory (which we should not overwrite).
-    const MAX_REAPPLY_MS = 2000;
-    const POLL_INTERVAL_MS = 150;
-    const reapplyStart = Date.now();
-
-    function pollEditorRegistration() {
-      const elapsed = Date.now() - reapplyStart;
-      if (elapsed >= MAX_REAPPLY_MS) {
-        reapplyEditorTimeout = undefined;
-        return;
-      }
-      reapplyEditorTimeout = setTimeout(() => {
-        try {
-          const currentFactory =
-            typeof ctx.ui.getEditorComponent === "function"
-              ? ctx.ui.getEditorComponent()
-              : undefined;
-          if (currentFactory === undefined) {
-            // Factory was explicitly cleared — re-register our editor.
-            ctx.ui.setEditorComponent(borderlessEditorFactory);
-            ctx.ui.setWorkingVisible(false);
-            // Force full render after re-registration to reset viewport tracking.
-            const reapplyTui = BorderlessEditor.activeInstance?.tuiRef;
-            reapplyTui?.requestRender(true);
-          }
-        } catch (err) {
-          if (isStaleExtensionContextError(err)) {
-            reapplyEditorTimeout = undefined;
-            return; // stop polling on stale context
-          }
-          console.error(`${EXT_PREFIX} editor re-apply poll failed:`, err);
-        }
-        pollEditorRegistration();
-      }, POLL_INTERVAL_MS);
+          pollEditorRegistration();
+        }, session.editorPollDelay);
+      };
+      pollEditorRegistration();
     }
-    pollEditorRegistration();
 
     // ── Intercept setWidget to drop "agents" widget ───────────────────────
     // @tintinweb/pi-subagents registers an "agents" widget that duplicates
     // agent info already in the chat area. Its 80ms timer re-registers
     // continuously, so clearing it once doesn't work. We intercept setWidget.
-    origSetWidget = ctx.ui.setWidget.bind(ctx.ui);
-    ctx.ui.setWidget = (key: string, ...args: unknown[]) => {
-      if (key === "agents") return;
-      // Forwarding to the original overloaded setWidget method.
-      // Must include `key` as the first argument — `args` only contains
-      // the parameters after `key` (content, options).
-      return origSetWidget!.call(ctx.ui, key, ...args as any[]);
-    };
-
-    // ── Rain widget ───────────────────────────────────────────────────────
-    if (configManager.get().panel) {
-      rainManager?.setup(ctx.ui);
+    if (
+      replacedSession?.ui === ui &&
+      replacedSession.setWidgetWrapper === ui.setWidget &&
+      replacedSession.origSetWidget
+    ) {
+      ui.setWidget = replacedSession.origSetWidget as typeof ui.setWidget;
+      replacedSession.origSetWidget = null;
+      replacedSession.setWidgetWrapper = null;
     }
+    session.origSetWidget = ui.setWidget;
+    const setWidgetWrapper = ((key: string, ...args: unknown[]) => {
+      if (key === "agents") return;
+      return session.origSetWidget!.call(ui, key, ...args as any[]);
+    }) as typeof ui.setWidget;
+    session.setWidgetWrapper = setWidgetWrapper;
+    ui.setWidget = setWidgetWrapper;
 
-    // ── Status bar widget with debounce ────────────────────────────────────
+    // The selector replaces the editor container in Pi, so the editor cannot
+    // render the panel while a selector owns that area. Register the fallback
+    // widget only for the active selector state.
+    let selectorRainTui: TUI | null = null;
+    let selectorRainRegistered = false;
+    const selectorRainFactory = (tui: TUI) => {
+      selectorRainTui = tui;
+      return {
+        invalidate() {},
+        render(width: number): string[] {
+          if (!selectorDetector.isSideBordersHidden()) return [];
+          return ownedEditor?.renderSelectorOverlay(width) ?? [];
+        },
+        dispose() {
+          if (selectorRainTui === tui) selectorRainTui = null;
+        },
+      };
+    };
+    const syncSelectorRainWidget = () => {
+      if (!isCurrentSession(session) || mode !== "tui") return;
+      const shouldRegister =
+        selectorDetector.isSideBordersHidden() && rainManager.isRunning;
+      try {
+        if (shouldRegister && !selectorRainRegistered) {
+          ui.setWidget(
+            "tokyo-rain-selector",
+            selectorRainFactory,
+            { placement: "aboveEditor" },
+          );
+          selectorRainRegistered = true;
+        } else if (!shouldRegister && selectorRainRegistered) {
+          ui.setWidget("tokyo-rain-selector", undefined);
+          selectorRainRegistered = false;
+          selectorRainTui = null;
+        }
+        if (shouldRegister) selectorRainTui?.requestRender();
+      } catch (err) {
+        if (!isStaleExtensionContextError(err)) {
+          console.error(`${EXT_PREFIX} selector rain widget update failed:`, err);
+        }
+      }
+    };
+    requestRainOverlayRenderCallback = syncSelectorRainWidget;
+
+    // ── Apply panel state (start/stop animation timer) ────────────────────
+    applyPanelState();
+
+    // ── Status bar widget with debounce ───────────────────────────────────
     const STATUS_DEBOUNCE_MS = 33;
-    let statusTui: TUI | null = null;
-
     const requestStatusRender = () => {
-      if (statusRenderDebounceTimeout) clearTimeout(statusRenderDebounceTimeout);
-      statusRenderDebounceTimeout = setTimeout(() => {
-        statusRenderDebounceTimeout = undefined;
+      if (!isCurrentSession(session)) return;
+      if (session.statusRenderDebounceTimeout) {
+        clearTimeout(session.statusRenderDebounceTimeout);
+      }
+      session.statusRenderDebounceTimeout = setTimeout(() => {
+        session.statusRenderDebounceTimeout = undefined;
+        if (!isCurrentSession(session)) return;
         try {
-          statusTui?.requestRender();
+          session.statusTui?.requestRender();
         } catch (err) {
           if (isStaleExtensionContextError(err)) {
-            statusTui = null;
+            session.statusTui = null;
           } else {
             console.error(`${EXT_PREFIX} status render request failed:`, err);
           }
@@ -308,74 +795,48 @@ export default function (pi: ExtensionAPI) {
       }, STATUS_DEBOUNCE_MS);
     };
 
+    session.requestStatusRender = requestStatusRender;
     requestStatusRenderCallback = requestStatusRender;
-
-    // Store the requestStatusRender reference so selector state changes
-    // can trigger status bar re-render.
     requestStatusRenderRef = requestStatusRender;
     selectorDetector.setStatusRenderRef(requestStatusRender);
 
-    ctx.ui.setWidget(
+    ui.setWidget(
       "tokyo-status",
       (tui: TUI, theme: Theme) => {
-        statusTui = tui;
+        session.statusTui = tui;
         return {
           invalidate() {
             requestStatusRender();
           },
           render(width: number): string[] {
             try {
-              const cwd = ctx.cwd;
-              updateBranch(cwd);
-
-              const frameFg = (s: string) => `${fgRgb(FRAME_RGB)}${s}${RESET}`;
+              if (!isCurrentSession(session)) return [];
+              const currentCwd = ctx.cwd;
+              if (session.cwd !== currentCwd) session.cwd = currentCwd;
+              updateBranch(session, session.cwd);
 
               // selectorDetector.isSideBordersHidden() combines the cached
-              // active flag with a live check on editorTui, catching selectors
-              // in the same render cycle they appear.
+              // active flag with a live check on editorTui.
               const hideSideBorders = selectorDetector.isSideBordersHidden();
-
-              // In selector mode (no │ borders), content fills full width.
-              // In normal mode (│ on both sides), content fills width - 2.
-              const innerWidth = Math.max(1, hideSideBorders ? width : width - 2);
+              const outputWidth = safeTerminalWidth(width);
+              const contentWidth =
+                !hideSideBorders && outputWidth >= 2
+                  ? outputWidth - 2
+                  : outputWidth;
               const statusLine = buildStatusLine(
-                innerWidth,
+                Math.max(1, contentWidth),
                 theme,
                 ctx,
-                cachedBranch,
+                session.branch.cachedBranch,
                 pi.getThinkingLevel(),
                 configManager,
+                codexUsageStore,
               );
-              const statusContent = truncateToWidth(statusLine, innerWidth);
-              const padLen = Math.max(
-                0,
-                innerWidth - visibleWidth(statusContent),
+              return buildStatusWidgetLines(
+                outputWidth,
+                hideSideBorders,
+                statusLine,
               );
-
-              // Bottom border: ╰─╯ when │ side borders connect to corners,
-              // plain ─ horizontal line without corners when │ sides are hidden
-              // (selector mode — corners look broken without connecting │).
-              const bottomLine = hideSideBorders
-                ? frameFg(BOX.h.repeat(width))
-                : frameFg(`${BOX.bl}${BOX.h.repeat(width - 2)}${BOX.br}`);
-
-              // When a selector has replaced our editor, remove only the │ side
-              // borders. The bottom ─ line is kept — it provides visual
-              // continuity as a footer decoration without disconnected corners.
-              if (hideSideBorders) {
-                const selectorBodyLine =
-                  statusContent +
-                  " ".repeat(padLen);
-                return [selectorBodyLine, bottomLine];
-              }
-
-              const bodyLine =
-                frameFg(BOX.v) +
-                statusContent +
-                " ".repeat(padLen) +
-                frameFg(BOX.v);
-
-              return [bodyLine, bottomLine];
             } catch (err) {
               if (isStaleExtensionContextError(err)) return [];
               console.error(`${EXT_PREFIX} status render failed:`, err);
@@ -388,31 +849,29 @@ export default function (pi: ExtensionAPI) {
     );
 
     // ── Footer: participate in Footer Data Provider ───────────────────────
-    // Instead of hiding the footer entirely, we register a component that
-    // subscribes to footerData (git branch, extension statuses) and returns
-    // an empty render. This keeps other extensions' statuses accessible via
-    // footerData while our status bar widget replaces the footer visually.
-    ctx.ui.setFooter(
+    // Keep the existing footer ownership semantics: this empty component
+    // preserves footerData for other extensions while our widget is visible.
+    ui.setFooter(
       (tui: TUI, _theme: Theme, footerData: ReadonlyFooterDataProvider) => {
-        // The footer callback receives the root TUI. Store it as a secondary
-        // source for selector detection (checking focusedComponent) alongside
-        // the editor TUI.
         selectorDetector.overlayTui = tui;
-        footerDataRef = footerData;
-        // Hook onBranchChange to auto-trigger status bar re-render —
-        // no need for our manual git branch cache refresh interval.
-        const unsub = footerData.onBranchChange(() => requestStatusRender());
+        session.footerData = footerData;
+        syncFooterBranch(session, footerData);
+        const unsub = footerData.onBranchChange(() => {
+          if (!isCurrentSession(session)) return;
+          syncFooterBranch(session, footerData);
+          requestStatusRenderFor(session);
+        });
 
         return {
           dispose() {
             unsub();
-            footerDataRef = null;
+            if (session.footerData === footerData) session.footerData = null;
           },
           invalidate() {
             requestStatusRender();
           },
           render(): string[] {
-            return []; // empty — our status bar widget replaces the footer visually
+            return [];
           },
         };
       },
@@ -427,11 +886,13 @@ export default function (pi: ExtensionAPI) {
       const arg = args.trim().toLowerCase();
 
       if (arg === "on" || arg === "off") {
-        configManager.get().panel = arg === "on";
+        configManager.set("panel", arg === "on");
         configManager.write();
-        if (!ctx.hasUI) return;
+        // RPC, JSON, and print commands may persist configuration, but they do
+        // not own a TUI and must not invoke editor/widget operations.
+        if (ctx.mode !== "tui" || !ctx.hasUI) return;
         try {
-          applyPanelState(ctx.ui);
+          applyPanelState();
           ctx.ui.notify(`Tokyo Night panel ${arg}`, "info");
         } catch (err) {
           handleExtensionError(err, "panel toggle");
@@ -439,7 +900,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      if (!ctx.hasUI) {
+      if (ctx.mode !== "tui" || !ctx.hasUI) {
         console.log(`${EXT_PREFIX} Settings panel is only available in interactive mode.`);
         return;
       }
@@ -447,74 +908,97 @@ export default function (pi: ExtensionAPI) {
       if (settingsController.isActive) {
         settingsController.exit();
         try {
-          applyPanelState(ctx.ui);
+          applyPanelState();
         } catch (err) {
           handleExtensionError(err, "settings save");
         }
       } else {
         settingsController.enter();
       }
-      BorderlessEditor.activeInstance?.requestRender();
+      ownedEditor?.requestRender();
     },
   });
 
-  pi.on("session_shutdown", async (_event, ctx) => {
-    // ── Cancel all timers ──────────────────────────────────────────────────
-    if (reapplyEditorTimeout) {
-      clearTimeout(reapplyEditorTimeout);
-      reapplyEditorTimeout = undefined;
-    }
-    if (statusRenderDebounceTimeout) {
-      clearTimeout(statusRenderDebounceTimeout);
-      statusRenderDebounceTimeout = undefined;
-    }
-    // ── Restore doRender monkey-patch ────────────────────────────────────────
-    if (BorderlessEditor.originalDoRender && selectorDetector.editorTui) {
-      try {
-        setDoRender(
-          selectorDetector.editorTui,
-          BorderlessEditor.originalDoRender,
-        );
-      } catch (err) {
-        if (isStaleExtensionContextError(err)) return;
-        console.error(`${EXT_PREFIX} doRender restore failed:`, err);
+  pi.on("session_shutdown", async (event, ctx) => {
+    const sessionManager = ctx.sessionManager as unknown as object;
+    const sessionIdentity = getSessionIdentity(ctx);
+    let session = sessionsByIdentity.get(sessionIdentity);
+    if (!session) {
+      const managerSession = currentSessionByManager.get(sessionManager);
+      if (
+        managerSession &&
+        activeSession === managerSession &&
+        !reusedManagers.has(sessionManager)
+      ) {
+        // In-memory fork mutates the shared manager's id before the old
+        // shutdown event. The active state is still the old session in this
+        // extension runtime, so it is safe to use this one-way fallback.
+        session = managerSession;
       }
     }
-
-    // ── Restore setWidget monkey-patch ─────────────────────────────────────
-    if (origSetWidget && ctx.hasUI) {
-      try {
-        ctx.ui.setWidget = origSetWidget;
-      } catch (err) {
-        if (isStaleExtensionContextError(err)) return;
-        console.error(`${EXT_PREFIX} setWidget restore failed:`, err);
-      }
-      origSetWidget = null;
+    if (!session) return;
+    if (
+      reusedManagers.has(sessionManager) &&
+      session.manager === sessionManager &&
+      event.reason !== "quit" &&
+      event.reason !== "reload"
+    ) {
+      // A replacement-reason shutdown arriving after a reused-manager
+      // session_start has no source session id in Pi's event shape. Treat it
+      // as stale rather than allowing it to retire the current session.
+      return;
+    }
+    if (sessionsByIdentity.get(sessionIdentity) === session) {
+      sessionsByIdentity.delete(sessionIdentity);
     }
 
-    // ── Reset all per-session state ────────────────────────────────────────
-    editorUIContext = null;
-    footerDataRef = null;
-    requestStatusRenderRef = null;
-    activeModel = undefined;
-    clearSnapshot();
-    refreshCodexQuotaState = () => {};
-    requestStatusRenderCallback = () => {};
-    selectorDetector.reset();
-    settingsController.reset();
-    BorderlessEditor.activeInstance = null;
-    BorderlessEditor.originalDoRender = null;
+    const sharedWithCurrentSession =
+      activeSession !== null &&
+      activeSession !== session &&
+      activeSession.ui === session.ui;
+    const wasActiveSession = activeSession === session;
+    retireActiveSession(session);
+    if (wasActiveSession) sessionGeneration += 1;
 
-    // ── Guard non-interactive modes ────────────────────────────────────────
-    if (!ctx.hasUI) {
-      rainManager?.teardown(ctx.ui);
+    // Restore only this session's patch. The identity check prevents a late
+    // shutdown from replacing the current session's wrapper on shared UI.
+    restoreSetWidgetPatch(session);
+
+    // ── Guard non-interactive modes ───────────────────────────────────────
+    if (sharedWithCurrentSession || session.mode !== "tui" || !session.hasUI) {
       return;
     }
 
     // ── Full UI teardown ───────────────────────────────────────────────────
-    rainManager?.teardown(ctx.ui);
-    ctx.ui.setWidget("tokyo-status", undefined);
-    ctx.ui.setEditorComponent(undefined);
-    ctx.ui.setFooter(undefined);
+    // Preserve the existing independent teardown calls, including the
+    // setWidget/editor/footer ownership semantics.
+    try {
+      session.ui.setWidget("tokyo-rain-selector", undefined);
+    } catch (err) {
+      if (!isStaleExtensionContextError(err)) {
+        console.error(`${EXT_PREFIX} selector rain teardown failed:`, err);
+      }
+    }
+    try {
+      session.ui.setWidget("tokyo-status", undefined);
+    } catch (err) {
+      if (!isStaleExtensionContextError(err)) {
+        console.error(`${EXT_PREFIX} status widget teardown failed:`, err);
+      }
+    }
+    try {
+      session.ui.setEditorComponent(undefined);
+    } catch (err) {
+      if (!isStaleExtensionContextError(err)) {
+        console.error(`${EXT_PREFIX} editor teardown failed:`, err);
+      }
+    }
+    try {
+      session.ui.setFooter(undefined);
+    } catch (err) {
+      if (!isStaleExtensionContextError(err)) {
+        console.error(`${EXT_PREFIX} footer teardown failed:`, err);
+      }
+    }
   });
 }
