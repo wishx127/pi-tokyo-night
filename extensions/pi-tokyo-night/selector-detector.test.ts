@@ -141,6 +141,19 @@ describe("SelectorDetector", () => {
     expect(callbacks.requestStatusRender).not.toHaveBeenCalled();
   });
 
+  it("reset cancels a pending coordinated rerender", () => {
+    const editorTarget = { __editor: true };
+    const callbacks = makeCallbacks(editorTarget);
+    const detector = new SelectorDetector(callbacks);
+
+    detector.check(makeTUI({ __selector: true }), null);
+    detector.reset();
+    vi.runAllTimers();
+
+    expect(callbacks.requestEditorRender).not.toHaveBeenCalled();
+    expect(callbacks.requestStatusRender).not.toHaveBeenCalled();
+  });
+
   // -------------------------------------------------------------------------
   // Scenario 4: setStatusRenderRef override is used when set.
   // -------------------------------------------------------------------------

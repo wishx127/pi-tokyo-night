@@ -5,7 +5,11 @@ export const EXT_PREFIX = "[pi-tokyo-night]";
  *  Pi marks contexts as stale after session switch/reload; calling methods on
  *  a stale context throws. We detect this and degrade gracefully. */
 export function isStaleExtensionContextError(err: unknown): boolean {
-  return err instanceof Error && err.message.includes("This extension instance is stale");
+  if (!(err instanceof Error)) return false;
+  return (
+    err.message.includes("This extension instance is stale") ||
+    err.message.includes("This extension ctx is stale")
+  );
 }
 
 /** Unified error handler for extension operations. Stale context errors are

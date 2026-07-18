@@ -12,6 +12,12 @@ export interface CodexUsageSnapshot {
   readonly capturedAt: number;
 }
 
+export interface CodexUsageStore {
+  captureFromHeaders(headers: Record<string, string>): boolean;
+  getSnapshot(): CodexUsageSnapshot | undefined;
+  clearSnapshot(): void;
+}
+
 export function isCodexModel(model: Model<any> | undefined): boolean {
   if (!model) return false;
   return model.api === "openai-codex-responses" || model.provider === "openai-codex";
@@ -70,11 +76,13 @@ function formatRemainingPercent(usedPercent: number): string {
 }
 
 export function formatStatus(snap: CodexUsageSnapshot): string {
+  const elapsedSeconds = Math.max(0, (Date.now() - snap.capturedAt) / 1000);
   const parts: string[] = [];
   if (snap.primary) {
     const p = snap.primary;
+    const remaining = Math.max(0, p.resetsInSeconds - elapsedSeconds);
     const primary = `${windowLabel(p.windowMinutes)} ${formatRemainingPercent(p.usedPercent)}`;
-    parts.push(`${primary} (${formatCountdown(p.resetsInSeconds)})`);
+    parts.push(`${primary} (${formatCountdown(remaining)})`);
   }
   if (snap.secondary) {
     const s = snap.secondary;
@@ -83,19 +91,36 @@ export function formatStatus(snap: CodexUsageSnapshot): string {
   return parts.join(" · ");
 }
 
-let snapshot: CodexUsageSnapshot | undefined;
+export function createCodexUsageStore(): CodexUsageStore {
+  let snapshot: CodexUsageSnapshot | undefined;
+
+  return {
+    captureFromHeaders(headers: Record<string, string>): boolean {
+      const parsed = parseHeaders(headers);
+      if (!parsed) return false;
+      snapshot = parsed;
+      return true;
+    },
+    getSnapshot(): CodexUsageSnapshot | undefined {
+      return snapshot;
+    },
+    clearSnapshot(): void {
+      snapshot = undefined;
+    },
+  };
+}
+
+// Compatibility facade for callers that used the original module-level API.
+const defaultStore = createCodexUsageStore();
 
 export function captureFromHeaders(headers: Record<string, string>): boolean {
-  const parsed = parseHeaders(headers);
-  if (!parsed) return false;
-  snapshot = parsed;
-  return true;
+  return defaultStore.captureFromHeaders(headers);
 }
 
 export function getSnapshot(): CodexUsageSnapshot | undefined {
-  return snapshot;
+  return defaultStore.getSnapshot();
 }
 
 export function clearSnapshot(): void {
-  snapshot = undefined;
+  defaultStore.clearSnapshot();
 }

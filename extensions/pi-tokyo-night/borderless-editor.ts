@@ -3,37 +3,22 @@ import {
   type ExtensionUIContext,
   type KeybindingsManager,
 } from "@earendil-works/pi-coding-agent";
-import {
-  truncateToWidth,
-  visibleWidth,
-} from "@earendil-works/pi-tui";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
-import {
-  type TokyoConfigManager,
-} from "./config";
-import {
-  handleExtensionError,
-} from "./errors";
+import { type TokyoConfigManager } from "./config";
+import { handleExtensionError } from "./errors";
 import {
   type RainAnimationManager,
   type RainFrameSnapshot,
 } from "./rain-manager";
 import {
+  asTUIInternals,
   getDoRender,
   setDoRender,
   type SelectorDetector,
 } from "./selector-detector";
-import {
-  type SettingsUIController,
-} from "./settings-controller";
-import {
-  BOX,
-  CYAN,
-  FRAME_RGB,
-  PURPLE,
-  RESET,
-  fgRgb,
-} from "./ui-primitives";
+import { type SettingsUIController } from "./settings-controller";
+import { BOX, CYAN, FRAME_RGB, PURPLE, RESET, fgRgb } from "./ui-primitives";
 
 // ── Rain visual constants ─────────────────────────────────────────────────────
 
@@ -65,55 +50,78 @@ export function renderRainLines(opts: {
   snapshot: RainFrameSnapshot;
 }): string[] {
   const { width, hideSideBorders, rainRows, snapshot } = opts;
+  const outputWidth = Math.max(0, Math.floor(width));
+  const bodyRows = Math.max(0, Math.floor(rainRows));
+  const frameHasSideBorders = !hideSideBorders && outputWidth >= 2;
+  const innerWidth = hideSideBorders
+    ? outputWidth
+    : frameHasSideBorders
+      ? outputWidth - 2
+      : outputWidth;
   const frameFg = (s: string) => `${fgRgb(FRAME_RGB)}${s}${RESET}`;
-
-  const innerWidth = Math.max(1, hideSideBorders ? width : width - 2);
   const lines: string[] = [];
 
-  // Top border.
+  // Top border. A one-column frame cannot contain both corners, so emit one
+  // visible cell rather than allowing a negative repeat count or exceeding
+  // the requested width.
   if (hideSideBorders) {
-    lines.push(frameFg(BOX.h.repeat(width)));
+    lines.push(frameFg(BOX.h.repeat(outputWidth)));
+  } else if (outputWidth >= 2) {
+    lines.push(frameFg(`${BOX.tl}${BOX.h.repeat(outputWidth - 2)}${BOX.tr}`));
   } else {
-    lines.push(frameFg(`${BOX.tl}${BOX.h.repeat(width - 2)}${BOX.tr}`));
+    lines.push(frameFg(outputWidth === 1 ? BOX.tl : ""));
   }
 
-  // Build lookup sets for O(1) position queries.
-  const dropSet = new Set<string>();
+  // Build lookup sets for O(1) position queries. Numeric keys avoid creating
+  // a temporary `${col},${row}` string for every cell on every frame.
+  const dropSet = new Set<number>();
   for (const d of snapshot.drops) {
-    if (d.col >= 0 && d.col < innerWidth && d.row >= 0 && d.row < rainRows) {
-      dropSet.add(`${d.col},${d.row}`);
+    if (
+      Number.isInteger(d.col) &&
+      Number.isInteger(d.row) &&
+      d.col >= 0 &&
+      d.col < innerWidth &&
+      d.row >= 0 &&
+      d.row < bodyRows
+    ) {
+      dropSet.add(d.row * innerWidth + d.col);
     }
   }
-  const starSet = new Set<string>();
+  const starSet = new Set<number>();
   for (const s of snapshot.stars) {
-    if (s.col >= 0 && s.col < innerWidth && s.row >= 0 && s.row < rainRows) {
-      starSet.add(`${s.col},${s.row}`);
+    if (
+      Number.isInteger(s.col) &&
+      Number.isInteger(s.row) &&
+      s.col >= 0 &&
+      s.col < innerWidth &&
+      s.row >= 0 &&
+      s.row < bodyRows
+    ) {
+      starSet.add(s.row * innerWidth + s.col);
     }
   }
 
   // Body rows.
-  for (let r = 0; r < rainRows; r++) {
-    let row = hideSideBorders ? "" : frameFg(BOX.v);
+  const moonWidth = visibleWidth(MOON);
+  for (let r = 0; r < bodyRows; r++) {
+    let row = frameHasSideBorders ? frameFg(BOX.v) : "";
     let c = 0;
     while (c < innerWidth) {
-      if (r === MOON_ROW && c === MOON_COL) {
+      const position = r * innerWidth + c;
+      if (r === MOON_ROW && c === MOON_COL && c + moonWidth <= innerWidth) {
         row += MOON_FG + MOON + RESET;
-        const mw = visibleWidth(MOON);
-        if (mw > 1) {
-          c += mw - 1;
-        }
-        c++;
+        c += moonWidth;
         continue;
-      } else if (dropSet.has(`${c},${r}`)) {
+      } else if (dropSet.has(position)) {
         row += CYAN + RAIN_DROP + RESET;
-      } else if (starSet.has(`${c},${r}`)) {
+      } else if (starSet.has(position)) {
         row += PURPLE + STAR + RESET;
       } else {
         row += " ";
       }
       c++;
     }
-    if (!hideSideBorders) {
+    if (frameHasSideBorders) {
       row += frameFg(BOX.v);
     }
     lines.push(row);
@@ -140,11 +148,12 @@ export interface BorderlessEditorDependencies {
  */
 export class BorderlessEditor extends CustomEditor {
   static activeInstance: BorderlessEditor | null = null;
-  // Saved original doRender to restore during shutdown.
-  static originalDoRender: (() => void) | null = null;
 
   private uiContext: ExtensionUIContext;
   private readonly dependencies: BorderlessEditorDependencies;
+  private originalDoRender: (() => void) | null = null;
+  private patchedDoRender: (() => void) | null = null;
+  private disposed = false;
   /** Stored TUI reference for requestRender() without relying on the SDK's
    *  private `tui` field on Editor. CustomEditor inherits from Editor which
    *  declares `protected tui: TUI` — accessible from subclasses but we keep
@@ -159,7 +168,13 @@ export class BorderlessEditor extends CustomEditor {
     dependencies: BorderlessEditorDependencies,
     options?: EditorOptions,
   ) {
+  // Compatibility handoff for the current composition root. New callers
+  // should use dispose(), which restores the patch owned by this instance.
+  static originalDoRender: (() => void) | null = null;
     super(tui, theme, keybindings, options);
+    // A factory replacement can construct a new editor before the old one is
+    // disposed. Restore the old TUI patch first so wrappers never nest.
+    BorderlessEditor.activeInstance?.dispose();
     this.uiContext = uiContext;
     this.dependencies = dependencies;
     this.tuiRef = tui;
@@ -191,8 +206,8 @@ export class BorderlessEditor extends CustomEditor {
     // each render cycle, since Pi calls doRender after updating focus.
     const originalDoRender = getDoRender(tui);
     if (originalDoRender) {
-      BorderlessEditor.originalDoRender = originalDoRender;
-      setDoRender(tui, () => {
+      this.originalDoRender = originalDoRender;
+      const patchedDoRender = () => {
         try {
           originalDoRender();
         } finally {
@@ -204,7 +219,45 @@ export class BorderlessEditor extends CustomEditor {
             dependencies.selectorDetector.overlayTui,
           );
         }
-      });
+      };
+      this.patchedDoRender = patchedDoRender;
+      setDoRender(tui, patchedDoRender);
+    }
+  }
+
+  /**
+   * Restore this instance's TUI patch and release the active-instance handle.
+      BorderlessEditor.originalDoRender = originalDoRender;
+   * Idempotent so both component disposal and session shutdown can call it.
+   * The composition root still owns disposing the actual editor component;
+   * this method only releases BorderlessEditor's private render hook.
+   */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+
+    try {
+      const internals = asTUIInternals(this.tuiRef);
+      // Do not overwrite a newer owner if another component replaced doRender
+      // after this editor was constructed.
+      if (
+        this.originalDoRender &&
+        this.patchedDoRender &&
+        internals?.doRender === this.patchedDoRender
+      ) {
+        setDoRender(this.tuiRef, this.originalDoRender);
+      }
+    } catch (err) {
+      handleExtensionError(err, "BorderlessEditor dispose");
+    } finally {
+      if (this.dependencies.selectorDetector.editorTui === this.tuiRef) {
+        this.dependencies.selectorDetector.editorTui = null;
+      }
+      if (BorderlessEditor.activeInstance === this) {
+        BorderlessEditor.activeInstance = null;
+      }
+      this.originalDoRender = null;
+      this.patchedDoRender = null;
     }
   }
 
@@ -222,6 +275,9 @@ export class BorderlessEditor extends CustomEditor {
     if (this.dependencies.selectorDetector.isSideBordersHidden()) {
       super.handleInput(data);
       return;
+      }
+      if (BorderlessEditor.originalDoRender === this.originalDoRender) {
+        BorderlessEditor.originalDoRender = null;
     }
     if (this.dependencies.settingsController.isActive) {
       this.dependencies.settingsController.handleInput(data);
@@ -232,15 +288,14 @@ export class BorderlessEditor extends CustomEditor {
 
   render(width: number): string[] {
     try {
-      if (width < 10) return super.render(width);
-
-      // When a selector has replaced our editor (e.g. /settings, /model),
-      // our custom │ frame borders would appear broken where the selector
-      // takes over the editor area. Falling back to super.render() gives
-      // the selector a clean base and hides │ borders entirely.
+      // The composition root owns a selector-only above-editor widget because
+      // Pi may replace editorContainer entirely. Keep this component's
+      // selector path borderless so overlays do not duplicate that widget.
       if (this.dependencies.selectorDetector.isSideBordersHidden()) {
         return super.render(width);
       }
+
+      if (width < 10) return super.render(width);
 
       // borderColor is locked to the empty-border function via Object.defineProperty
       // in the constructor — no need to re-assert on every render.
@@ -251,6 +306,33 @@ export class BorderlessEditor extends CustomEditor {
     } catch (err) {
       handleExtensionError(err, "BorderlessEditor render");
       return super.render(width);
+    }
+  }
+
+  /**
+   * Render only the rain chrome needed while a selector owns the editor area.
+   * This is intentionally public: when Pi replaces BorderlessEditor rather
+   * than calling render(), the composition root can call this seam and prepend
+   * these full-width lines to the selector output. It does not render or own
+   * the selector component.
+   */
+  renderSelectorOverlay(width: number): string[] {
+    if (!this.dependencies.rainManager.isRunning) return [];
+
+    const outputWidth = Math.max(0, Math.floor(width));
+    try {
+      const cfg = this.dependencies.config.get();
+      const lines = renderRainLines({
+        width: outputWidth,
+        hideSideBorders: true,
+        rainRows: cfg.rainRows,
+        snapshot: this.dependencies.rainManager.getSnapshot(),
+      });
+      this.dependencies.rainManager.setRenderWidth(outputWidth);
+      return lines;
+    } catch (err) {
+      handleExtensionError(err, "selector rain render");
+      return [`${fgRgb(FRAME_RGB)}${BOX.h.repeat(outputWidth)}${RESET}`];
     }
   }
 
@@ -319,13 +401,26 @@ export class BorderlessEditor extends CustomEditor {
     // the topmost element and must render its own top border.
     this.prependTopBorderOrRain(result, width, innerWidth);
 
-    // Render content lines: skip the editor's own top border (lines[0]) and
-    // drop its bottom border so the status bar sits flush below.
-    const contentCount = lines.length - 1;
+    // Editor.render() emits its own top and bottom border slots first and
+    // appends autocomplete rows after the bottom border. With borderColor
+    // locked to the empty function, those slots are empty strings, but their
+    // positions remain part of the public output contract. Remove both slots
+    // by position so autocomplete rows are retained verbatim as content.
+    if (lines.length < 2) return lines;
+    const bottomBorderIndex = lines.findIndex(
+      (line, index) => index > 0 && line.length === 0,
+    );
+    const contentLines =
+      bottomBorderIndex === -1
+        ? lines.slice(1)
+        : [
+            ...lines.slice(1, bottomBorderIndex),
+            ...lines.slice(bottomBorderIndex + 1),
+          ];
     let isFirstContentLine = true;
-    for (let i = 0; i < contentCount; i++) {
+    for (const line of contentLines) {
       const prefix = isFirstContentLine ? promptPrefix : contPrefix;
-      const content = truncateToWidth(`${prefix}${lines[i + 1]}`, innerWidth);
+      const content = truncateToWidth(`${prefix}${line}`, innerWidth);
       const padLen = Math.max(0, innerWidth - visibleWidth(content));
       result.push(
         frameFg(BOX.v) + content + " ".repeat(padLen) + frameFg(BOX.v),
@@ -344,7 +439,8 @@ export class BorderlessEditor extends CustomEditor {
     // When rain is not running, settings is topmost and draws its own border.
     this.prependTopBorderOrRain(result, width, innerWidth);
 
-    const settingsLines = this.dependencies.settingsController.buildLines(innerWidth);
+    const settingsLines =
+      this.dependencies.settingsController.buildLines(innerWidth);
     for (const line of settingsLines) {
       const padded =
         line + " ".repeat(Math.max(0, innerWidth - visibleWidth(line)));

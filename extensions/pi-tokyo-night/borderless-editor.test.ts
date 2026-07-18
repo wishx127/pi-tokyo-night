@@ -50,12 +50,13 @@ function stripAnsi(s: string): string {
 // ── Fake super.render() lines: a minimal bordered editor body (2 lines min) ──
 
 function makeFakeEditorLines(width: number): string[] {
-  // Simulate what super.render(contentWidth) returns: two lines (one empty
-  // top border placeholder + one content line). BorderlessEditor skips lines[0]
-  // (editor top border) and uses the rest.
+  // Simulate the current Editor.render(contentWidth) contract: top border,
+  // editor content, bottom border. BorderlessEditor must remove both border
+  // slots while retaining any autocomplete rows after them.
   return [
-    "", // lines[0]: editor top border line (always skipped by BorderlessEditor)
+    "", // lines[0]: editor top border (borderColor is locked to empty)
     " ".repeat(Math.max(1, width)), // lines[1]: one content line
+    "", // lines[2]: editor bottom border
   ];
 }
 
@@ -184,6 +185,17 @@ describe("renderRainLines", () => {
     // row=3 is >= rainRows=3, so none of the body lines should contain it
     const allBody = lines.slice(1).join("");
     expect(allBody).not.toContain(CYAN + RAIN_DROP + RESET);
+  });
+
+  it("ignores fractional coordinates instead of colliding numeric keys", () => {
+    const lines = renderRainLines({
+      width: 10,
+      hideSideBorders: true,
+      rainRows: 3,
+      snapshot: makeSnapshot([{ col: 2, row: 0.5 }], []),
+    });
+
+    expect(lines.slice(1).join("")).not.toContain(CYAN + RAIN_DROP + RESET);
   });
 
   // ── 4. All lines within width ────────────────────────────────────────────────
@@ -391,9 +403,11 @@ describe("BorderlessEditor composition", () => {
     BorderlessEditor.activeInstance = null;
   });
 
-  function makeEditor(rainManagerStub: ReturnType<typeof makeRainManagerStub>) {
-    const tui = makeTuiStub();
-    const selectorDetector = makeSelectorDetector();
+  function makeEditor(
+    rainManagerStub: ReturnType<typeof makeRainManagerStub>,
+    selectorDetector = makeSelectorDetector(),
+    tui = makeTuiStub(),
+  ) {
     const settingsController = makeSettingsController();
     const config = makeConfigStub();
 
@@ -438,7 +452,7 @@ describe("BorderlessEditor composition", () => {
       deps,
     );
 
-    return { editor, settingsController, config };
+    return { editor, settingsController, config, selectorDetector };
   }
 
   // ── 7a. width < 10 falls back to super.render ──────────────────────────────
@@ -450,6 +464,33 @@ describe("BorderlessEditor composition", () => {
     const result = editor.render(5);
     expect(renderSpy).toHaveBeenCalledWith(5);
     expect(result).toEqual(makeFakeEditorLines(5));
+  });
+
+  it("removes both editor border slots while retaining autocomplete rows", () => {
+    renderSpy.mockImplementationOnce(() => [
+      "", // Editor top border
+      "editor body",
+      "", // Editor bottom border
+      "autocomplete result",
+    ]);
+
+    const editor = makeEditor(makeRainManagerStub(false));
+    const result = editor.render(40).map(stripAnsi);
+
+    expect(result).toHaveLength(3); // card top border + body + autocomplete
+    expect(result.join("\n")).toContain("editor body");
+    expect(result.join("\n")).toContain("autocomplete result");
+    expect(result.join("\n")).not.toMatch(/\n\s*\n/);
+  });
+
+  it("safely returns Editor output when it has fewer than two border slots", () => {
+    renderSpy
+      .mockImplementationOnce(() => [])
+      .mockImplementationOnce(() => ["only line"]);
+    const editor = makeEditor(makeRainManagerStub(false));
+
+    expect(editor.render(40)).toEqual([]);
+    expect(editor.render(40)).toEqual(["only line"]);
   });
 
   // ── 7b. rain inactive → editor draws its own top border ────────────────────
@@ -544,7 +585,52 @@ describe("BorderlessEditor composition", () => {
     expect(rainMgr.setRenderWidth).not.toHaveBeenCalled();
   });
 
-  // ── 7e. rain render error → graceful degradation ───────────────────────────
+  // ── 7e. selector + running rain composition ────────────────────────────────
+
+  it("selector active editor render stays borderless while the selector seam supplies rain", () => {
+    const rainMgr = makeRainManagerStub(true);
+    rainMgr.getSnapshot.mockReturnValue(makeSnapshot([{ col: 3, row: 1 }], []));
+
+    const { editor, selectorDetector } = makeEditorWithParts(rainMgr);
+    selectorDetector.isSideBordersHidden.mockReturnValue(true);
+
+    const editorLines = editor.render(40);
+    expect(editorLines.join("")).not.toContain(MOON);
+
+    const rainLines = editor.renderSelectorOverlay(40);
+    expect(rainLines.join("")).toContain(MOON);
+    expect(rainLines.join("")).toContain(CYAN + RAIN_DROP + RESET);
+  });
+
+  it("dispose is idempotent and clears the active editor instance", () => {
+    const editor = makeEditor(makeRainManagerStub(false));
+    expect(BorderlessEditor.activeInstance).toBe(editor);
+
+    expect(() => {
+      editor.dispose();
+      editor.dispose();
+    }).not.toThrow();
+    expect(BorderlessEditor.activeInstance).toBeNull();
+  });
+
+  it("dispose restores the TUI doRender patch", () => {
+    const tui = makeTuiStub();
+    const originalDoRender = vi.fn();
+    tui.doRender = originalDoRender;
+    const editor = makeEditor(
+      makeRainManagerStub(false),
+      makeSelectorDetector(),
+      tui,
+    );
+
+    expect(tui.doRender).not.toBe(originalDoRender);
+    editor.dispose();
+    tui.doRender?.();
+
+    expect(originalDoRender).toHaveBeenCalledOnce();
+  });
+
+  // ── 7f. rain render error → graceful degradation ───────────────────────────
 
   it("if rain rendering throws (getSnapshot throws), render() does not rethrow", () => {
     const rainMgr = makeRainManagerStub(true);
@@ -561,7 +647,7 @@ describe("BorderlessEditor composition", () => {
     expect((result as string[]).length).toBeGreaterThan(0);
   });
 
-  // ── 7f. all lines within width ─────────────────────────────────────────────
+  // ── 7g. all lines within width ─────────────────────────────────────────────
 
   it("all output lines have visibleWidth <= input width when rain is active", () => {
     const rainMgr = makeRainManagerStub(true);

@@ -20,6 +20,7 @@ export interface RainManagerDependencies {
 
 const WIND_DRIFT = 1;
 const WIND_PERIOD = 2;
+const MAX_RENDER_FAILURES = 3;
 
 const INITIAL_STARS: ReadonlyArray<{ readonly col: number; readonly row: number }> = [
   { col: 5, row: 1 },
@@ -50,6 +51,7 @@ export class RainAnimationManager {
   private drops: Array<{ col: number; row: number }> = [];
   private lastWidth = 80;
   private stars: Array<{ col: number; row: number }> = [];
+  private consecutiveRenderFailures = 0;
 
   constructor(
     config: TokyoConfigManager,
@@ -78,6 +80,7 @@ export class RainAnimationManager {
     this.drops = [];
     this.lastWidth = 80;
     this.stars = INITIAL_STARS.map((s) => ({ ...s }));
+    this.consecutiveRenderFailures = 0;
 
     // Start the interval using the current config value.
     this.interval = setInterval(() => this.tick(), this.config.get().rainTickMs);
@@ -93,6 +96,7 @@ export class RainAnimationManager {
       this.interval = undefined;
     }
     this.drops = [];
+    this.consecutiveRenderFailures = 0;
   }
 
   /** True iff a timer is currently active. */
@@ -163,9 +167,20 @@ export class RainAnimationManager {
     // and silently discarded; all other errors are logged with the extension prefix.
     try {
       this.dependencies.requestRender();
+      this.consecutiveRenderFailures = 0;
     } catch (err) {
-      if (isStaleExtensionContextError(err)) return;
+      if (isStaleExtensionContextError(err)) {
+        // A stale context means this manager no longer belongs to a live
+        // session. Stop the interval here as a safety net even if the host
+        // does not deliver session_shutdown.
+        this.stop();
+        return;
+      }
+      this.consecutiveRenderFailures += 1;
       console.error(`${EXT_PREFIX} rain animation render request failed:`, err);
+      if (this.consecutiveRenderFailures >= MAX_RENDER_FAILURES) {
+        this.stop();
+      }
     }
   }
 }

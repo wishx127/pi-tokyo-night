@@ -138,33 +138,71 @@ describe("RainAnimationManager", () => {
 
   // ── 6. setRenderWidth affects spawn range and clipping ────────────────────
 
-  it("setRenderWidth(newWidth) clips drops that exceed newWidth after a tick", () => {
-    // Fix random so every newly spawned drop lands near col=0 (negative formula).
-    vi.spyOn(Math, "random").mockReturnValue(0.0);
-    // With random=0: col = floor(0 * lastWidth * 0.9) - 2 = -2, row: 0
-    // baseSpawn: random<0.5 → 3
+  it("setRenderWidth(newWidth) removes a real drop beyond newWidth+4 on the next tick", () => {
+    // Start at the manager's initial width (80), then place real drops near
+    // the far edge before shrinking the render width.
+    vi.spyOn(Math, "random").mockReturnValue(0.99);
 
     const config = makeConfig({
       rainTickMs: 100,
       rainRows: 10,
-      maxRainDrops: 25,
+      maxRainDrops: 2,
     });
     const requestRender = vi.fn();
     const mgr = new RainAnimationManager(config, { requestRender });
 
     mgr.start();
+    vi.advanceTimersByTime(100);
 
-    // Set a very small width. The clip condition is col < lastWidth + 4.
+    const beforeResize = mgr.getSnapshot();
+    const farDrop = beforeResize.drops[0];
+    expect(farDrop).toBeDefined();
+    expect(farDrop.col).toBeGreaterThan(5 + 4);
+
     mgr.setRenderWidth(5);
+    vi.advanceTimersByTime(100);
 
-    // Advance several ticks so any drops beyond width+4 are filtered.
-    vi.advanceTimersByTime(1000); // 10 ticks
-
-    const snapshot = mgr.getSnapshot();
-    // All surviving drops must satisfy col < 5 + 4 = 9
-    for (const drop of snapshot.drops) {
-      expect(drop.col).toBeLessThan(9);
+    const afterResize = mgr.getSnapshot();
+    // The original row-0 drop would be at (farDrop.col, 1) if it survived;
+    // its col is beyond the real clipping boundary and must be gone.
+    expect(afterResize.drops).not.toContainEqual({
+      col: farDrop.col,
+      row: farDrop.row + 1,
+    });
+    for (const drop of afterResize.drops) {
+      expect(drop.col).toBeLessThan(5 + 4);
     }
+
+    mgr.stop();
+  });
+
+  it("advances each drop's row and shifts its column on every even destination row", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.9);
+
+    const config = makeConfig({
+      rainTickMs: 100,
+      rainRows: 10,
+      maxRainDrops: 1,
+    });
+    const requestRender = vi.fn();
+    const mgr = new RainAnimationManager(config, { requestRender });
+
+    mgr.start();
+    vi.advanceTimersByTime(100);
+    const first = mgr.getSnapshot().drops[0];
+    expect(first).toBeDefined();
+
+    vi.advanceTimersByTime(100);
+    expect(mgr.getSnapshot().drops).toContainEqual({
+      col: first.col,
+      row: first.row + 1,
+    });
+
+    vi.advanceTimersByTime(100);
+    expect(mgr.getSnapshot().drops).toContainEqual({
+      col: first.col + 1,
+      row: first.row + 2,
+    });
 
     mgr.stop();
   });
@@ -216,16 +254,15 @@ describe("RainAnimationManager", () => {
 
     mgr.start();
 
-    // Must not throw, and must not call console.error.
+    // Must not throw, must stop the stale timer, and must not call console.error.
     expect(() => vi.advanceTimersByTime(100)).not.toThrow();
+    expect(mgr.isRunning).toBe(false);
     expect(consoleErrorSpy).not.toHaveBeenCalled();
-
-    mgr.stop();
   });
 
   // ── 7b. Non-stale error is logged via console.error ───────────────────────
 
-  it("non-stale error from requestRender is logged via console.error", () => {
+  it("non-stale render failures stop retries after a bounded number of attempts", () => {
     const config = makeConfig({ rainTickMs: 100 });
     const consoleErrorSpy = vi.spyOn(console, "error");
 
@@ -237,11 +274,53 @@ describe("RainAnimationManager", () => {
 
     mgr.start();
 
-    expect(() => vi.advanceTimersByTime(100)).not.toThrow();
-    expect(consoleErrorSpy).toHaveBeenCalledOnce();
+    expect(() => vi.advanceTimersByTime(1000)).not.toThrow();
+    expect(requestRender).toHaveBeenCalledTimes(3);
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(3);
+    expect(mgr.isRunning).toBe(false);
     // First arg must include the EXT_PREFIX.
     expect(consoleErrorSpy.mock.calls[0][0]).toContain("[pi-tokyo-night]");
+  });
 
+  it("resets the failure streak after a successful render request", () => {
+    const config = makeConfig({ rainTickMs: 100 });
+    const consoleErrorSpy = vi.spyOn(console, "error");
+    const requestRender = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error("temporary failure 1");
+      })
+      .mockImplementationOnce(() => {
+        throw new Error("temporary failure 2");
+      });
+    const mgr = new RainAnimationManager(config, { requestRender });
+
+    mgr.start();
+    vi.advanceTimersByTime(400);
+
+    expect(requestRender).toHaveBeenCalledTimes(4);
+    expect(consoleErrorSpy).toHaveBeenCalledTimes(2);
+    expect(mgr.isRunning).toBe(true);
+    mgr.stop();
+  });
+
+  it("can render again after restarting following repeated failures", () => {
+    const config = makeConfig({ rainTickMs: 100 });
+    const requestRender = vi.fn().mockImplementation(() => {
+      throw new Error("persistent failure");
+    });
+    const mgr = new RainAnimationManager(config, { requestRender });
+
+    mgr.start();
+    vi.advanceTimersByTime(300);
+    expect(mgr.isRunning).toBe(false);
+
+    requestRender.mockImplementation(() => undefined);
+    mgr.start();
+    vi.advanceTimersByTime(100);
+
+    expect(requestRender).toHaveBeenCalledTimes(4);
+    expect(mgr.isRunning).toBe(true);
     mgr.stop();
   });
 
@@ -289,6 +368,24 @@ describe("RainAnimationManager", () => {
     mgr.start();
     expect(mgr.isRunning).toBe(true);
     mgr.stop();
+    expect(mgr.isRunning).toBe(false);
+  });
+
+  // Extension-level session_shutdown is intentionally not mocked here: the
+  // composition root owns module-scoped state and the SDK session callback
+  // shape would make such a test implementation-coupled. The manager's public
+  // stop() contract is covered above and below instead.
+
+  it("stop() before the first tick prevents any later requestRender", () => {
+    const config = makeConfig({ rainTickMs: 100 });
+    const requestRender = vi.fn();
+    const mgr = new RainAnimationManager(config, { requestRender });
+
+    mgr.start();
+    mgr.stop();
+    vi.advanceTimersByTime(500);
+
+    expect(requestRender).not.toHaveBeenCalled();
     expect(mgr.isRunning).toBe(false);
   });
 
