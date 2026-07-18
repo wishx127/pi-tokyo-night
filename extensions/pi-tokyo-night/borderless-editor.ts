@@ -168,9 +168,6 @@ export class BorderlessEditor extends CustomEditor {
     dependencies: BorderlessEditorDependencies,
     options?: EditorOptions,
   ) {
-  // Compatibility handoff for the current composition root. New callers
-  // should use dispose(), which restores the patch owned by this instance.
-  static originalDoRender: (() => void) | null = null;
     super(tui, theme, keybindings, options);
     // A factory replacement can construct a new editor before the old one is
     // disposed. Restore the old TUI patch first so wrappers never nest.
@@ -227,7 +224,6 @@ export class BorderlessEditor extends CustomEditor {
 
   /**
    * Restore this instance's TUI patch and release the active-instance handle.
-      BorderlessEditor.originalDoRender = originalDoRender;
    * Idempotent so both component disposal and session shutdown can call it.
    * The composition root still owns disposing the actual editor component;
    * this method only releases BorderlessEditor's private render hook.
@@ -275,9 +271,6 @@ export class BorderlessEditor extends CustomEditor {
     if (this.dependencies.selectorDetector.isSideBordersHidden()) {
       super.handleInput(data);
       return;
-      }
-      if (BorderlessEditor.originalDoRender === this.originalDoRender) {
-        BorderlessEditor.originalDoRender = null;
     }
     if (this.dependencies.settingsController.isActive) {
       this.dependencies.settingsController.handleInput(data);
