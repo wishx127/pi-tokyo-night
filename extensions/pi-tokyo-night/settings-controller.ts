@@ -9,6 +9,7 @@ import { CYAN, FRAME_RGB, RESET, fgRgb } from "./ui-primitives";
 export interface SettingsControllerCallbacks {
   applyPanelState: () => void;
   onCodexQuotaConfigChange: () => void;
+  onKimiQuotaConfigChange: () => void;
   requestEditorRender: () => void;
 }
 
@@ -78,6 +79,8 @@ export class SettingsUIController {
           this.config.set(setting.id, !this.config.get()[setting.id]);
           if (setting.id === "codexQuota") {
             this.callbacks.onCodexQuotaConfigChange();
+          } else if (setting.id === "kimiQuota") {
+            this.callbacks.onKimiQuotaConfigChange();
           }
         } else {
           this.editValue = this.config.get()[setting.id] as number;

@@ -12,6 +12,8 @@ import {
   formatStatus,
   getCodexSnapshot,
   isCodexModel,
+  getKimiSnapshot,
+  isKimiModel,
 } from "./usage";
 import type { TokyoConfigManager } from "./config";
 import { handleExtensionError } from "./errors";
@@ -162,9 +164,15 @@ export function buildStatusLine(
     config.get().codexQuota && isCodexModel(ctx.model) ? getCodexSnapshot() : undefined,
   );
 
+  // Kimi Code quota (5h rolling window + weekly), polled from the usages API
+  const kimiModule = buildLimitModule(
+    config.get().kimiQuota && isKimiModel(ctx.model) ? getKimiSnapshot() : undefined,
+  );
+
   // Build right modules (provider usage, tokens, cost, progress)
   const rightModules = [
     ...codexModule,
+    ...kimiModule,
     {
       text: `Σ ${fmt(totalTokens)} tokens`,
       bgColor: TOKENS_BG as number[],

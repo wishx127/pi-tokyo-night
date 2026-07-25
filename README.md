@@ -34,7 +34,9 @@ Activates automatically on install. Use `/tokyo-night` to control the extension:
 /tokyo-night          # toggle settings panel
 ```
 
-Codex usage is shown in the status bar only when `codexQuota` is enabled and the session is using a Codex-compatible model over `transport=sse`. 
+Codex usage is shown in the status bar only when `codexQuota` is enabled and the session is using a Codex-compatible model over `transport=sse`.
+
+Kimi Code usage (5-hour rolling window + weekly quota) is shown in the status bar only when `kimiQuota` is enabled and the session is using a `kimi-coding` model.
 
 ### Status bar modules
 
@@ -45,6 +47,7 @@ Codex usage is shown in the status bar only when `codexQuota` is enabled and the
 | Left | Path | Shortened working directory |
 | Left | Branch | Current Git branch (hidden when not in a repo) |
 | Right | Codex Limit | Codex quota / reset status (SSE + Codex-compatible models only) |
+| Right | Kimi Limit | Kimi Code 5h window + weekly quota with reset countdown (kimi-coding models only) |
 | Right | Tokens | Cumulative input + output token count |
 | Right | Cost | Session cost |
 | Right | Progress | Context window usage bar with percentage |
@@ -57,6 +60,7 @@ Open with `/tokyo-night`, then navigate with ↑/↓ and press Enter to toggle o
 |---------|---------|-------------|
 | Top Panel | On | Show rain/moon/stars above editor |
 | Codex Limit | Off | Show Codex quota in the status bar (requires Pi transport=sse) |
+| Kimi Limit | On | Show Kimi Code 5h/weekly quota in the status bar (polls usages API) |
 | Rain Rows | 3 | Height of rain panel (1–10) |
 | Rain Tick (ms) | 130 | Animation speed (50–1000) |
 | Max Rain Drops | 25 | Simultaneous drops (5–100) |
@@ -68,6 +72,7 @@ Settings are persisted to `~/.pi/agent/settings.json` under the `pi-tokyo-night`
   "pi-tokyo-night": {
     "panel": true,
     "codexQuota": false,
+    "kimiQuota": true,
     "rainRows": 3,
     "rainTickMs": 130,
     "maxRainDrops": 25

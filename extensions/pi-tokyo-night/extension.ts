@@ -19,6 +19,11 @@ import {
   captureCodexHeaders,
   clearCodexSnapshot,
   isCodexModel,
+  clearKimiSnapshot,
+  fetchKimiUsage,
+  isKimiModel,
+  resolveKimiApiKey,
+  setKimiSnapshot,
 } from "./usage";
 import { TokyoConfigManager } from "./config";
 import {
@@ -53,6 +58,7 @@ import {
 const configManager = new TokyoConfigManager();
 let requestStatusRenderCallback: () => void = () => {};
 let refreshCodexQuotaState: () => void = () => {};
+let refreshKimiQuotaState: () => void = () => {};
 let applyCurrentPanelState: () => void = () => {};
 let rainManager: RainAnimationManager | null = null;
 
@@ -71,6 +77,7 @@ const settingsController = new SettingsUIController(configManager, {
   requestEditorRender: () => BorderlessEditor.activeInstance?.requestRender(),
   applyPanelState: () => applyCurrentPanelState(),
   onCodexQuotaConfigChange: () => refreshCodexQuotaState(),
+  onKimiQuotaConfigChange: () => refreshKimiQuotaState(),
 });
 
 const borderlessEditorDependencies: BorderlessEditorDependencies = {
@@ -105,6 +112,45 @@ export default function (pi: ExtensionAPI) {
   let statusRenderDebounceTimeout: ReturnType<typeof setTimeout> | undefined;
   let requestStatusRenderRef: (() => void) | null = null;
   let activeModel: Model<any> | undefined;
+
+  // ── Kimi quota polling state ─────────────────────────────────────────────
+  // Kimi exposes no quota response headers, so we actively poll the
+  // /usages endpoint while a kimi-coding model is active and the toggle is on.
+  const KIMI_POLL_INTERVAL_MS = 60_000;
+  let kimiPollTimer: ReturnType<typeof setInterval> | undefined;
+  let kimiPollInFlight = false;
+  let modelRegistryRef: { getApiKeyForProvider(provider: string): Promise<string | undefined> } | null = null;
+
+  const stopKimiPolling = () => {
+    if (kimiPollTimer) {
+      clearInterval(kimiPollTimer);
+      kimiPollTimer = undefined;
+    }
+  };
+
+  const pollKimiUsage = async () => {
+    if (kimiPollInFlight) return;
+    kimiPollInFlight = true;
+    try {
+      const apiKey = await resolveKimiApiKey((p) =>
+        modelRegistryRef
+          ? modelRegistryRef.getApiKeyForProvider(p)
+          : Promise.resolve(undefined),
+      );
+      if (!apiKey) return; // no credentials — keep whatever snapshot we have
+      const result = await fetchKimiUsage(apiKey);
+      if (result.ok) {
+        setKimiSnapshot(result.snapshot);
+        requestStatusRenderRef?.();
+      }
+      // On failure keep the last successful snapshot visible while transient
+      // errors recover (same behavior as the reference implementations).
+    } catch (err) {
+      handleExtensionError(err, "kimi usage poll");
+    } finally {
+      kimiPollInFlight = false;
+    }
+  };
 
   // Stable factory so we can re-apply after resetExtensionUI() clears
   // setEditorComponent. Captures editorUIContext via closure.
@@ -143,6 +189,23 @@ export default function (pi: ExtensionAPI) {
     requestStatusRenderRef?.();
   };
 
+  refreshKimiQuotaState = () => {
+    const enabled = configManager.get().kimiQuota && isKimiModel(activeModel);
+    if (enabled) {
+      if (!kimiPollTimer) {
+        void pollKimiUsage(); // immediate first fetch, then on interval
+        kimiPollTimer = setInterval(() => void pollKimiUsage(), KIMI_POLL_INTERVAL_MS);
+      }
+    } else {
+      stopKimiPolling();
+      // Symmetric with codex: drop the stale snapshot so re-enabling the
+      // toggle (or switching back to a kimi model) doesn't briefly render
+      // hours-old quota before the next fetch completes.
+      clearKimiSnapshot();
+    }
+    requestStatusRenderRef?.();
+  };
+
   pi.on("after_provider_response", async (event, ctx) => {
     try {
       if (configManager.get().codexQuota && isCodexModel(ctx.model) && captureCodexHeaders(event.headers)) {
@@ -158,6 +221,7 @@ export default function (pi: ExtensionAPI) {
       activeModel = event.model;
       clearCodexSnapshot();
       refreshCodexQuotaState();
+      refreshKimiQuotaState();
     } catch (err) {
       handleExtensionError(err, "model_select Codex SSE force");
     }
@@ -182,8 +246,10 @@ export default function (pi: ExtensionAPI) {
     editorUIContext = ctx.ui;
     configManager.read();
     activeModel = ctx.model;
+    modelRegistryRef = ctx.modelRegistry;
     clearCodexSnapshot();
     refreshCodexQuotaState();
+    refreshKimiQuotaState();
 
     // Per-session branch cache (isolated from other sessions)
     let cachedBranch = "";
@@ -493,12 +559,17 @@ export default function (pi: ExtensionAPI) {
     }
 
     // ── Reset all per-session state ────────────────────────────────────────
+    stopKimiPolling();
+    kimiPollInFlight = false;
+    modelRegistryRef = null;
+    clearKimiSnapshot();
     editorUIContext = null;
     footerDataRef = null;
     requestStatusRenderRef = null;
     activeModel = undefined;
     clearCodexSnapshot();
     refreshCodexQuotaState = () => {};
+    refreshKimiQuotaState = () => {};
     requestStatusRenderCallback = () => {};
     selectorDetector.reset();
     settingsController.reset();

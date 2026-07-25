@@ -12,6 +12,8 @@ export interface TokyoConfig {
   panel: boolean;
   /** Show Codex limit in the status bar (requires Pi transport=sse). */
   codexQuota: boolean;
+  /** Show Kimi Code 5h/weekly quota in the status bar (polls the usages API). */
+  kimiQuota: boolean;
   /** Height of the rain panel in rows. */
   rainRows: number;
   /** Milliseconds between rain animation frames. */
@@ -23,6 +25,7 @@ export interface TokyoConfig {
 export const DEFAULT_CONFIG: TokyoConfig = {
   panel: true,
   codexQuota: false,
+  kimiQuota: true,
   rainRows: 3,
   rainTickMs: 130,
   maxRainDrops: 25,
@@ -53,6 +56,12 @@ export const SETTINGS: SettingDescriptor[] = [
     id: "codexQuota",
     label: "Codex Limit",
     description: "Show Codex limit in status bar (requires Pi transport=sse)",
+    kind: "toggle",
+  },
+  {
+    id: "kimiQuota",
+    label: "Kimi Limit",
+    description: "Show Kimi Code 5h/weekly quota in status bar (polls usages API)",
     kind: "toggle",
   },
   {
@@ -122,6 +131,10 @@ export class TokyoConfigManager {
             typeof saved.codexQuota === "boolean"
               ? saved.codexQuota
               : DEFAULT_CONFIG.codexQuota,
+          kimiQuota:
+            typeof saved.kimiQuota === "boolean"
+              ? saved.kimiQuota
+              : DEFAULT_CONFIG.kimiQuota,
           rainRows:
             typeof saved.rainRows === "number"
               ? saved.rainRows

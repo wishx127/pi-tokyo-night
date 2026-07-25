@@ -6,3 +6,12 @@ export {
   getCodexSnapshot,
   isCodexModel,
 } from "./codex";
+export {
+  clearKimiSnapshot,
+  fetchKimiUsage,
+  getKimiSnapshot,
+  isKimiModel,
+  resolveKimiApiKey,
+  setKimiSnapshot,
+  type KimiUsageResult,
+} from "./kimi";
