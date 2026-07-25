@@ -16,10 +16,10 @@ import {
 } from "@earendil-works/pi-tui";
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import {
-  captureFromHeaders,
-  clearSnapshot,
+  captureCodexHeaders,
+  clearCodexSnapshot,
   isCodexModel,
-} from "./codex-usage";
+} from "./usage";
 import { TokyoConfigManager } from "./config";
 import {
   EXT_PREFIX,
@@ -138,14 +138,14 @@ export default function (pi: ExtensionAPI) {
   refreshCodexQuotaState = () => {
     const enabled = configManager.get().codexQuota && isCodexModel(activeModel);
     if (!enabled) {
-      clearSnapshot();
+      clearCodexSnapshot();
     }
     requestStatusRenderRef?.();
   };
 
   pi.on("after_provider_response", async (event, ctx) => {
     try {
-      if (configManager.get().codexQuota && isCodexModel(ctx.model) && captureFromHeaders(event.headers)) {
+      if (configManager.get().codexQuota && isCodexModel(ctx.model) && captureCodexHeaders(event.headers)) {
         requestStatusRenderRef?.();
       }
     } catch (err) {
@@ -156,7 +156,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("model_select", async (event, _ctx) => {
     try {
       activeModel = event.model;
-      clearSnapshot();
+      clearCodexSnapshot();
       refreshCodexQuotaState();
     } catch (err) {
       handleExtensionError(err, "model_select Codex SSE force");
@@ -182,7 +182,7 @@ export default function (pi: ExtensionAPI) {
     editorUIContext = ctx.ui;
     configManager.read();
     activeModel = ctx.model;
-    clearSnapshot();
+    clearCodexSnapshot();
     refreshCodexQuotaState();
 
     // Per-session branch cache (isolated from other sessions)
@@ -497,7 +497,7 @@ export default function (pi: ExtensionAPI) {
     footerDataRef = null;
     requestStatusRenderRef = null;
     activeModel = undefined;
-    clearSnapshot();
+    clearCodexSnapshot();
     refreshCodexQuotaState = () => {};
     requestStatusRenderCallback = () => {};
     selectorDetector.reset();
