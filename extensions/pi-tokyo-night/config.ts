@@ -12,6 +12,8 @@ export interface TokyoConfig {
   panel: boolean;
   /** Show Codex limit in the status bar (requires Pi transport=sse). */
   codexQuota: boolean;
+  /** Show Kimi Code 5h/weekly quota in the status bar (polls the usages API). */
+  kimiQuota: boolean;
   /** Height of the rain panel in rows. */
   rainRows: number;
   /** Milliseconds between rain animation frames. */
@@ -23,6 +25,7 @@ export interface TokyoConfig {
 export const DEFAULT_CONFIG: Readonly<TokyoConfig> = Object.freeze({
   panel: true,
   codexQuota: false,
+  kimiQuota: true,
   rainRows: 3,
   rainTickMs: 130,
   maxRainDrops: 25,
@@ -53,6 +56,12 @@ export const SETTINGS: SettingDescriptor[] = [
     id: "codexQuota",
     label: "Codex Limit",
     description: "Show Codex limit in status bar (requires Pi transport=sse)",
+    kind: "toggle",
+  },
+  {
+    id: "kimiQuota",
+    label: "Kimi Limit",
+    description: "Show Kimi Code 5h/weekly quota in status bar (polls usages API)",
     kind: "toggle",
   },
   {
@@ -154,9 +163,33 @@ export class TokyoConfigManager {
     try {
       const settingsPath = path.join(getAgentDir(), "settings.json");
       const content = fs.readFileSync(settingsPath, "utf-8");
-      const settings: unknown = JSON.parse(content);
-      if (!isRecord(settings)) {
-        throw new Error("settings.json must contain an object");
+      const settings = JSON.parse(content);
+      const saved = settings["pi-tokyo-night"];
+      if (saved && typeof saved === "object") {
+        this.config = {
+          panel:
+            typeof saved.panel === "boolean" ? saved.panel : DEFAULT_CONFIG.panel,
+          codexQuota:
+            typeof saved.codexQuota === "boolean"
+              ? saved.codexQuota
+              : DEFAULT_CONFIG.codexQuota,
+          kimiQuota:
+            typeof saved.kimiQuota === "boolean"
+              ? saved.kimiQuota
+              : DEFAULT_CONFIG.kimiQuota,
+          rainRows:
+            typeof saved.rainRows === "number"
+              ? saved.rainRows
+              : DEFAULT_CONFIG.rainRows,
+          rainTickMs:
+            typeof saved.rainTickMs === "number"
+              ? saved.rainTickMs
+              : DEFAULT_CONFIG.rainTickMs,
+          maxRainDrops:
+            typeof saved.maxRainDrops === "number"
+              ? saved.maxRainDrops
+              : DEFAULT_CONFIG.maxRainDrops,
+        };
       }
 
       const nextConfig = { ...DEFAULT_CONFIG };

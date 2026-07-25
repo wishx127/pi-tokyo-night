@@ -8,11 +8,13 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import {
+  type UsageSnapshot,
   formatStatus,
-  getSnapshot,
+  getCodexSnapshot,
   isCodexModel,
-  type CodexUsageStore,
-} from "./codex-usage";
+  getKimiSnapshot,
+  isKimiModel,
+} from "./usage";
 import type { TokyoConfigManager } from "./config";
 import { handleExtensionError } from "./errors";
 import {
@@ -41,7 +43,18 @@ const MODULE_FG: number[][] = [
 // Right module colors
 const TOKENS_BG = [109, 91, 170]; // Very light purple #6d5baa
 const COST_BG = [93, 93, 93]; // Gray #5d5d5d
-const CODEX_BG = [101, 83, 162]; // Mid purple — between branch and tokens backgrounds
+const LIMIT_BG = [101, 83, 162]; // Mid purple — between branch and tokens backgrounds
+
+// Shared "LIMIT" module for provider quota (Codex via response headers,
+// Kimi via polled usages API — both render through formatStatus).
+const buildLimitModule = (snap: UsageSnapshot | undefined): Module[] =>
+  snap
+    ? [{
+        text: `LIMIT ${formatStatus(snap)}`,
+        bgColor: LIMIT_BG as number[],
+        textColor: [245, 240, 255] as number[],
+      }]
+    : [];
 
 type Module =
   | { text: string; bg: number; fg: number }
@@ -227,23 +240,19 @@ export function buildStatusLine(
   ];
 
   // Codex subscription usage (only when directly connected to official Codex/GPT)
-  const codexSnapshot =
-    config.get().codexQuota && isCodexModel(ctx.model)
-      ? codexUsageStore
-        ? codexUsageStore.getSnapshot()
-        : getSnapshot()
-      : undefined;
-  const codexModule = codexSnapshot
-    ? [{
-        text: `LIMIT ${formatStatus(codexSnapshot)}`,
-        bgColor: CODEX_BG as number[],
-        textColor: [245, 240, 255] as number[],
-      }]
-    : [];
+  const codexModule = buildLimitModule(
+    config.get().codexQuota && isCodexModel(ctx.model) ? getCodexSnapshot() : undefined,
+  );
 
-  // Build right modules (codex usage, tokens, cost, progress)
+  // Kimi Code quota (5h rolling window + weekly), polled from the usages API
+  const kimiModule = buildLimitModule(
+    config.get().kimiQuota && isKimiModel(ctx.model) ? getKimiSnapshot() : undefined,
+  );
+
+  // Build right modules (provider usage, tokens, cost, progress)
   const rightModules = [
     ...codexModule,
+    ...kimiModule,
     {
       text: `Σ ${fmt(totalTokens)} tokens`,
       bgColor: TOKENS_BG as number[],

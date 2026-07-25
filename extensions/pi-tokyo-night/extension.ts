@@ -17,9 +17,15 @@ import {
 } from "@earendil-works/pi-tui";
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import {
-  createCodexUsageStore,
+  captureCodexHeaders,
+  clearCodexSnapshot,
   isCodexModel,
-} from "./codex-usage";
+  clearKimiSnapshot,
+  fetchKimiUsage,
+  isKimiModel,
+  resolveKimiApiKey,
+  setKimiSnapshot,
+} from "./usage";
 import { TokyoConfigManager } from "./config";
 import {
   EXT_PREFIX,
@@ -49,13 +55,35 @@ import {
 
 export type TokyoNightMode = "tui" | "rpc" | "json" | "print";
 
-type BranchState = {
-  cachedBranch: string;
-  cacheTime: number;
-  pending: boolean;
-  requestToken: number;
-  requestController: AbortController | undefined;
-  cwd: string | undefined;
+const configManager = new TokyoConfigManager();
+let requestStatusRenderCallback: () => void = () => {};
+let refreshCodexQuotaState: () => void = () => {};
+let refreshKimiQuotaState: () => void = () => {};
+let applyCurrentPanelState: () => void = () => {};
+let rainManager: RainAnimationManager | null = null;
+
+const selectorDetector = new SelectorDetector({
+  getEditorFocusTarget: () => BorderlessEditor.activeInstance,
+  requestEditorRender: () => BorderlessEditor.activeInstance?.requestRender(),
+  requestStatusRender: () => requestStatusRenderCallback(),
+  requestRainRender: () => rainManager?.requestRender(),
+});
+
+rainManager = new RainAnimationManager(configManager, {
+  isSideBordersHidden: () => selectorDetector.isSideBordersHidden(),
+});
+
+const settingsController = new SettingsUIController(configManager, {
+  requestEditorRender: () => BorderlessEditor.activeInstance?.requestRender(),
+  applyPanelState: () => applyCurrentPanelState(),
+  onCodexQuotaConfigChange: () => refreshCodexQuotaState(),
+  onKimiQuotaConfigChange: () => refreshKimiQuotaState(),
+});
+
+const borderlessEditorDependencies: BorderlessEditorDependencies = {
+  config: configManager,
+  selectorDetector,
+  settingsController,
 };
 
 type SessionState = {
@@ -350,6 +378,45 @@ export default function (pi: ExtensionAPI) {
 
   applyCurrentPanelState = applyPanelState;
 
+  // ── Kimi quota polling state ─────────────────────────────────────────────
+  // Kimi exposes no quota response headers, so we actively poll the
+  // /usages endpoint while a kimi-coding model is active and the toggle is on.
+  const KIMI_POLL_INTERVAL_MS = 60_000;
+  let kimiPollTimer: ReturnType<typeof setInterval> | undefined;
+  let kimiPollInFlight = false;
+  let modelRegistryRef: { getApiKeyForProvider(provider: string): Promise<string | undefined> } | null = null;
+
+  const stopKimiPolling = () => {
+    if (kimiPollTimer) {
+      clearInterval(kimiPollTimer);
+      kimiPollTimer = undefined;
+    }
+  };
+
+  const pollKimiUsage = async () => {
+    if (kimiPollInFlight) return;
+    kimiPollInFlight = true;
+    try {
+      const apiKey = await resolveKimiApiKey((p) =>
+        modelRegistryRef
+          ? modelRegistryRef.getApiKeyForProvider(p)
+          : Promise.resolve(undefined),
+      );
+      if (!apiKey) return; // no credentials — keep whatever snapshot we have
+      const result = await fetchKimiUsage(apiKey);
+      if (result.ok) {
+        setKimiSnapshot(result.snapshot);
+        requestStatusRenderRef?.();
+      }
+      // On failure keep the last successful snapshot visible while transient
+      // errors recover (same behavior as the reference implementations).
+    } catch (err) {
+      handleExtensionError(err, "kimi usage poll");
+    } finally {
+      kimiPollInFlight = false;
+    }
+  };
+
   // Stable factory so we can re-apply after resetExtensionUI() clears
   // setEditorComponent. It captures this factory's editor UI context.
   const borderlessEditorFactory = (
@@ -513,7 +580,24 @@ export default function (pi: ExtensionAPI) {
   refreshCodexQuotaState = () => {
     const enabled = configManager.get().codexQuota && isCodexModel(activeModel);
     if (!enabled) {
-      codexUsageStore.clearSnapshot();
+      clearCodexSnapshot();
+    }
+    requestStatusRenderRef?.();
+  };
+
+  refreshKimiQuotaState = () => {
+    const enabled = configManager.get().kimiQuota && isKimiModel(activeModel);
+    if (enabled) {
+      if (!kimiPollTimer) {
+        void pollKimiUsage(); // immediate first fetch, then on interval
+        kimiPollTimer = setInterval(() => void pollKimiUsage(), KIMI_POLL_INTERVAL_MS);
+      }
+    } else {
+      stopKimiPolling();
+      // Symmetric with codex: drop the stale snapshot so re-enabling the
+      // toggle (or switching back to a kimi model) doesn't briefly render
+      // hours-old quota before the next fetch completes.
+      clearKimiSnapshot();
     }
     if (activeSession) scheduleCodexCountdownRefresh(activeSession);
     requestStatusRenderRef?.();
@@ -521,15 +605,8 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("after_provider_response", async (event, ctx) => {
     try {
-      const session = sessionsByIdentity.get(getSessionIdentity(ctx));
-      if (!session || !isCurrentSession(session)) return;
-      if (
-        configManager.get().codexQuota &&
-        isCodexModel(ctx.model) &&
-        codexUsageStore.captureFromHeaders(event.headers)
-      ) {
-        scheduleCodexCountdownRefresh(session);
-        requestStatusRenderFor(session);
+      if (configManager.get().codexQuota && isCodexModel(ctx.model) && captureCodexHeaders(event.headers)) {
+        requestStatusRenderRef?.();
       }
     } catch (err) {
       handleExtensionError(err, "codex usage capture");
@@ -541,8 +618,9 @@ export default function (pi: ExtensionAPI) {
       const session = sessionsByIdentity.get(getSessionIdentity(ctx));
       if (!session || !isCurrentSession(session)) return;
       activeModel = event.model;
-      codexUsageStore.clearSnapshot();
+      clearCodexSnapshot();
       refreshCodexQuotaState();
+      refreshKimiQuotaState();
     } catch (err) {
       handleExtensionError(err, "model_select Codex SSE force");
     }
@@ -612,9 +690,11 @@ export default function (pi: ExtensionAPI) {
     currentSessionByManager.set(sessionManager, session);
     panelSessionMode = mode;
     configManager.read();
-    activeModel = model;
-    codexUsageStore.clearSnapshot();
+    activeModel = ctx.model;
+    modelRegistryRef = ctx.modelRegistry;
+    clearCodexSnapshot();
     refreshCodexQuotaState();
+    refreshKimiQuotaState();
 
     if (mode !== "tui" || !hasUI) return;
     editorUIContext = ui;
@@ -952,13 +1032,23 @@ export default function (pi: ExtensionAPI) {
       sessionsByIdentity.delete(sessionIdentity);
     }
 
-    const sharedWithCurrentSession =
-      activeSession !== null &&
-      activeSession !== session &&
-      activeSession.ui === session.ui;
-    const wasActiveSession = activeSession === session;
-    retireActiveSession(session);
-    if (wasActiveSession) sessionGeneration += 1;
+    // ── Reset all per-session state ────────────────────────────────────────
+    stopKimiPolling();
+    kimiPollInFlight = false;
+    modelRegistryRef = null;
+    clearKimiSnapshot();
+    editorUIContext = null;
+    footerDataRef = null;
+    requestStatusRenderRef = null;
+    activeModel = undefined;
+    clearCodexSnapshot();
+    refreshCodexQuotaState = () => {};
+    refreshKimiQuotaState = () => {};
+    requestStatusRenderCallback = () => {};
+    selectorDetector.reset();
+    settingsController.reset();
+    BorderlessEditor.activeInstance = null;
+    BorderlessEditor.originalDoRender = null;
 
     // Restore only this session's patch. The identity check prevents a late
     // shutdown from replacing the current session's wrapper on shared UI.
