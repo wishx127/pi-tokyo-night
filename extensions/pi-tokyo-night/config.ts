@@ -163,33 +163,9 @@ export class TokyoConfigManager {
     try {
       const settingsPath = path.join(getAgentDir(), "settings.json");
       const content = fs.readFileSync(settingsPath, "utf-8");
-      const settings = JSON.parse(content);
-      const saved = settings["pi-tokyo-night"];
-      if (saved && typeof saved === "object") {
-        this.config = {
-          panel:
-            typeof saved.panel === "boolean" ? saved.panel : DEFAULT_CONFIG.panel,
-          codexQuota:
-            typeof saved.codexQuota === "boolean"
-              ? saved.codexQuota
-              : DEFAULT_CONFIG.codexQuota,
-          kimiQuota:
-            typeof saved.kimiQuota === "boolean"
-              ? saved.kimiQuota
-              : DEFAULT_CONFIG.kimiQuota,
-          rainRows:
-            typeof saved.rainRows === "number"
-              ? saved.rainRows
-              : DEFAULT_CONFIG.rainRows,
-          rainTickMs:
-            typeof saved.rainTickMs === "number"
-              ? saved.rainTickMs
-              : DEFAULT_CONFIG.rainTickMs,
-          maxRainDrops:
-            typeof saved.maxRainDrops === "number"
-              ? saved.maxRainDrops
-              : DEFAULT_CONFIG.maxRainDrops,
-        };
+      const settings: unknown = JSON.parse(content);
+      if (!isRecord(settings)) {
+        throw new Error("settings.json must contain an object");
       }
 
       const nextConfig = { ...DEFAULT_CONFIG };
@@ -197,6 +173,7 @@ export class TokyoConfigManager {
       if (isRecord(saved)) {
         nextConfig.panel = validatedValue("panel", saved.panel);
         nextConfig.codexQuota = validatedValue("codexQuota", saved.codexQuota);
+        nextConfig.kimiQuota = validatedValue("kimiQuota", saved.kimiQuota);
         nextConfig.rainRows = validatedValue("rainRows", saved.rainRows);
         nextConfig.rainTickMs = validatedValue("rainTickMs", saved.rainTickMs);
         nextConfig.maxRainDrops = validatedValue("maxRainDrops", saved.maxRainDrops);

@@ -41,6 +41,7 @@ describe("TokyoConfigManager validation", () => {
         "pi-tokyo-night": {
           panel: "yes",
           codexQuota: 1,
+          kimiQuota: "yes",
           rainRows: 0,
           rainTickMs: 100.5,
           maxRainDrops: 101,
@@ -78,6 +79,16 @@ describe("TokyoConfigManager validation", () => {
     (key, value) => {
       const manager = new TokyoConfigManager();
       manager.set(key, value);
+
+      expect(manager.get()[key]).toBe(DEFAULT_CONFIG[key]);
+    },
+  );
+
+  it.each(["panel", "codexQuota", "kimiQuota"] as const)(
+    "does not allow a non-boolean %s through set()",
+    (key) => {
+      const manager = new TokyoConfigManager();
+      manager.set(key, 1 as unknown as boolean);
 
       expect(manager.get()[key]).toBe(DEFAULT_CONFIG[key]);
     },
@@ -145,6 +156,18 @@ describe("TokyoConfigManager persistence", () => {
       ...DEFAULT_CONFIG,
       panel: false,
     });
+  });
+
+  it("round-trips the kimiQuota toggle through write/read", () => {
+    const writer = new TokyoConfigManager();
+    writer.set("kimiQuota", false);
+    expect(writer.write()).toBe(true);
+
+    const reader = new TokyoConfigManager();
+    reader.read();
+
+    expect(reader.get().kimiQuota).toBe(false);
+    expect(reader.get()).toEqual({ ...DEFAULT_CONFIG, kimiQuota: false });
   });
 
   it("preserves unrelated top-level settings", () => {

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createCodexUsageStore,
   formatStatus,
-} from "./codex-usage";
+} from "./index";
 
 describe("Codex usage store", () => {
   afterEach(() => {

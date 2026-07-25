@@ -11,7 +11,7 @@ import type { UsageSnapshot, UsageWindow } from "./types";
 
 export interface CodexUsageStore {
   captureFromHeaders(headers: Record<string, string>): boolean;
-  getSnapshot(): CodexUsageSnapshot | undefined;
+  getSnapshot(): UsageSnapshot | undefined;
   clearSnapshot(): void;
 }
 
@@ -55,19 +55,25 @@ export function parseHeaders(
   return { primary, secondary, capturedAt: Date.now() };
 }
 
-let snapshot: UsageSnapshot | undefined;
+/**
+ * Each extension composition root creates its own store so concurrent
+ * sessions never share quota snapshots (see extension-lifecycle tests).
+ */
+export function createCodexUsageStore(): CodexUsageStore {
+  let snapshot: UsageSnapshot | undefined;
 
-export function captureCodexHeaders(headers: Record<string, string>): boolean {
-  const parsed = parseHeaders(headers);
-  if (!parsed) return false;
-  snapshot = parsed;
-  return true;
-}
-
-export function getCodexSnapshot(): UsageSnapshot | undefined {
-  return snapshot;
-}
-
-export function clearCodexSnapshot(): void {
-  snapshot = undefined;
+  return {
+    captureFromHeaders(headers: Record<string, string>): boolean {
+      const parsed = parseHeaders(headers);
+      if (!parsed) return false;
+      snapshot = parsed;
+      return true;
+    },
+    getSnapshot(): UsageSnapshot | undefined {
+      return snapshot;
+    },
+    clearSnapshot(): void {
+      snapshot = undefined;
+    },
+  };
 }

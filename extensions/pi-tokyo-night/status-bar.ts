@@ -8,12 +8,12 @@ import {
   visibleWidth,
 } from "@earendil-works/pi-tui";
 import {
-  type UsageSnapshot,
   formatStatus,
-  getCodexSnapshot,
-  isCodexModel,
   getKimiSnapshot,
+  isCodexModel,
   isKimiModel,
+  type CodexUsageStore,
+  type UsageSnapshot,
 } from "./usage";
 import type { TokyoConfigManager } from "./config";
 import { handleExtensionError } from "./errors";
@@ -45,6 +45,10 @@ const TOKENS_BG = [109, 91, 170]; // Very light purple #6d5baa
 const COST_BG = [93, 93, 93]; // Gray #5d5d5d
 const LIMIT_BG = [101, 83, 162]; // Mid purple — between branch and tokens backgrounds
 
+type Module =
+  | { text: string; bg: number; fg: number }
+  | { text: string; bgColor: number[] | null; textColor: number[] };
+
 // Shared "LIMIT" module for provider quota (Codex via response headers,
 // Kimi via polled usages API — both render through formatStatus).
 const buildLimitModule = (snap: UsageSnapshot | undefined): Module[] =>
@@ -55,10 +59,6 @@ const buildLimitModule = (snap: UsageSnapshot | undefined): Module[] =>
         textColor: [245, 240, 255] as number[],
       }]
     : [];
-
-type Module =
-  | { text: string; bg: number; fg: number }
-  | { text: string; bgColor: number[] | null; textColor: number[] };
 
 type SessionStats = { input: number; output: number; cost: number };
 
@@ -239,14 +239,18 @@ export function buildStatusLine(
     ...(branch ? [{ text: `\uE0A0 ${branch}`, bg: 3, fg: 3 }] : []),
   ];
 
-  // Codex subscription usage (only when directly connected to official Codex/GPT)
+  // Provider quota usage: Codex via response headers (only when directly
+  // connected to official Codex/GPT), Kimi via polled usages API — both
+  // render through the shared LIMIT module.
   const codexModule = buildLimitModule(
-    config.get().codexQuota && isCodexModel(ctx.model) ? getCodexSnapshot() : undefined,
+    config.get().codexQuota && isCodexModel(ctx.model)
+      ? codexUsageStore?.getSnapshot()
+      : undefined,
   );
-
-  // Kimi Code quota (5h rolling window + weekly), polled from the usages API
   const kimiModule = buildLimitModule(
-    config.get().kimiQuota && isKimiModel(ctx.model) ? getKimiSnapshot() : undefined,
+    config.get().kimiQuota && isKimiModel(ctx.model)
+      ? getKimiSnapshot()
+      : undefined,
   );
 
   // Build right modules (provider usage, tokens, cost, progress)

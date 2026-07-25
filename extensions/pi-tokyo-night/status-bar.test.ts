@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { buildStatusLine } from "./status-bar";
+import { clearKimiSnapshot, setKimiSnapshot } from "./usage";
+import type { UsageSnapshot } from "./usage";
 
 const theme = {
   fg: (_color: string, text: string) => text,
@@ -94,3 +96,101 @@ describe("buildStatusLine", () => {
     expect(otherBranch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("buildStatusLine provider quota modules", () => {
+  const quotaSnapshot: UsageSnapshot = {
+    primary: { usedPercent: 25, windowMinutes: 300, resetsInSeconds: 1800 },
+    capturedAt: Date.now(),
+  };
+
+  const quotaConfig = (flags: { codexQuota?: boolean; kimiQuota?: boolean }) => ({
+    get: () => ({ codexQuota: false, kimiQuota: false, ...flags }),
+  }) as any;
+
+  const ctxWithModel = (provider: string): ExtensionContext => ({
+    ...makeContext([]),
+    model: { id: "quota-model", provider, contextWindow: 1000 },
+  } as unknown as ExtensionContext);
+
+  afterEach(() => {
+    clearKimiSnapshot();
+  });
+
+  it("renders the Codex limit module from the injected store", () => {
+    const line = buildStatusLine(
+      500,
+      theme,
+      ctxWithModel("openai-codex"),
+      "",
+      "high",
+      quotaConfig({ codexQuota: true }),
+      { getSnapshot: () => quotaSnapshot },
+    );
+
+    expect(line).toContain("LIMIT 5h 75%");
+  });
+
+  it("hides the Codex module without a snapshot or with the toggle off", () => {
+    const noSnapshot = buildStatusLine(
+      500,
+      theme,
+      ctxWithModel("openai-codex"),
+      "",
+      "high",
+      quotaConfig({ codexQuota: true }),
+      { getSnapshot: () => undefined },
+    );
+    const toggleOff = buildStatusLine(
+      500,
+      theme,
+      ctxWithModel("openai-codex"),
+      "",
+      "high",
+      quotaConfig({}),
+      { getSnapshot: () => quotaSnapshot },
+    );
+
+    expect(noSnapshot).not.toContain("LIMIT");
+    expect(toggleOff).not.toContain("LIMIT");
+  });
+
+  it("renders the Kimi limit module from the polled snapshot", () => {
+    setKimiSnapshot(quotaSnapshot);
+
+    const line = buildStatusLine(
+      500,
+      theme,
+      ctxWithModel("kimi-coding"),
+      "",
+      "high",
+      quotaConfig({ kimiQuota: true }),
+    );
+
+    expect(line).toContain("LIMIT 5h 75%");
+  });
+
+  it("hides the Kimi module when the model switches away or the snapshot is stale", () => {
+    setKimiSnapshot(quotaSnapshot);
+
+    const otherProvider = buildStatusLine(
+      500,
+      theme,
+      ctxWithModel("openai-codex"),
+      "",
+      "high",
+      quotaConfig({ kimiQuota: true }),
+    );
+    const toggleOff = buildStatusLine(
+      500,
+      theme,
+      ctxWithModel("kimi-coding"),
+      "",
+      "high",
+      quotaConfig({}),
+    );
+
+    expect(otherProvider).not.toContain("LIMIT");
+    expect(toggleOff).not.toContain("LIMIT");
+  });
+});
+
