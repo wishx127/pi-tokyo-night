@@ -18,7 +18,8 @@
   ],
   "pi": {
     "themes": [
-      "./themes/tokyo-night.json"
+      "./themes/tokyo-night-dark.json",
+      "./themes/tokyo-night-light.json"
     ],
     "extensions": [
       "./extensions/pi-tokyo-night"
