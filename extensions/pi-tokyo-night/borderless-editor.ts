@@ -330,21 +330,23 @@ export class BorderlessEditor extends CustomEditor {
   }
 
   /**
-   * Prepend either rain panel lines (when rain is running) or a plain top
-   * border (when rain is inactive or fails) to `result`.
+   * Prepend either rain panel lines (when rain is running) or the editor's
+   * top border (when rain is inactive) to `result`.
    *
-   * Extracted from `renderEditorMode` and `renderSettingsMode` to remove
-   * the near-identical duplicated block. Behavior is byte-for-byte identical
-   * to what each caller previously did inline.
+   * In plain-input mode the rain panel remains available, but it also loses
+   * its side rails so the mode does not reintroduce box-drawing chrome above
+   * the input. When the panel is inactive, plain mode adds no top border.
    *
-   * @param result    The output array being built by the caller — lines are pushed in-place.
-   * @param width     Total terminal width including frame borders.
-   * @param innerWidth Width inside the frame borders (= width - 2, pre-computed by caller).
+   * @param result       The output array being built by the caller.
+   * @param width        Total terminal width.
+   * @param innerWidth   Width available to content/rain cells.
+   * @param frameEnabled Whether the rounded input frame is enabled.
    */
   private prependTopBorderOrRain(
     result: string[],
     width: number,
     innerWidth: number,
+    frameEnabled: boolean,
   ): void {
     const frameFg = (s: string) => `${fgRgb(FRAME_RGB)}${s}${RESET}`;
 
@@ -354,7 +356,7 @@ export class BorderlessEditor extends CustomEditor {
         const snapshot = this.dependencies.rainManager.getSnapshot();
         const rainLines = renderRainLines({
           width,
-          hideSideBorders: false,
+          hideSideBorders: !frameEnabled,
           rainRows: cfg.rainRows,
           snapshot,
         });
@@ -364,52 +366,69 @@ export class BorderlessEditor extends CustomEditor {
         this.dependencies.rainManager.setRenderWidth(innerWidth);
       } catch (err) {
         handleExtensionError(err, "rain render");
-        result.push(frameFg(`${BOX.tl}${BOX.h.repeat(width - 2)}${BOX.tr}`));
+        if (frameEnabled) {
+          result.push(frameFg(`${BOX.tl}${BOX.h.repeat(Math.max(0, width - 2))}${BOX.tr}`));
+        } else {
+          result.push(frameFg(BOX.h.repeat(Math.max(0, width))));
+        }
       }
-    } else {
-      result.push(frameFg(`${BOX.tl}${BOX.h.repeat(width - 2)}${BOX.tr}`));
+    } else if (frameEnabled) {
+      result.push(frameFg(`${BOX.tl}${BOX.h.repeat(Math.max(0, width - 2))}${BOX.tr}`));
     }
+  }
+
+  /** Remove the hidden top/bottom border slots emitted by Editor.render(). */
+  private extractEditorContentLines(lines: string[]): string[] {
+    const bottomBorderIndex = lines.findIndex(
+      (line, index) => index > 0 && line.length === 0,
+    );
+    return bottomBorderIndex === -1
+      ? lines.slice(1)
+      : [
+          ...lines.slice(1, bottomBorderIndex),
+          ...lines.slice(bottomBorderIndex + 1),
+        ];
   }
 
   private renderEditorMode(width: number): string[] {
     const frameFg = (s: string) => `${fgRgb(FRAME_RGB)}${s}${RESET}`;
+    const frameEnabled = this.dependencies.config.get().editorFrame;
 
-    // Prompt indicator: a simple neon chevron.
-    const promptPrefix = ` ${PURPLE}❯${RESET} `;
-    const contPrefix = " ".repeat(visibleWidth(promptPrefix));
-
-    // Inner width inside the rounded card frame ("│" ... "│").
-    const innerWidth = Math.max(1, width - 2);
-    // Render the underlying editor at a narrower width so the prompt prefix
-    // fits within the card interior.
-    const contentWidth = Math.max(1, innerWidth - visibleWidth(promptPrefix));
+    // Framed mode uses a neon prompt and reserves two columns for the frame.
+    // Plain mode removes both pieces of visual chrome so terminal-native copy
+    // sees the editor text rather than the theme's prompt/frame characters.
+    const promptPrefix = frameEnabled ? ` ${PURPLE}❯${RESET} ` : "";
+    const contPrefix = frameEnabled
+      ? " ".repeat(visibleWidth(promptPrefix))
+      : "";
+    const innerWidth = Math.max(1, frameEnabled ? width - 2 : width);
+    const contentWidth = Math.max(
+      1,
+      innerWidth - visibleWidth(promptPrefix),
+    );
     const lines = super.render(contentWidth);
     if (lines.length < 2) return lines;
 
     const result: string[] = [];
 
-    // Rain panel: when the manager is actively running, rain owns the single
-    // top rounded border. The editor must NOT draw its own top border in that
-    // case to avoid a duplicate ╭─╮. When rain is not running, the editor is
-    // the topmost element and must render its own top border.
-    this.prependTopBorderOrRain(result, width, innerWidth);
+    // Rain owns the top chrome while it is active. Otherwise only framed mode
+    // draws an editor top border; plain mode starts directly with input lines.
+    this.prependTopBorderOrRain(result, width, innerWidth, frameEnabled);
 
     // Editor.render() emits its own top and bottom border slots first and
     // appends autocomplete rows after the bottom border. With borderColor
     // locked to the empty function, those slots are empty strings, but their
     // positions remain part of the public output contract. Remove both slots
     // by position so autocomplete rows are retained verbatim as content.
-    if (lines.length < 2) return lines;
-    const bottomBorderIndex = lines.findIndex(
-      (line, index) => index > 0 && line.length === 0,
-    );
-    const contentLines =
-      bottomBorderIndex === -1
-        ? lines.slice(1)
-        : [
-            ...lines.slice(1, bottomBorderIndex),
-            ...lines.slice(bottomBorderIndex + 1),
-          ];
+    const contentLines = this.extractEditorContentLines(lines);
+
+    if (!frameEnabled) {
+      for (const line of contentLines) {
+        result.push(truncateToWidth(line, innerWidth));
+      }
+      return result;
+    }
+
     let isFirstContentLine = true;
     for (const line of contentLines) {
       const prefix = isFirstContentLine ? promptPrefix : contPrefix;
@@ -425,19 +444,24 @@ export class BorderlessEditor extends CustomEditor {
 
   private renderSettingsMode(width: number): string[] {
     const frameFg = (s: string) => `${fgRgb(FRAME_RGB)}${s}${RESET}`;
-    const innerWidth = Math.max(1, width - 2);
+    const frameEnabled = this.dependencies.config.get().editorFrame;
+    const innerWidth = Math.max(1, frameEnabled ? width - 2 : width);
     const result: string[] = [];
 
-    // Rain panel: when manager is actively running, rain owns the top border.
-    // When rain is not running, settings is topmost and draws its own border.
-    this.prependTopBorderOrRain(result, width, innerWidth);
+    // Rain owns the top chrome while it is active. Otherwise framed mode
+    // draws a top border and plain mode starts directly with settings text.
+    this.prependTopBorderOrRain(result, width, innerWidth, frameEnabled);
 
     const settingsLines =
       this.dependencies.settingsController.buildLines(innerWidth);
     for (const line of settingsLines) {
       const padded =
         line + " ".repeat(Math.max(0, innerWidth - visibleWidth(line)));
-      result.push(frameFg(BOX.v) + padded + frameFg(BOX.v));
+      result.push(
+        frameEnabled
+          ? frameFg(BOX.v) + padded + frameFg(BOX.v)
+          : truncateToWidth(padded, innerWidth),
+      );
     }
     return result;
   }

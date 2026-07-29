@@ -358,6 +358,7 @@ function makeConfigStub() {
   return {
     get: vi.fn(() => ({
       panel: false,
+      editorFrame: true,
       rainRows: 3,
       rainTickMs: 130,
       maxRainDrops: 25,
@@ -512,6 +513,48 @@ describe("BorderlessEditor composition", () => {
     const result = editor.render(40);
     const all = result.join("");
     expect(all).not.toContain(MOON);
+  });
+
+  it("when editorFrame=false, render() omits frame and prompt chrome", () => {
+    const rainMgr = makeRainManagerStub(false);
+    const { editor, config } = makeEditorWithParts(rainMgr);
+    config.get.mockReturnValue({
+      panel: false,
+      editorFrame: false,
+      rainRows: 3,
+      rainTickMs: 130,
+      maxRainDrops: 25,
+      codexQuota: false,
+    });
+
+    const result = editor.render(40).map(stripAnsi);
+
+    expect(result).toHaveLength(1);
+    expect(result.join("\\n")).not.toContain("╭");
+    expect(result.join("\\n")).not.toContain("╮");
+    expect(result.join("\\n")).not.toContain("│");
+    expect(result.join("\\n")).not.toContain("❯");
+    expect(renderSpy).toHaveBeenCalledWith(40);
+  });
+
+  it("when editorFrame=false and rain is active, rain also omits side rails", () => {
+    const rainMgr = makeRainManagerStub(true);
+    rainMgr.getSnapshot.mockReturnValue(makeSnapshot([], []));
+    const { editor, config } = makeEditorWithParts(rainMgr);
+    config.get.mockReturnValue({
+      panel: true,
+      editorFrame: false,
+      rainRows: 2,
+      rainTickMs: 130,
+      maxRainDrops: 25,
+      codexQuota: false,
+    });
+
+    const result = editor.render(40).map(stripAnsi);
+
+    expect(result[0]).toMatch(/^─+$/);
+    expect(result.slice(1, 3).every((line) => !line.includes("│"))).toBe(true);
+    expect(result.join("\\n")).not.toContain("❯");
   });
 
   // ── 7c. rain active → rain lines first, single top border ──────────────────
@@ -719,6 +762,7 @@ describe("BorderlessEditor composition", () => {
     // Mutate config to return rainRows=6.
     config.get.mockReturnValue({
       panel: false,
+      editorFrame: true,
       rainRows: 6,
       rainTickMs: 130,
       maxRainDrops: 25,
@@ -741,6 +785,7 @@ describe("BorderlessEditor composition", () => {
     // Pending panel value says "true" (user toggled on in settings before apply).
     config.get.mockReturnValue({
       panel: true, // pending value
+      editorFrame: true,
       rainRows: 3,
       rainTickMs: 130,
       maxRainDrops: 25,
@@ -765,6 +810,7 @@ describe("BorderlessEditor composition", () => {
     // Pending panel value says "false" (user toggled off in settings before apply).
     config.get.mockReturnValue({
       panel: false, // pending value
+      editorFrame: true,
       rainRows: 3,
       rainTickMs: 130,
       maxRainDrops: 25,

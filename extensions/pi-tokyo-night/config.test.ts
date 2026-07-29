@@ -84,7 +84,7 @@ describe("TokyoConfigManager validation", () => {
     },
   );
 
-  it.each(["panel", "codexQuota", "kimiQuota"] as const)(
+  it.each(["panel", "editorFrame", "codexQuota", "kimiQuota"] as const)(
     "does not allow a non-boolean %s through set()",
     (key) => {
       const manager = new TokyoConfigManager();
@@ -129,11 +129,13 @@ describe("TokyoConfigManager validation", () => {
   it("keeps valid values through set()", () => {
     const manager = new TokyoConfigManager();
 
+    manager.set("editorFrame", false);
     manager.set("rainRows", 10);
     manager.set("rainTickMs", 50);
     manager.set("maxRainDrops", 100);
 
     expect(manager.get()).toMatchObject({
+      editorFrame: false,
       rainRows: 10,
       rainTickMs: 50,
       maxRainDrops: 100,

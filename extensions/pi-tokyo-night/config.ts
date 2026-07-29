@@ -10,6 +10,8 @@ import { handleExtensionError } from "./errors";
 export interface TokyoConfig {
   /** Show the top rain/moon/stars panel. */
   panel: boolean;
+  /** Show the rounded frame and prompt chrome around the input editor. */
+  editorFrame: boolean;
   /** Show Codex limit in the status bar (requires Pi transport=sse). */
   codexQuota: boolean;
   /** Show Kimi Code 5h/weekly quota in the status bar (polls the usages API). */
@@ -24,6 +26,7 @@ export interface TokyoConfig {
 
 export const DEFAULT_CONFIG: Readonly<TokyoConfig> = Object.freeze({
   panel: true,
+  editorFrame: true,
   codexQuota: false,
   kimiQuota: true,
   rainRows: 3,
@@ -50,6 +53,12 @@ export const SETTINGS: SettingDescriptor[] = [
     id: "panel",
     label: "Top Panel",
     description: "Show the rain/moon/stars panel above the editor",
+    kind: "toggle",
+  },
+  {
+    id: "editorFrame",
+    label: "Input Frame",
+    description: "Show the rounded frame and prompt around the input editor",
     kind: "toggle",
   },
   {
@@ -172,6 +181,10 @@ export class TokyoConfigManager {
       const saved = settings["pi-tokyo-night"];
       if (isRecord(saved)) {
         nextConfig.panel = validatedValue("panel", saved.panel);
+        nextConfig.editorFrame = validatedValue(
+          "editorFrame",
+          saved.editorFrame,
+        );
         nextConfig.codexQuota = validatedValue("codexQuota", saved.codexQuota);
         nextConfig.kimiQuota = validatedValue("kimiQuota", saved.kimiQuota);
         nextConfig.rainRows = validatedValue("rainRows", saved.rainRows);
