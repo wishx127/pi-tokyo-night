@@ -14,7 +14,7 @@ A [pi](https://github.com/earendil-works/pi) theme + extension that brings the t
 
 **Animated rain panel** — A Tokyo night sky above the editor with drifting cyan raindrops, a crescent moon, and purple stars. Toggle on/off at runtime.
 
-**Borderless editor** — Editor renders inside a rounded card frame with a glowing purple prompt chevron.
+**Borderless editor** — Editor renders inside an optional rounded card frame with a glowing purple prompt chevron.
 
 **Settings UI** — Interactive settings panel to tweak rain animation (rows, speed, drop count) without editing config files.
 
@@ -59,6 +59,7 @@ Open with `/tokyo-night`, then navigate with ↑/↓ and press Enter to toggle o
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Top Panel | On | Show rain/moon/stars above editor |
+| Input Frame | On | Show the rounded frame and prompt around the input editor |
 | Codex Limit | Off | Show Codex quota in the status bar (requires Pi transport=sse) |
 | Kimi Limit | On | Show Kimi Code 5h/weekly quota in the status bar (polls usages API) |
 | Rain Rows | 3 | Height of rain panel (1–10) |
@@ -71,6 +72,7 @@ Settings are persisted to `~/.pi/agent/settings.json` under the `pi-tokyo-night`
 {
   "pi-tokyo-night": {
     "panel": true,
+    "editorFrame": true,
     "codexQuota": false,
     "kimiQuota": true,
     "rainRows": 3,

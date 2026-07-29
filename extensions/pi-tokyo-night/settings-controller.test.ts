@@ -38,7 +38,8 @@ describe("SettingsUIController quota toggle callbacks", () => {
   it("notifies only the codex callback when toggling codexQuota", () => {
     const { callbacks, controller } = makeDispatchRig();
 
-    controller.handleInput(DOWN); // panel → codexQuota
+    controller.handleInput(DOWN); // panel → editorFrame
+    controller.handleInput(DOWN); // editorFrame → codexQuota
     controller.handleInput(ENTER);
 
     expect(callbacks.onCodexQuotaConfigChange).toHaveBeenCalledTimes(1);
@@ -49,7 +50,8 @@ describe("SettingsUIController quota toggle callbacks", () => {
   it("notifies only the kimi callback when toggling kimiQuota", () => {
     const { callbacks, controller } = makeDispatchRig();
 
-    controller.handleInput(DOWN); // panel → codexQuota
+    controller.handleInput(DOWN); // panel → editorFrame
+    controller.handleInput(DOWN); // editorFrame → codexQuota
     controller.handleInput(DOWN); // codexQuota → kimiQuota
     controller.handleInput(ENTER);
 
@@ -86,6 +88,7 @@ describe("SettingsUIController.buildLines", () => {
     controller.enter();
 
     expect(controller.buildLines(0)).toEqual([
+      "",
       "",
       "",
       "",
