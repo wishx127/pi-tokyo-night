@@ -3,7 +3,9 @@
 A [pi](https://github.com/earendil-works/pi) theme + extension that brings the tokyo-night color scheme to your terminal, with a Powerline-style status bar and an animated panel.
 
 <p>
+
   <img src="screenshot.png" alt="pi-tokyo-night" width="1100">
+
 </p>
 
 ## ✨ Features
@@ -40,31 +42,34 @@ Kimi Code usage (5-hour rolling window + weekly quota) is shown in the status ba
 
 ### Status bar modules
 
-| Position | Module | Description |
-|----------|--------|-------------|
-| Left | Model | Current AI model name |
-| Left | Thinking | Thinking level (off / minimal / low / medium / high / xhigh) |
-| Left | Path | Shortened working directory |
-| Left | Branch | Current Git branch (hidden when not in a repo) |
-| Right | Codex Limit | Codex quota / reset status (SSE + Codex-compatible models only) |
-| Right | Kimi Limit | Kimi Code 5h window + weekly quota with reset countdown (kimi-coding models only) |
-| Right | Tokens | Cumulative input + output token count |
-| Right | Cost | Session cost |
-| Right | Progress | Context window usage bar with percentage |
+
+| Position | Module      | Description                                                                       |
+| -------- | ----------- | --------------------------------------------------------------------------------- |
+| Left     | Model       | Current AI model name                                                             |
+| Left     | Thinking    | Thinking level (off / minimal / low / medium / high / xhigh)                      |
+| Left     | Path        | Shortened working directory                                                       |
+| Left     | Branch      | Current Git branch (hidden when not in a repo)                                    |
+| Right    | Codex Limit | Codex quota / reset status (SSE + Codex-compatible models only)                   |
+| Right    | Kimi Limit  | Kimi Code 5h window + weekly quota with reset countdown (kimi-coding models only) |
+| Right    | Tokens      | Cumulative input + output token count                                             |
+| Right    | Cost        | Session cost                                                                      |
+| Right    | Progress    | Context window usage bar with percentage                                          |
+
 
 ### Settings panel
 
 Open with `/tokyo-night`, then navigate with ↑/↓ and press Enter to toggle or edit values. Press Esc to save and close.
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| Top Panel | On | Show rain/moon/stars above editor |
-| Input Frame | On | Show the rounded frame and prompt around the input editor |
-| Codex Limit | Off | Show Codex quota in the status bar (requires Pi transport=sse) |
-| Kimi Limit | On | Show Kimi Code 5h/weekly quota in the status bar (polls usages API) |
-| Rain Rows | 3 | Height of rain panel (1–10) |
-| Rain Tick (ms) | 130 | Animation speed (50–1000) |
-| Max Rain Drops | 25 | Simultaneous drops (5–100) |
+
+| Setting        | Default | Description                                                         |
+| -------------- | ------- | ------------------------------------------------------------------- |
+| Top Panel      | On      | Show rain/moon/stars above editor                                   |
+| Codex Limit    | Off     | Show Codex quota in the status bar (requires Pi transport=sse)      |
+| Kimi Limit     | On      | Show Kimi Code 5h/weekly quota in the status bar (polls usages API) |
+| Rain Rows      | 3       | Height of rain panel (1–10)                                         |
+| Rain Tick (ms) | 130     | Animation speed (50–1000)                                           |
+| Max Rain Drops | 25      | Simultaneous drops (5–100)                                          |
+
 
 Settings are persisted to `~/.pi/agent/settings.json` under the `pi-tokyo-night` key:
 
@@ -82,6 +87,20 @@ Settings are persisted to `~/.pi/agent/settings.json` under the `pi-tokyo-night`
 }
 ```
 
+## 🌗 Light / Dark auto-switching
+
+The package ships two themes: `tokyo-night-dark` and `tokyo-night-light` .
+
+To let pi follow your terminal's light/dark mode automatically, set the theme in `~/.pi/agent/settings.json` with the `light/dark` syntax:
+
+```json
+{
+  "theme": "tokyo-night-light/tokyo-night-dark"
+}
+```
+
+Pi detects the terminal background on startup and live-switches when your terminal changes color scheme. Pick either name alone via `/settings` if you prefer to pin one variant.
+
 ### Customizing colors
 
 Edit the theme file to change any color. All color variables are defined in the `vars` block:
@@ -98,8 +117,9 @@ Edit the theme file to change any color. All color variables are defined in the 
 ```
 
 Theme location:
-- **Windows:** `%USERPROFILE%\.pi\agent\node_modules\@wishx127\pi-tokyo-night\themes\tokyo-night.json`
-- **macOS / Linux:** `~/.pi/agent/node_modules/@wishx127/pi-tokyo-night/themes/tokyo-night.json`
+
+- **Windows:** `%USERPROFILE%\.pi\agent\node_modules\@wishx127\pi-tokyo-night\themes\tokyo-night-dark.json`
+- **macOS / Linux:** `~/.pi/agent/node_modules/@wishx127/pi-tokyo-night/themes/tokyo-night-dark.json`
 
 ## 📌 Requirements
 
