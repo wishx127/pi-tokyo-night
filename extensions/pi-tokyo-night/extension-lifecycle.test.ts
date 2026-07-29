@@ -118,6 +118,14 @@ describe("Tokyo Night status widget narrow widths", () => {
     expect(() => buildStatusWidgetLines(width, false, "status")).not.toThrow();
     expect(() => buildStatusWidgetLines(width, true, "status")).not.toThrow();
   });
+
+  it("when editorFrame=false, renders status content without any border row", () => {
+    const lines = buildStatusWidgetLines(20, false, "status", false);
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("status");
+    expect(lines.join("\n")).not.toMatch(/[╭╮╰╯│─]/);
+  });
 });
 
 describe("Tokyo Night animation lifecycle gate", () => {

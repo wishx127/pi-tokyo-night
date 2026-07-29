@@ -10,7 +10,7 @@ import { handleExtensionError } from "./errors";
 export interface TokyoConfig {
   /** Show the top rain/moon/stars panel. */
   panel: boolean;
-  /** Show the rounded frame and prompt chrome around the input editor. */
+  /** Show the rounded frame around the input editor. */
   editorFrame: boolean;
   /** Show Codex limit in the status bar (requires Pi transport=sse). */
   codexQuota: boolean;
@@ -58,7 +58,7 @@ export const SETTINGS: SettingDescriptor[] = [
   {
     id: "editorFrame",
     label: "Input Frame",
-    description: "Show the rounded frame and prompt around the input editor",
+    description: "Show the rounded frame around the input editor",
     kind: "toggle",
   },
   {

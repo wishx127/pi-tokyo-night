@@ -64,6 +64,7 @@ Open with `/tokyo-night`, then navigate with ↑/↓ and press Enter to toggle o
 | Setting        | Default | Description                                                         |
 | -------------- | ------- | ------------------------------------------------------------------- |
 | Top Panel      | On      | Show rain/moon/stars above editor                                   |
+| Input Frame    | On      | Show the rounded frame around the input editor                      |
 | Codex Limit    | Off     | Show Codex quota in the status bar (requires Pi transport=sse)      |
 | Kimi Limit     | On      | Show Kimi Code 5h/weekly quota in the status bar (polls usages API) |
 | Rain Rows      | 3       | Height of rain panel (1–10)                                         |

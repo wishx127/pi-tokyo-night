@@ -467,6 +467,24 @@ describe("BorderlessEditor composition", () => {
     expect(result).toEqual(makeFakeEditorLines(5));
   });
 
+  it("width < 10 with editorFrame=false keeps the indicator without frame chrome", () => {
+    const { editor, config } = makeEditorWithParts(makeRainManagerStub(false));
+    config.get.mockReturnValue({
+      panel: false,
+      editorFrame: false,
+      rainRows: 3,
+      rainTickMs: 130,
+      maxRainDrops: 25,
+      codexQuota: false,
+    });
+
+    const result = editor.render(5).map(stripAnsi);
+    const all = result.join("\\n");
+
+    expect(all).toContain("❯");
+    expect(all).not.toMatch(/[╭╮╰╯│─]/);
+  });
+
   it("removes both editor border slots while retaining autocomplete rows", () => {
     renderSpy.mockImplementationOnce(() => [
       "", // Editor top border
@@ -515,7 +533,7 @@ describe("BorderlessEditor composition", () => {
     expect(all).not.toContain(MOON);
   });
 
-  it("when editorFrame=false, render() omits frame and prompt chrome", () => {
+  it("when editorFrame=false, keeps the input indicator and removes frame chrome", () => {
     const rainMgr = makeRainManagerStub(false);
     const { editor, config } = makeEditorWithParts(rainMgr);
     config.get.mockReturnValue({
@@ -528,16 +546,15 @@ describe("BorderlessEditor composition", () => {
     });
 
     const result = editor.render(40).map(stripAnsi);
+    const all = result.join("\\n");
 
     expect(result).toHaveLength(1);
-    expect(result.join("\\n")).not.toContain("╭");
-    expect(result.join("\\n")).not.toContain("╮");
-    expect(result.join("\\n")).not.toContain("│");
-    expect(result.join("\\n")).not.toContain("❯");
-    expect(renderSpy).toHaveBeenCalledWith(40);
+    expect(all).toContain("❯");
+    expect(all).not.toMatch(/[╭╮╰╯│─]/);
+    expect(renderSpy).toHaveBeenCalledWith(37);
   });
 
-  it("when editorFrame=false and rain is active, rain also omits side rails", () => {
+  it("when editorFrame=false and rain is active, rain omits all frame chrome", () => {
     const rainMgr = makeRainManagerStub(true);
     rainMgr.getSnapshot.mockReturnValue(makeSnapshot([], []));
     const { editor, config } = makeEditorWithParts(rainMgr);
@@ -551,10 +568,10 @@ describe("BorderlessEditor composition", () => {
     });
 
     const result = editor.render(40).map(stripAnsi);
+    const all = result.join("\\n");
 
-    expect(result[0]).toMatch(/^─+$/);
-    expect(result.slice(1, 3).every((line) => !line.includes("│"))).toBe(true);
-    expect(result.join("\\n")).not.toContain("❯");
+    expect(all).toContain("❯");
+    expect(all).not.toMatch(/[╭╮╰╯│─]/);
   });
 
   // ── 7c. rain active → rain lines first, single top border ──────────────────
@@ -643,6 +660,25 @@ describe("BorderlessEditor composition", () => {
     const rainLines = editor.renderSelectorOverlay(40);
     expect(rainLines.join("")).toContain(MOON);
     expect(rainLines.join("")).toContain(CYAN + RAIN_DROP + RESET);
+  });
+
+  it("selector rain has no border when editorFrame=false", () => {
+    const rainMgr = makeRainManagerStub(true);
+    rainMgr.getSnapshot.mockReturnValue(makeSnapshot([], []));
+
+    const { editor, config } = makeEditorWithParts(rainMgr);
+    config.get.mockReturnValue({
+      panel: true,
+      editorFrame: false,
+      rainRows: 2,
+      rainTickMs: 130,
+      maxRainDrops: 25,
+      codexQuota: false,
+    });
+
+    const rainLines = editor.renderSelectorOverlay(40).map(stripAnsi);
+
+    expect(rainLines.join("\n")).not.toMatch(/[╭╮╰╯│─]/);
   });
 
   it("dispose is idempotent and clears the active editor instance", () => {

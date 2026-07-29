@@ -109,8 +109,8 @@ function isAbortError(err: unknown): boolean {
 }
 
 /**
- * Render the status widget's body and bottom border without assuming that the
- * terminal can fit the normal two side borders. This is kept as a public,
+ * Render the status widget with its frame when enabled, or as one plain
+ * content row when the editor frame is disabled. This is kept as a public,
  * observable seam because terminals can report widths of 0, 1, or 2 during
  * resize and redraw races.
  */
@@ -118,8 +118,14 @@ export function buildStatusWidgetLines(
   width: number,
   hideSideBorders: boolean,
   statusContent: string,
+  frameEnabled = true,
 ): string[] {
   const outputWidth = safeTerminalWidth(width);
+  if (!frameEnabled) {
+    const content = truncateToWidth(statusContent, outputWidth);
+    return [content + " ".repeat(Math.max(0, outputWidth - visibleWidth(content)))];
+  }
+
   const frameHasSideBorders = !hideSideBorders && outputWidth >= 2;
   const innerWidth = frameHasSideBorders ? outputWidth - 2 : outputWidth;
   const content = truncateToWidth(statusContent, innerWidth);
@@ -906,6 +912,7 @@ export default function (pi: ExtensionAPI) {
                 outputWidth,
                 hideSideBorders,
                 statusLine,
+                configManager.get().editorFrame,
               );
             } catch (err) {
               if (isStaleExtensionContextError(err)) return [];
