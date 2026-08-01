@@ -193,7 +193,9 @@ export class TokyoConfigManager {
       }
       this.config = freezeConfig(nextConfig);
     } catch (err) {
-      handleExtensionError(err, "readTokyoConfig");
+      if (!isMissingFileError(err)) {
+        handleExtensionError(err, "readTokyoConfig");
+      }
       this.config = freezeConfig({ ...DEFAULT_CONFIG });
     }
   }

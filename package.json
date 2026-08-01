@@ -4,9 +4,9 @@
   "description": "Pi theme + extension bringing Tokyo Night color scheme with a Powerline-style status bar",
   "type": "module",
   "peerDependencies": {
-    "@earendil-works/pi-ai": "^1.0.0",
-    "@earendil-works/pi-coding-agent": "^1.0.0",
-    "@earendil-works/pi-tui": "^1.0.0"
+    "@earendil-works/pi-ai": ">=0.79.0",
+    "@earendil-works/pi-coding-agent": ">=0.79.0",
+    "@earendil-works/pi-tui": ">=0.79.0"
   },
   "keywords": [
     "pi",

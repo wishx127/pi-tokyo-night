@@ -144,6 +144,17 @@ describe("TokyoConfigManager validation", () => {
 });
 
 describe("TokyoConfigManager persistence", () => {
+  it("silently falls back to defaults when settings.json is missing", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const manager = new TokyoConfigManager();
+    manager.set("panel", false);
+
+    manager.read();
+
+    expect(error).not.toHaveBeenCalled();
+    expect(manager.get()).toEqual(DEFAULT_CONFIG);
+  });
+
   it("creates missing parent directories and settings.json", () => {
     const agentDir = path.join(tempDir, "nested", "agent");
     getAgentDir.mockReturnValue(agentDir);
