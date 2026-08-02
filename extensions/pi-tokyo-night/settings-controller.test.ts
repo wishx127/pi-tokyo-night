@@ -12,6 +12,7 @@ function makeController(): SettingsUIController {
     applyPanelState: vi.fn(),
     onCodexQuotaConfigChange: vi.fn(),
     onKimiQuotaConfigChange: vi.fn(),
+    onIconModeConfigChange: vi.fn(),
     requestEditorRender: vi.fn(),
   });
 }
@@ -25,15 +26,28 @@ describe("SettingsUIController quota toggle callbacks", () => {
       applyPanelState: vi.fn(),
       onCodexQuotaConfigChange: vi.fn(),
       onKimiQuotaConfigChange: vi.fn(),
+      onIconModeConfigChange: vi.fn(),
       requestEditorRender: vi.fn(),
     };
-    const controller = new SettingsUIController(
-      new TokyoConfigManager(),
-      callbacks,
-    );
+    const config = new TokyoConfigManager();
+    const controller = new SettingsUIController(config, callbacks);
     controller.enter(); // selectedIndex = 0 → "panel"
-    return { callbacks, controller };
+    return { callbacks, controller, config };
   }
+
+  it("cycles the status icon mode and requests a status render", () => {
+    const { callbacks, controller, config } = makeDispatchRig();
+
+    controller.handleInput(DOWN); // panel → editorFrame
+    controller.handleInput(DOWN); // editorFrame → codexQuota
+    controller.handleInput(DOWN); // codexQuota → kimiQuota
+    controller.handleInput(DOWN); // kimiQuota → iconMode
+    controller.handleInput(ENTER);
+
+    expect(config.get().iconMode).toBe("ascii");
+    expect(callbacks.onIconModeConfigChange).toHaveBeenCalledTimes(1);
+    expect(controller.buildLines(80).some((line) => line.includes("ASCII"))).toBe(true);
+  });
 
   it("notifies only the codex callback when toggling codexQuota", () => {
     const { callbacks, controller } = makeDispatchRig();
@@ -88,6 +102,7 @@ describe("SettingsUIController.buildLines", () => {
     controller.enter();
 
     expect(controller.buildLines(0)).toEqual([
+      "",
       "",
       "",
       "",

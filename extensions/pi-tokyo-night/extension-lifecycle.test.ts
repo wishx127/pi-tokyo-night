@@ -119,6 +119,15 @@ describe("Tokyo Night status widget narrow widths", () => {
     expect(() => buildStatusWidgetLines(width, true, "status")).not.toThrow();
   });
 
+  it("renders multiple content rows with one shared bottom border", () => {
+    const lines = buildStatusWidgetLines(20, false, ["left", "right"]);
+
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toContain("left");
+    expect(lines[1]).toContain("right");
+    expect(lines[2]).toMatch(/[╰╯─]/);
+  });
+
   it("when editorFrame=false, renders status content without any border row", () => {
     const lines = buildStatusWidgetLines(20, false, "status", false);
 
@@ -320,6 +329,31 @@ describe("Tokyo Night git branch lifecycle", () => {
 
     await fixture.emit("session_shutdown", { reason: "quit" }, secondShutdownCtx);
     expect(fixture.widgets.has("tokyo-status")).toBe(false);
+  });
+
+  it("uses responsive rows for a narrow status widget", async () => {
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn() },
+      theme,
+    );
+
+    expect(status.render(60)).toHaveLength(3);
+    await shutdown(fixture);
+  });
+
+  it.each([0, 1, 2])("keeps actual widget rows bounded at width %i", async (width) => {
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn() },
+      theme,
+    );
+
+    expect(() => status.render(width)).not.toThrow();
+    expect(status.render(width)).toHaveLength(2);
+    await shutdown(fixture);
   });
 
   it("requests a status render when fallback discovers a changed branch", async () => {

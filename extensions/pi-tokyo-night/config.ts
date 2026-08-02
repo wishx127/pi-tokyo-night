@@ -2,11 +2,23 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
 import path from "node:path";
 import { handleExtensionError } from "./errors";
+import { DEFAULT_ICON_MODE, type IconMode } from "./icons";
 
 // ── Tokyo Night User Config ────────────────────────────────────────────────
 // Persisted user personalization for the Tokyo Night extension. The panel
 // toggle and rain animation parameters can be changed at runtime through the
 // /tokyo-night settings overlay.
+export interface StatusModulesConfig {
+  model: boolean;
+  thinking: boolean;
+  path: boolean;
+  git: boolean;
+  quota: boolean;
+  tokens: boolean;
+  cost: boolean;
+  context: boolean;
+}
+
 export interface TokyoConfig {
   /** Show the top rain/moon/stars panel. */
   panel: boolean;
@@ -16,6 +28,10 @@ export interface TokyoConfig {
   codexQuota: boolean;
   /** Show Kimi Code 5h/weekly quota in the status bar (polls the usages API). */
   kimiQuota: boolean;
+  /** Icon set used by the status bar. */
+  iconMode: IconMode;
+  /** Visibility of status bar modules, configured in settings.json. */
+  statusModules: Readonly<StatusModulesConfig>;
   /** Height of the rain panel in rows. */
   rainRows: number;
   /** Milliseconds between rain animation frames. */
@@ -24,11 +40,24 @@ export interface TokyoConfig {
   maxRainDrops: number;
 }
 
+export const DEFAULT_STATUS_MODULES: Readonly<StatusModulesConfig> = Object.freeze({
+  model: true,
+  thinking: true,
+  path: true,
+  git: true,
+  quota: true,
+  tokens: true,
+  cost: true,
+  context: true,
+});
+
 export const DEFAULT_CONFIG: Readonly<TokyoConfig> = Object.freeze({
   panel: true,
   editorFrame: true,
   codexQuota: false,
   kimiQuota: true,
+  iconMode: DEFAULT_ICON_MODE,
+  statusModules: DEFAULT_STATUS_MODULES,
   rainRows: 3,
   rainTickMs: 130,
   maxRainDrops: 25,
@@ -36,13 +65,19 @@ export const DEFAULT_CONFIG: Readonly<TokyoConfig> = Object.freeze({
 
 // ── Settings Panel Types ───────────────────────────────────────────────────
 
-export type SettingKind = "toggle" | "number";
+export type SettingKind = "toggle" | "number" | "choice";
+
+export interface SettingOption {
+  value: string;
+  label: string;
+}
 
 export interface SettingDescriptor {
   id: keyof TokyoConfig;
   label: string;
   description: string;
   kind: SettingKind;
+  options?: readonly SettingOption[];
   min?: number;
   max?: number;
   step?: number;
@@ -72,6 +107,16 @@ export const SETTINGS: SettingDescriptor[] = [
     label: "Kimi Limit",
     description: "Show Kimi Code 5h/weekly quota in status bar (polls usages API)",
     kind: "toggle",
+  },
+  {
+    id: "iconMode",
+    label: "Status Icons",
+    description: "Use Nerd Font or ASCII icons in the status bar",
+    kind: "choice",
+    options: [
+      { value: "nerd", label: "Nerd" },
+      { value: "ascii", label: "ASCII" },
+    ],
   },
   {
     id: "rainRows",
@@ -117,11 +162,71 @@ function isMissingFileError(error: unknown): boolean {
   );
 }
 
+const WINDOWS_RENAME_RETRY_DELAYS_MS = [50, 100, 200, 400] as const;
+
+function isRetryableRenameError(error: unknown): boolean {
+  if (!isRecord(error)) return false;
+  return error.code === "EPERM" || error.code === "EACCES" || error.code === "EBUSY";
+}
+
+function waitSync(milliseconds: number): void {
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(signal, 0, 0, milliseconds);
+}
+
+function renameConfigFile(source: string, destination: string): void {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.renameSync(source, destination);
+      return;
+    } catch (error) {
+      const delay = WINDOWS_RENAME_RETRY_DELAYS_MS[attempt];
+      if (process.platform !== "win32" || delay === undefined || !isRetryableRenameError(error)) {
+        throw error;
+      }
+      waitSync(delay);
+    }
+  }
+}
+
+function readStatusModules(value: unknown): Readonly<StatusModulesConfig> {
+  const saved = isRecord(value) ? value : {};
+  return Object.freeze({
+    model: typeof saved.model === "boolean"
+      ? saved.model
+      : DEFAULT_STATUS_MODULES.model,
+    thinking: typeof saved.thinking === "boolean"
+      ? saved.thinking
+      : DEFAULT_STATUS_MODULES.thinking,
+    path: typeof saved.path === "boolean"
+      ? saved.path
+      : DEFAULT_STATUS_MODULES.path,
+    git: typeof saved.git === "boolean"
+      ? saved.git
+      : DEFAULT_STATUS_MODULES.git,
+    quota: typeof saved.quota === "boolean"
+      ? saved.quota
+      : DEFAULT_STATUS_MODULES.quota,
+    tokens: typeof saved.tokens === "boolean"
+      ? saved.tokens
+      : DEFAULT_STATUS_MODULES.tokens,
+    cost: typeof saved.cost === "boolean"
+      ? saved.cost
+      : DEFAULT_STATUS_MODULES.cost,
+    context: typeof saved.context === "boolean"
+      ? saved.context
+      : DEFAULT_STATUS_MODULES.context,
+  });
+}
+
 function isValidSettingValue(key: keyof TokyoConfig, value: unknown): boolean {
   const setting = SETTINGS.find((candidate) => candidate.id === key);
   if (!setting) return false;
 
   if (setting.kind === "toggle") return typeof value === "boolean";
+  if (setting.kind === "choice") {
+    return setting.options?.some((option) => option.value === value) ?? false;
+  }
   return (
     typeof value === "number" &&
     Number.isFinite(value) &&
@@ -156,7 +261,7 @@ export class TokyoConfigManager {
    *  narrow `TokyoConfig[keyof TokyoConfig]` for assignment based on
    *  runtime guards (setting.kind). This method centralizes the necessary
    *  type escape, keeping external callers type-safe. */
-  set(key: keyof TokyoConfig, value: boolean | number): void {
+  set(key: keyof TokyoConfig, value: TokyoConfig[keyof TokyoConfig]): void {
     if (!Object.hasOwn(DEFAULT_CONFIG, key)) return;
 
     // Invalid runtime values are reset rather than allowed into the live config.
@@ -187,6 +292,8 @@ export class TokyoConfigManager {
         );
         nextConfig.codexQuota = validatedValue("codexQuota", saved.codexQuota);
         nextConfig.kimiQuota = validatedValue("kimiQuota", saved.kimiQuota);
+        nextConfig.iconMode = validatedValue("iconMode", saved.iconMode);
+        nextConfig.statusModules = readStatusModules(saved.statusModules);
         nextConfig.rainRows = validatedValue("rainRows", saved.rainRows);
         nextConfig.rainTickMs = validatedValue("rainTickMs", saved.rainTickMs);
         nextConfig.maxRainDrops = validatedValue("maxRainDrops", saved.maxRainDrops);
@@ -229,7 +336,7 @@ export class TokyoConfigManager {
         JSON.stringify(settings, null, 2),
         "utf-8",
       );
-      fs.renameSync(temporaryPath, settingsPath);
+      renameConfigFile(temporaryPath, settingsPath);
       temporaryPath = undefined;
       return true;
     } catch (err) {

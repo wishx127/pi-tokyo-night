@@ -15,8 +15,13 @@ import {
   type CodexUsageStore,
   type UsageSnapshot,
 } from "./usage";
-import type { TokyoConfigManager } from "./config";
+import {
+  DEFAULT_STATUS_MODULES,
+  type StatusModulesConfig,
+  type TokyoConfigManager,
+} from "./config";
 import { handleExtensionError } from "./errors";
+import { resolveIcons, type StatusIcons } from "./icons";
 import {
   bgRgb,
   fgRgb,
@@ -46,8 +51,13 @@ const COST_BG = [93, 93, 93]; // Gray #5d5d5d
 const LIMIT_BG = [101, 83, 162]; // Mid purple — between branch and tokens backgrounds
 
 type Module =
-  | { text: string; bg: number; fg: number }
-  | { text: string; bgColor: number[] | null; textColor: number[] };
+  | { text: string; bg: number; fg: number; noEndArrow?: boolean }
+  | {
+      text: string;
+      bgColor: number[] | null;
+      textColor: number[];
+      noEndArrow?: boolean;
+    };
 
 // Shared "LIMIT" module for provider quota (Codex via response headers,
 // Kimi via polled usages API — both render through formatStatus).
@@ -131,42 +141,203 @@ const getModuleFg = (m: Module): number[] =>
   "fg" in m ? MODULE_FG[m.fg] : m.textColor;
 
 // Powerline transition arrow between two modules (1-char wide)
-const buildTransition = (from: Module, to: Module): string => {
+const buildTransition = (
+  from: Module,
+  to: Module,
+  icons: StatusIcons,
+): string => {
   const c1 = getModuleBg(from);
   const c2 = getModuleBg(to);
   const bg = c2 === null ? RESET_BG : bgRgb(c2);
   const fg = c1 === null ? RESET_FG : fgRgb(c1);
-  return `${bg}${fg}\uE0B0${RESET_BG}${RESET_FG}`;
+  return `${bg}${fg}${icons.transition}${RESET_BG}${RESET_FG}`;
+};
+
+const getModuleText = (m: Module): string => ` ${m.text} `;
+const getModuleWidth = (m: Module): number => visibleWidth(getModuleText(m));
+const formatIconLabel = (icon: string, label: string): string =>
+  icon ? `${icon} ${label}` : label;
+
+const buildModule = (m: Module): string => {
+  const bgColor = getModuleBg(m);
+  const textColor = getModuleFg(m);
+  const bgCode = bgColor === null ? RESET_BG : bgRgb(bgColor);
+  const fgCode = fgRgb(textColor);
+
+  return `${bgCode}${fgCode}${getModuleText(m)}${RESET_BG}${RESET_FG}`;
 };
 
 // Build a section (array of modules) with Powerline transitions
-const buildSection = (modules: Module[]) => {
+const buildSection = (modules: Module[], icons: StatusIcons) => {
   let result = "";
   let currentWidth = 0;
 
   for (let i = 0; i < modules.length; i++) {
     const m = modules[i];
-    const bgColor = getModuleBg(m);
-    const textColor = getModuleFg(m);
-
-    const bgCode = bgColor === null ? RESET_BG : bgRgb(bgColor);
-    const fgCode = fgRgb(textColor);
 
     // Powerline transition before module (except first)
     if (i > 0) {
-      result += buildTransition(modules[i - 1], m);
-      currentWidth += 1;
+      const transition = buildTransition(modules[i - 1], m, icons);
+      result += transition;
+      currentWidth += visibleWidth(transition);
     }
 
-    const moduleText = ` ${m.text} `;
-    result += `${bgCode}${fgCode}${moduleText}${RESET_BG}${RESET_FG}`;
-    currentWidth += visibleWidth(moduleText);
+    result += buildModule(m);
+    currentWidth += getModuleWidth(m);
   }
 
   return { result, currentWidth };
 };
 
-export function buildStatusLine(
+type StatusLayout = {
+  oneLine: string;
+  modules: Module[];
+  icons: StatusIcons;
+};
+
+const END_MODULE: Module = {
+  text: "",
+  bgColor: null,
+  textColor: [],
+};
+
+const buildEndArrow = (module: Module, icons: StatusIcons): string =>
+  module.noEndArrow ? "" : buildTransition(module, END_MODULE, icons);
+
+function buildRow(modules: Module[], icons: StatusIcons): string {
+  if (modules.length === 0) return "";
+  return `${buildSection(modules, icons).result}${buildEndArrow(modules[modules.length - 1], icons)}`;
+}
+
+function buildResponsiveRows(
+  modules: Module[],
+  width: number,
+  icons: StatusIcons,
+): string[] {
+  if (width <= 0 || modules.length === 0) return [];
+
+  const firstArrow = buildEndArrow(modules[0], icons);
+  const firstArrowWidth = visibleWidth(firstArrow);
+  if (width <= firstArrowWidth + 2) {
+    return [truncateToWidth(firstArrow, width)];
+  }
+
+  const rows: string[] = [];
+  let current: Module[] = [];
+  let currentWidth = 0;
+
+  const flush = () => {
+    if (current.length === 0) return;
+    rows.push(buildRow(current, icons));
+    current = [];
+    currentWidth = 0;
+  };
+
+  for (const module of modules) {
+    const moduleWidth = getModuleWidth(module);
+    const endArrowWidth = visibleWidth(buildEndArrow(module, icons));
+
+    if (current.length > 0) {
+      const previous = current[current.length - 1];
+      const transition = buildTransition(previous, module, icons);
+      const candidateWidth =
+        currentWidth + visibleWidth(transition) + moduleWidth + endArrowWidth;
+
+      if (candidateWidth <= width) {
+        current.push(module);
+        currentWidth += visibleWidth(transition) + moduleWidth;
+        continue;
+      }
+
+      // The next complete module does not fit. Keep the current row intact
+      // and try the module on a fresh row instead of truncating the row early.
+      flush();
+    }
+
+    if (moduleWidth + endArrowWidth <= width) {
+      current = [module];
+      currentWidth = moduleWidth;
+      continue;
+    }
+
+    // A module that cannot fit on an empty row may be truncated by its own
+    // measured text width. The end arrow is always reserved separately.
+    const textWidth = Math.max(0, width - endArrowWidth - 2);
+    if (textWidth > 0) {
+      const truncatedModule: Module = {
+        ...module,
+        text: truncateToWidth(module.text, textWidth),
+      };
+      current = [truncatedModule];
+      currentWidth = getModuleWidth(truncatedModule);
+      flush();
+    } else {
+      rows.push(truncateToWidth(buildEndArrow(module, icons), width));
+    }
+  }
+
+  flush();
+  return rows;
+}
+
+function buildColoredFill(bgColor: number[] | null, width: number): string {
+  if (width <= 0) return "";
+  const bgCode = bgColor === null ? RESET_BG : bgRgb(bgColor);
+  return `${bgCode}${" ".repeat(width)}${RESET_BG}`;
+}
+
+function buildWideStatusLine(
+  width: number,
+  leftModules: Module[],
+  rightModules: Module[],
+  leftSection: ReturnType<typeof buildSection>,
+  rightSection: ReturnType<typeof buildSection>,
+  icons: StatusIcons,
+  stretchSides: boolean,
+): string {
+  if (leftModules.length === 0 && rightModules.length === 0) return "";
+
+  const safeWidth = Math.max(1, width - 2);
+  if (leftModules.length === 0) {
+    const fillWidth = Math.max(1, safeWidth - rightSection.currentWidth);
+    return `${buildColoredFill(getModuleBg(rightModules[0]), fillWidth)}${rightSection.result}`;
+  }
+  if (rightModules.length === 0) {
+    const fillWidth = Math.max(1, safeWidth - leftSection.currentWidth);
+    return `${leftSection.result}${buildColoredFill(
+      getModuleBg(leftModules[leftModules.length - 1]),
+      fillWidth,
+    )}`;
+  }
+
+  const bridgeTransition = buildTransition(
+    leftModules[leftModules.length - 1],
+    rightModules[0],
+    icons,
+  );
+  const paddingWidth = Math.max(
+    1,
+    safeWidth - leftSection.currentWidth - visibleWidth(bridgeTransition) - rightSection.currentWidth,
+  );
+  if (!stretchSides) {
+    return `${leftSection.result}${buildColoredFill(
+      getModuleBg(leftModules[leftModules.length - 1]),
+      paddingWidth,
+    )}${bridgeTransition}${rightSection.result}`;
+  }
+
+  const leftFillWidth = Math.ceil(paddingWidth / 2);
+  const rightFillWidth = paddingWidth - leftFillWidth;
+  return `${leftSection.result}${buildColoredFill(
+    getModuleBg(leftModules[leftModules.length - 1]),
+    leftFillWidth,
+  )}${bridgeTransition}${buildColoredFill(
+    getModuleBg(rightModules[0]),
+    rightFillWidth,
+  )}${rightSection.result}`;
+}
+
+function buildStatusLayout(
   width: number,
   theme: Theme,
   ctx: ExtensionContext,
@@ -174,11 +345,16 @@ export function buildStatusLine(
   thinkingLevel: string,
   config: TokyoConfigManager,
   codexUsageStore?: Pick<CodexUsageStore, "getSnapshot">,
-): string {
+): StatusLayout {
   // Use a slightly smaller width to account for potential width miscalculations
   // with Nerd Font glyphs that may be rendered as double-width by the terminal
   // but counted as single-width by visibleWidth()
-  const safeWidth = Math.max(1, width - 2);
+  const icons = resolveIcons(config.get().iconMode);
+  const statusModules: StatusModulesConfig = {
+    ...DEFAULT_STATUS_MODULES,
+    ...(config.get().statusModules ?? {}),
+  };
+  const stretchSides = Object.values(statusModules).some((visible) => !visible);
   const { input, output, cost } = getSessionStats(ctx);
 
   const fmt = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`);
@@ -228,16 +404,39 @@ export function buildStatusLine(
   const barColor = pct >= 50 ? "error" : pct >= 30 ? "warning" : "accent";
   const filled = Math.round((pct / 100) * 8);
   const progressBar =
-    theme.fg(barColor, "█".repeat(filled)) +
-    theme.fg("dim", "░".repeat(8 - filled));
+    theme.fg(barColor, icons.gaugeFilled.repeat(filled)) +
+    theme.fg("dim", icons.gaugeEmpty.repeat(8 - filled));
 
   // Build left modules (model, thinking, path, branch) - purple gradient
-  const leftModules = [
-    { text: `\uE795 ${shortName(modelId)}`, bg: 0, fg: 0 },
-    { text: `⚡ ${thinkingLevel}`, bg: 1, fg: 1 },
-    { text: `\uF07B ${shortenPath(cwd)}`, bg: 2, fg: 2 },
-    ...(branch ? [{ text: `\uE0A0 ${branch}`, bg: 3, fg: 3 }] : []),
-  ];
+  const leftModules: Module[] = [];
+  if (statusModules.model) {
+    leftModules.push({
+      text: formatIconLabel(icons.model, shortName(modelId)),
+      bg: 0,
+      fg: 0,
+    });
+  }
+  if (statusModules.thinking) {
+    leftModules.push({
+      text: formatIconLabel(icons.thinking, thinkingLevel),
+      bg: 1,
+      fg: 1,
+    });
+  }
+  if (statusModules.path) {
+    leftModules.push({
+      text: formatIconLabel(icons.path, shortenPath(cwd)),
+      bg: 2,
+      fg: 2,
+    });
+  }
+  if (statusModules.git && branch) {
+    leftModules.push({
+      text: formatIconLabel(icons.branch, branch),
+      bg: 3,
+      fg: 3,
+    });
+  }
 
   // Provider quota usage: Codex via response headers (only when directly
   // connected to official Codex/GPT), Kimi via polled usages API — both
@@ -254,49 +453,98 @@ export function buildStatusLine(
   );
 
   // Build right modules (provider usage, tokens, cost, progress)
-  const rightModules = [
-    ...codexModule,
-    ...kimiModule,
-    {
-      text: `Σ ${fmt(totalTokens)} tokens`,
-      bgColor: TOKENS_BG as number[],
-      textColor: [255, 255, 200] as number[],
-    },
-    {
-      text: `$${fmtCost(cost)}`,
-      bgColor: COST_BG as number[],
-      textColor: [200, 255, 200] as number[],
-    },
-    {
-      text: `${progressBar} ${pct}%/${fmt(maxCtx)}`,
-      bgColor: null as number[] | null,
-      textColor: [255, 200, 200] as number[],
-    },
+  const rightModules: Module[] = [
+    ...(statusModules.quota ? [...codexModule, ...kimiModule] : []),
+    ...(statusModules.tokens
+      ? [{
+          text: `${icons.tokens} ${fmt(totalTokens)} tokens`,
+          bgColor: TOKENS_BG as number[],
+          textColor: [255, 255, 200] as number[],
+        }]
+      : []),
+    ...(statusModules.cost
+      ? [{
+          text: `$${fmtCost(cost)}`,
+          bgColor: COST_BG as number[],
+          textColor: [200, 255, 200] as number[],
+        }]
+      : []),
+    ...(statusModules.context
+      ? [{
+          text: `${progressBar} ${pct}%/${fmt(maxCtx)}`,
+          bgColor: null as number[] | null,
+          textColor: [255, 200, 200] as number[],
+          noEndArrow: true,
+        }]
+      : []),
   ];
 
-  const leftSection = buildSection(leftModules);
-  const rightSection = buildSection(rightModules);
+  const leftSection = buildSection(leftModules, icons);
+  const rightSection = buildSection(rightModules, icons);
 
-  // Padding uses last left module's bg color
-  const lastLeftBg = getModuleBg(leftModules[leftModules.length - 1]);
-  const paddingBgCode = lastLeftBg === null ? RESET_BG : bgRgb(lastLeftBg);
+  return {
+    oneLine: buildWideStatusLine(
+      width,
+      leftModules,
+      rightModules,
+      leftSection,
+      rightSection,
+      icons,
+      stretchSides,
+    ),
+    modules: [...leftModules, ...rightModules],
+    icons,
+  };
+}
 
-  // Bridge transition from padding to first right module
-  const bridgeTransition = buildTransition(
-    leftModules[leftModules.length - 1],
-    rightModules[0],
-  );
-
-  const paddingWidth = Math.max(
-    1,
-    safeWidth - leftSection.currentWidth - 1 - rightSection.currentWidth,
-  );
-  const padding = `${paddingBgCode}${" ".repeat(paddingWidth)}${RESET_BG}`;
-
-  return truncateToWidth(
-    leftSection.result + padding + bridgeTransition + rightSection.result,
+export function buildStatusLine(
+  width: number,
+  theme: Theme,
+  ctx: ExtensionContext,
+  branch: string,
+  thinkingLevel: string,
+  config: TokyoConfigManager,
+  codexUsageStore?: Pick<CodexUsageStore, "getSnapshot">,
+): string {
+  const layout = buildStatusLayout(
     width,
+    theme,
+    ctx,
+    branch,
+    thinkingLevel,
+    config,
+    codexUsageStore,
   );
+  return truncateToWidth(layout.oneLine, width);
+}
+
+export function buildStatusLines(
+  width: number,
+  theme: Theme,
+  ctx: ExtensionContext,
+  branch: string,
+  thinkingLevel: string,
+  config: TokyoConfigManager,
+  codexUsageStore?: Pick<CodexUsageStore, "getSnapshot">,
+): string[] {
+  if (!Number.isFinite(width) || width <= 0) return [];
+
+  const renderWidth = Math.floor(width);
+  const layout = buildStatusLayout(
+    renderWidth,
+    theme,
+    ctx,
+    branch,
+    thinkingLevel,
+    config,
+    codexUsageStore,
+  );
+
+  if (visibleWidth(layout.oneLine) <= renderWidth) {
+    return [layout.oneLine];
+  }
+
+  return buildResponsiveRows(layout.modules, renderWidth, layout.icons);
 }
 
 export function shortName(id: string): string {

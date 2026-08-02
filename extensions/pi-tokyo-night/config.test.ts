@@ -9,7 +9,11 @@ const { getAgentDir } = vi.hoisted(() => ({
 
 vi.mock("@earendil-works/pi-coding-agent", () => ({ getAgentDir }));
 
-import { DEFAULT_CONFIG, TokyoConfigManager } from "./config";
+import {
+  DEFAULT_CONFIG,
+  SETTINGS,
+  TokyoConfigManager,
+} from "./config";
 
 let tempDir: string;
 
@@ -42,6 +46,7 @@ describe("TokyoConfigManager validation", () => {
           panel: "yes",
           codexQuota: 1,
           kimiQuota: "yes",
+          iconMode: "auto",
           rainRows: 0,
           rainTickMs: 100.5,
           maxRainDrops: 101,
@@ -141,6 +146,55 @@ describe("TokyoConfigManager validation", () => {
       maxRainDrops: 100,
     });
   });
+
+  it("defaults, validates, and persists the status icon mode", () => {
+    const manager = new TokyoConfigManager();
+
+    expect(manager.get().iconMode).toBe("nerd");
+    manager.set("iconMode", "ascii");
+    expect(manager.get().iconMode).toBe("ascii");
+
+    manager.set("iconMode", "auto" as unknown as "nerd");
+    expect(manager.get().iconMode).toBe("nerd");
+
+    expect(manager.write()).toBe(true);
+    const reader = new TokyoConfigManager();
+    reader.read();
+    expect(reader.get().iconMode).toBe("nerd");
+  });
+
+  it("does not expose status module visibility as panel settings", () => {
+    expect(SETTINGS.some((setting) => setting.id === "statusModules")).toBe(false);
+  });
+
+  it("loads file-based status module visibility with true defaults", () => {
+    fs.writeFileSync(
+      path.join(tempDir, "settings.json"),
+      JSON.stringify({
+        "pi-tokyo-night": {
+          statusModules: {
+            model: false,
+            path: false,
+            cost: false,
+          },
+        },
+      }),
+    );
+
+    const manager = new TokyoConfigManager();
+    manager.read();
+
+    expect(manager.get().statusModules).toEqual({
+      model: false,
+      thinking: true,
+      path: false,
+      git: true,
+      quota: true,
+      tokens: true,
+      cost: false,
+      context: true,
+    });
+  });
 });
 
 describe("TokyoConfigManager persistence", () => {
@@ -220,6 +274,40 @@ describe("TokyoConfigManager persistence", () => {
     manager.read();
 
     expect(manager.get()).toEqual(DEFAULT_CONFIG);
+  });
+
+  it("retries a transient Windows rename failure", () => {
+    const manager = new TokyoConfigManager();
+    manager.set("panel", false);
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", {
+      configurable: true,
+      value: "win32",
+    });
+
+    try {
+      const rename = vi.spyOn(fs, "renameSync")
+        .mockImplementationOnce(() => {
+          const error = new Error("sharing violation") as NodeJS.ErrnoException;
+          error.code = "EPERM";
+          throw error;
+        })
+        .mockImplementationOnce((from, to) => {
+          fs.copyFileSync(from, to);
+          fs.unlinkSync(from);
+        });
+
+      expect(manager.write()).toBe(true);
+      expect(rename).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(fs.readFileSync(path.join(tempDir, "settings.json"), "utf8"))).toMatchObject({
+        "pi-tokyo-night": { panel: false },
+      });
+    } finally {
+      Object.defineProperty(process, "platform", {
+        configurable: true,
+        value: originalPlatform,
+      });
+    }
   });
 
   it("returns false and preserves the original file when atomic rename fails", () => {

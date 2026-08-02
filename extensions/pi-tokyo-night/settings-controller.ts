@@ -2,6 +2,7 @@ import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
 import {
   SETTINGS,
   type SettingDescriptor,
+  type TokyoConfig,
   type TokyoConfigManager,
 } from "./config";
 import { CYAN, FRAME_RGB, RESET, fgRgb } from "./ui-primitives";
@@ -10,6 +11,7 @@ export interface SettingsControllerCallbacks {
   applyPanelState: () => void;
   onCodexQuotaConfigChange: () => void;
   onKimiQuotaConfigChange: () => void;
+  onIconModeConfigChange: () => void;
   requestEditorRender: () => void;
 }
 
@@ -82,6 +84,8 @@ export class SettingsUIController {
           } else if (setting.id === "kimiQuota") {
             this.callbacks.onKimiQuotaConfigChange();
           }
+        } else if (setting.kind === "choice") {
+          this.cycleChoice(setting);
         } else {
           this.editValue = this.config.get()[setting.id] as number;
           this.editing = true;
@@ -114,6 +118,11 @@ export class SettingsUIController {
         valueStr = String(this.editValue);
       } else if (setting.kind === "toggle") {
         valueStr = this.config.get()[setting.id] ? "On" : "Off";
+      } else if (setting.kind === "choice") {
+        const option = setting.options?.find(
+          (candidate) => candidate.value === this.config.get()[setting.id],
+        );
+        valueStr = option?.label ?? String(this.config.get()[setting.id]);
       } else {
         valueStr = String(this.config.get()[setting.id]);
       }
@@ -127,7 +136,7 @@ export class SettingsUIController {
 
     const help = this.editing
       ? "  ↑/↓ adjust value, Enter confirm, Esc cancel"
-      : "  ↑/↓ navigate, Enter toggle/edit, Esc save";
+      : "  ↑/↓ navigate, Enter toggle/cycle/edit, Esc save";
     lines.push(truncate(`${fgRgb(FRAME_RGB)}${help}${RESET}`));
     return lines;
   }
@@ -138,6 +147,25 @@ export class SettingsUIController {
     this.selectedIndex = 0;
     this.editing = false;
     this.editValue = 0;
+  }
+
+  private cycleChoice(setting: SettingDescriptor): void {
+    const options = setting.options ?? [];
+    if (options.length === 0) return;
+
+    const current = this.config.get()[setting.id];
+    const currentIndex = options.findIndex(
+      (option) => option.value === current,
+    );
+    const next = options[(currentIndex + 1 + options.length) % options.length];
+    this.config.set(
+      setting.id,
+      next.value as TokyoConfig[keyof TokyoConfig],
+    );
+
+    if (setting.id === "iconMode") {
+      this.callbacks.onIconModeConfigChange();
+    }
   }
 
   /** Adjust a numeric setting value by direction * step, clamped to min/max. */

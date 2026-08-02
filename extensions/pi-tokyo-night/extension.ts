@@ -44,7 +44,7 @@ import {
 import {
   SettingsUIController,
 } from "./settings-controller";
-import { buildStatusLine } from "./status-bar";
+import { buildStatusLines } from "./status-bar";
 import {
   BOX,
   FRAME_RGB,
@@ -117,20 +117,28 @@ function isAbortError(err: unknown): boolean {
 export function buildStatusWidgetLines(
   width: number,
   hideSideBorders: boolean,
-  statusContent: string,
+  statusContent: string | string[],
   frameEnabled = true,
 ): string[] {
   const outputWidth = safeTerminalWidth(width);
+  const contentRows = Array.isArray(statusContent)
+    ? statusContent
+    : [statusContent];
+  const rows = contentRows.length > 0 ? contentRows : [""];
   if (!frameEnabled) {
-    const content = truncateToWidth(statusContent, outputWidth);
-    return [content + " ".repeat(Math.max(0, outputWidth - visibleWidth(content)))];
+    return rows.map((row) => {
+      const content = truncateToWidth(row, outputWidth);
+      return content + " ".repeat(Math.max(0, outputWidth - visibleWidth(content)));
+    });
   }
 
   const frameHasSideBorders = !hideSideBorders && outputWidth >= 2;
   const innerWidth = frameHasSideBorders ? outputWidth - 2 : outputWidth;
-  const content = truncateToWidth(statusContent, innerWidth);
-  const padLen = Math.max(0, innerWidth - visibleWidth(content));
   const frameFg = (s: string) => `${fgRgb(FRAME_RGB)}${s}${RESET}`;
+  const paddedRows = rows.map((row) => {
+    const content = truncateToWidth(row, innerWidth);
+    return content + " ".repeat(Math.max(0, innerWidth - visibleWidth(content)));
+  });
 
   const bottomLine = hideSideBorders
     ? frameFg(BOX.h.repeat(outputWidth))
@@ -139,11 +147,11 @@ export function buildStatusWidgetLines(
       : frameFg(outputWidth === 1 ? BOX.bl : "");
 
   if (!frameHasSideBorders) {
-    return [content + " ".repeat(padLen), bottomLine];
+    return [...paddedRows, bottomLine];
   }
 
   return [
-    frameFg(BOX.v) + content + " ".repeat(padLen) + frameFg(BOX.v),
+    ...paddedRows.map((content) => frameFg(BOX.v) + content + frameFg(BOX.v)),
     bottomLine,
   ];
 }
@@ -385,6 +393,7 @@ export default function (pi: ExtensionAPI) {
     applyPanelState: () => applyCurrentPanelState(),
     onCodexQuotaConfigChange: () => refreshCodexQuotaState(),
     onKimiQuotaConfigChange: () => refreshKimiQuotaState(),
+    onIconModeConfigChange: () => requestStatusRenderCallback(),
   });
 
   const borderlessEditorDependencies: BorderlessEditorDependencies = {
@@ -899,8 +908,8 @@ export default function (pi: ExtensionAPI) {
                 !hideSideBorders && outputWidth >= 2
                   ? outputWidth - 2
                   : outputWidth;
-              const statusLine = buildStatusLine(
-                Math.max(1, contentWidth),
+              const statusLines = buildStatusLines(
+                contentWidth,
                 theme,
                 ctx,
                 session.branch.cachedBranch,
@@ -911,7 +920,7 @@ export default function (pi: ExtensionAPI) {
               return buildStatusWidgetLines(
                 outputWidth,
                 hideSideBorders,
-                statusLine,
+                statusLines,
                 configManager.get().editorFrame,
               );
             } catch (err) {

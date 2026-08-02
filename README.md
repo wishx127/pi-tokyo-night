@@ -67,12 +67,13 @@ Open with `/tokyo-night`, then navigate with ↑/↓ and press Enter to toggle o
 | Input Frame    | On      | Show the rounded frame around the input editor                      |
 | Codex Limit    | Off     | Show Codex quota in the status bar (requires Pi transport=sse)      |
 | Kimi Limit     | On      | Show Kimi Code 5h/weekly quota in the status bar (polls usages API) |
+| Status Icons   | Nerd    | Use Nerd Font or ASCII icons in the status bar                     |
 | Rain Rows      | 3       | Height of rain panel (1–10)                                         |
 | Rain Tick (ms) | 130     | Animation speed (50–1000)                                           |
 | Max Rain Drops | 25      | Simultaneous drops (5–100)                                          |
 
 
-Settings are persisted to `~/.pi/agent/settings.json` under the `pi-tokyo-night` key:
+Settings are persisted to `~/.pi/agent/settings.json` under the `pi-tokyo-night` key. Status module visibility is configured directly in this file; omitted module keys default to `true` and changes take effect on the next Pi session:
 
 ```json
 {
@@ -81,6 +82,17 @@ Settings are persisted to `~/.pi/agent/settings.json` under the `pi-tokyo-night`
     "editorFrame": true,
     "codexQuota": false,
     "kimiQuota": true,
+    "iconMode": "nerd",
+    "statusModules": {
+      "model": true,
+      "thinking": true,
+      "path": true,
+      "git": true,
+      "quota": true,
+      "tokens": true,
+      "cost": true,
+      "context": true
+    },
     "rainRows": 3,
     "rainTickMs": 130,
     "maxRainDrops": 25
@@ -126,7 +138,7 @@ Theme location:
 
 - [Pi Coding Agent](https://github.com/earendil-works/pi)
 - Terminal with 24-bit true color support
-- [Nerd Font](https://www.nerdfonts.com/) for icons (optional but recommended)
+- [Nerd Font](https://www.nerdfonts.com/) for icons (optional)
 
 ## 🤝 Contributing
 
