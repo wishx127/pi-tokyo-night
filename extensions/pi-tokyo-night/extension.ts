@@ -536,6 +536,7 @@ export default function (pi: ExtensionAPI) {
     onCodexQuotaConfigChange: () => refreshCodexQuotaState(),
     onKimiQuotaConfigChange: () => refreshKimiQuotaState(),
     onIconModeConfigChange: () => requestStatusRenderCallback(),
+    onWorkingIndicatorConfigChange: () => applyWorkingIndicatorState(),
   });
 
   const borderlessEditorDependencies: BorderlessEditorDependencies = {
@@ -713,14 +714,19 @@ export default function (pi: ExtensionAPI) {
 
     setWorkingPhase(session, "waiting", true);
     session.working.activeTools.clear();
+    const showWorkingIndicator = configManager.get().workingIndicator;
     try {
-      session.ui.setWorkingVisible(true);
+      session.ui.setWorkingVisible(showWorkingIndicator);
     } catch (err) {
       if (!isStaleExtensionContextError(err)) {
         handleExtensionError(err, "working visibility");
       }
     }
-    startWorkingTimer(session);
+    if (showWorkingIndicator) {
+      startWorkingTimer(session);
+    } else {
+      stopWorkingTimer(session);
+    }
   });
 
   pi.on("turn_start", async (_event, ctx) => {
@@ -789,6 +795,29 @@ export default function (pi: ExtensionAPI) {
     }
     updateWorkingMessage(session);
   });
+
+  const applyWorkingIndicatorState = (): void => {
+    const session = activeSession;
+    const ui = editorUIContext ?? session?.ui;
+    if (!ui) return;
+    try {
+      const enabled = configManager.get().workingIndicator;
+      ui.setWorkingVisible(enabled);
+      if (enabled) {
+        // Restore live phase/tool updates when re-enabled mid-turn.
+        if (session && session.working.phaseStartedAt !== undefined) {
+          startWorkingTimer(session);
+          updateWorkingMessage(session);
+        }
+      } else if (session) {
+        stopWorkingTimer(session);
+      }
+    } catch (err) {
+      if (!isStaleExtensionContextError(err)) {
+        handleExtensionError(err, "working indicator state");
+      }
+    }
+  };
 
   refreshCodexQuotaState = () => {
     const enabled = configManager.get().codexQuota && isCodexModel(activeModel);
@@ -942,7 +971,7 @@ export default function (pi: ExtensionAPI) {
     if (mode === "tui") {
       // ── Register custom editor (wrapping previous) ──────────────────────
       ui.setEditorComponent(borderlessEditorFactory);
-      ui.setWorkingVisible(true);
+      ui.setWorkingVisible(configManager.get().workingIndicator);
       ui.setWorkingMessage();
       const rootTui = ownedEditor?.tuiRef;
       rootTui?.requestRender(true);
@@ -996,7 +1025,7 @@ export default function (pi: ExtensionAPI) {
                 ui.setEditorComponent(borderlessEditorFactory);
                 registerStatusWidget();
                 registerFooter();
-                ui.setWorkingVisible(true);
+                ui.setWorkingVisible(configManager.get().workingIndicator);
                 applyPanelState();
                 requestRainOverlayRenderCallback();
                 session.editorPollDelay = BASE_POLL_MS;

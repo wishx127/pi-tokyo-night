@@ -24,6 +24,8 @@ export interface TokyoConfig {
   panel: boolean;
   /** Show the rounded frame around the input editor. */
   editorFrame: boolean;
+  /** Show Pi's native "Working" indicator while the agent runs. */
+  workingIndicator: boolean;
   /** Show Codex limit in the status bar (requires Pi transport=sse). */
   codexQuota: boolean;
   /** Show Kimi Code 5h/weekly quota in the status bar (polls the usages API). */
@@ -54,6 +56,7 @@ export const DEFAULT_STATUS_MODULES: Readonly<StatusModulesConfig> = Object.free
 export const DEFAULT_CONFIG: Readonly<TokyoConfig> = Object.freeze({
   panel: true,
   editorFrame: true,
+  workingIndicator: true,
   codexQuota: false,
   kimiQuota: true,
   iconMode: DEFAULT_ICON_MODE,
@@ -144,6 +147,12 @@ export const SETTINGS: SettingDescriptor[] = [
     min: 5,
     max: 100,
     step: 5,
+  },
+  {
+    id: "workingIndicator",
+    label: "Working Indicator",
+    description: "Show Pi's native Working indicator while the agent runs",
+    kind: "toggle",
   },
 ];
 
@@ -289,6 +298,10 @@ export class TokyoConfigManager {
         nextConfig.editorFrame = validatedValue(
           "editorFrame",
           saved.editorFrame,
+        );
+        nextConfig.workingIndicator = validatedValue(
+          "workingIndicator",
+          saved.workingIndicator,
         );
         nextConfig.codexQuota = validatedValue("codexQuota", saved.codexQuota);
         nextConfig.kimiQuota = validatedValue("kimiQuota", saved.kimiQuota);

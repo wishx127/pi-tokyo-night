@@ -12,6 +12,7 @@ export interface SettingsControllerCallbacks {
   onCodexQuotaConfigChange: () => void;
   onKimiQuotaConfigChange: () => void;
   onIconModeConfigChange: () => void;
+  onWorkingIndicatorConfigChange: () => void;
   requestEditorRender: () => void;
 }
 
@@ -83,6 +84,8 @@ export class SettingsUIController {
             this.callbacks.onCodexQuotaConfigChange();
           } else if (setting.id === "kimiQuota") {
             this.callbacks.onKimiQuotaConfigChange();
+          } else if (setting.id === "workingIndicator") {
+            this.callbacks.onWorkingIndicatorConfigChange();
           }
         } else if (setting.kind === "choice") {
           this.cycleChoice(setting);

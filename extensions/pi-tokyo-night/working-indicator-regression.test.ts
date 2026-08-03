@@ -398,3 +398,50 @@ describe("WorkingIndicator root/footer TUI integration", () => {
     await shutdown(fixture);
   });
 });
+
+describe("WorkingIndicator configurable visibility", () => {
+  it("keeps the native working indicator visible by default", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    expect(fixture.ui.ui.setWorkingVisible).toHaveBeenLastCalledWith(true);
+
+    const baselineTimers = vi.getTimerCount();
+    fixture.ui.ui.setWorkingVisible.mockClear();
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+
+    expect(fixture.ui.ui.setWorkingVisible).toHaveBeenCalledTimes(1);
+    expect(fixture.ui.ui.setWorkingVisible).toHaveBeenLastCalledWith(true);
+    // Exactly one phase timer is created while the indicator is visible.
+    expect(vi.getTimerCount()).toBe(baselineTimers + 1);
+
+    await shutdown(fixture);
+  });
+
+  it("hides the native working indicator when the Working Indicator setting is off", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(TokyoConfigManager.prototype, "read").mockImplementation(
+      function (this: TokyoConfigManager) {
+        this.set("kimiQuota", false);
+        this.set("workingIndicator", false);
+      },
+    );
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    // Session registration applies the user's visibility choice immediately.
+    expect(fixture.ui.ui.setWorkingVisible).toHaveBeenLastCalledWith(false);
+
+    const baselineTimers = vi.getTimerCount();
+    fixture.ui.ui.setWorkingVisible.mockClear();
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+
+    expect(fixture.ui.ui.setWorkingVisible).toHaveBeenCalledTimes(1);
+    expect(fixture.ui.ui.setWorkingVisible).toHaveBeenLastCalledWith(false);
+    // No phase timer is created while the indicator is hidden.
+    expect(vi.getTimerCount()).toBe(baselineTimers);
+
+    await shutdown(fixture);
+  });
+});

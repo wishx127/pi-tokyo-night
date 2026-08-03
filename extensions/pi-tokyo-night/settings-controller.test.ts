@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { TokyoConfigManager } from "./config";
+import {
+  SETTINGS,
+  TokyoConfigManager,
+} from "./config";
 import {
   SettingsUIController,
   type SettingsControllerCallbacks,
@@ -13,6 +16,7 @@ function makeController(): SettingsUIController {
     onCodexQuotaConfigChange: vi.fn(),
     onKimiQuotaConfigChange: vi.fn(),
     onIconModeConfigChange: vi.fn(),
+    onWorkingIndicatorConfigChange: vi.fn(),
     requestEditorRender: vi.fn(),
   });
 }
@@ -27,6 +31,7 @@ describe("SettingsUIController quota toggle callbacks", () => {
       onCodexQuotaConfigChange: vi.fn(),
       onKimiQuotaConfigChange: vi.fn(),
       onIconModeConfigChange: vi.fn(),
+      onWorkingIndicatorConfigChange: vi.fn(),
       requestEditorRender: vi.fn(),
     };
     const config = new TokyoConfigManager();
@@ -80,7 +85,22 @@ describe("SettingsUIController quota toggle callbacks", () => {
 
     expect(callbacks.onCodexQuotaConfigChange).not.toHaveBeenCalled();
     expect(callbacks.onKimiQuotaConfigChange).not.toHaveBeenCalled();
+    expect(callbacks.onWorkingIndicatorConfigChange).not.toHaveBeenCalled();
     expect(callbacks.requestEditorRender).toHaveBeenCalled();
+  });
+
+  it("notifies the working indicator callback when toggling workingIndicator", () => {
+    const { callbacks, controller, config } = makeDispatchRig();
+
+    for (let i = 0; i < SETTINGS.length - 1; i++) {
+      controller.handleInput(DOWN); // navigate to the last setting
+    }
+    controller.handleInput(ENTER);
+
+    expect(config.get().workingIndicator).toBe(false);
+    expect(callbacks.onWorkingIndicatorConfigChange).toHaveBeenCalledTimes(1);
+    expect(callbacks.onCodexQuotaConfigChange).not.toHaveBeenCalled();
+    expect(callbacks.onKimiQuotaConfigChange).not.toHaveBeenCalled();
   });
 });
 
@@ -102,6 +122,7 @@ describe("SettingsUIController.buildLines", () => {
     controller.enter();
 
     expect(controller.buildLines(0)).toEqual([
+      "",
       "",
       "",
       "",
