@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildStatusWidgetLines,
+  coordinateSelectorTransition,
   default as extension,
   shouldRunRainAnimation,
 } from "./extension";
@@ -135,6 +136,197 @@ describe("Tokyo Night status widget narrow widths", () => {
     expect(lines[0]).toContain("status");
     expect(lines.join("\n")).not.toMatch(/[╭╮╰╯│─]/);
   });
+
+  it("syncs selector overlay before requesting a full render", () => {
+    const events: string[] = [];
+
+    coordinateSelectorTransition(
+      () => events.push("overlay"),
+      () => events.push("render"),
+    );
+
+    expect(events).toEqual(["overlay", "render"]);
+  });
+});
+
+describe("Tokyo Night selector transition lifecycle", () => {
+  it("registers/removes the rain overlay and forces a full root render", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const tui = {
+      focusedComponent: undefined as unknown,
+      hasOverlay: () => false,
+      doRender: vi.fn(),
+      requestRender: vi.fn(),
+    };
+    const editorFactory = fixture.editorFactory as any;
+    const editor = editorFactory(tui, {}, {});
+
+    tui.focusedComponent = { selector: true };
+    tui.doRender();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fixture.setWidget).toHaveBeenCalledWith(
+      "tokyo-rain-selector",
+      expect.any(Function),
+      { placement: "aboveEditor" },
+    );
+    expect(fixture.widgets.has("tokyo-rain-selector")).toBe(true);
+    const overlayFactory = fixture.widgets.get("tokyo-rain-selector") as any;
+    const overlay = overlayFactory(tui, theme);
+    expect(overlay.render(40).length).toBeGreaterThan(0);
+    expect(tui.requestRender).toHaveBeenCalledWith(true);
+
+    fixture.setWidget.mockClear();
+    tui.requestRender.mockClear();
+    tui.focusedComponent = editor;
+    tui.doRender();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fixture.setWidget).toHaveBeenCalledWith(
+      "tokyo-rain-selector",
+      undefined,
+    );
+    expect(fixture.widgets.has("tokyo-rain-selector")).toBe(false);
+    expect(tui.requestRender).toHaveBeenCalledWith(true);
+
+    await shutdown(fixture);
+  });
+
+  it("re-registers selector rain after Pi resets extension UI", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const tui = {
+      focusedComponent: undefined as unknown,
+      hasOverlay: () => false,
+      doRender: vi.fn(),
+      requestRender: vi.fn(),
+    };
+    const editor = (fixture.editorFactory as any)(tui, {}, {});
+    tui.focusedComponent = { selector: true };
+    tui.doRender();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fixture.widgets.has("tokyo-rain-selector")).toBe(true);
+
+    const oldStatusTui = { requestRender: vi.fn() };
+    const oldStatus = (fixture.widgets.get("tokyo-status") as any)(
+      oldStatusTui,
+      theme,
+    );
+    const unsubscribeBranch = vi.fn();
+    const footerData = {
+      getGitBranch: vi.fn(() => "main"),
+      getExtensionStatuses: () => new Map(),
+      getAvailableProviderCount: () => 0,
+      onBranchChange: vi.fn(() => unsubscribeBranch),
+    } as any;
+    const oldFooterTui = { requestRender: vi.fn() };
+    const oldFooter = fixture.footerFactory(oldFooterTui, theme, footerData);
+
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+    await fixture.emit(
+      "message_update",
+      {
+        type: "message_update",
+        message: { role: "assistant" },
+        assistantMessageEvent: {
+          type: "thinking_delta",
+          contentIndex: 0,
+          delta: "reasoning",
+          partial: { role: "assistant" },
+        },
+      },
+      fixture.ctx,
+    );
+    const workingMessageBeforeReset =
+      fixture.ui.setWorkingMessage.mock.lastCall?.[0];
+    expect(workingMessageBeforeReset).toEqual(expect.stringContaining("Thinking"));
+
+    // Model Pi's resetExtensionUI(): it clears widgets, footer, and the
+    // custom editor without ending the active agent operation.
+    fixture.widgets.clear();
+    fixture.ui.setEditorComponent(undefined);
+    fixture.ui.setFooter(undefined);
+    await vi.advanceTimersByTimeAsync(150);
+
+    expect(fixture.editorFactory).toBeDefined();
+    expect(fixture.widgets.has("tokyo-status")).toBe(true);
+    expect(fixture.widgets.has("tokyo-rain-selector")).toBe(true);
+    expect(fixture.footerFactory).toBeDefined();
+    expect(fixture.setWidget.mock.calls.filter(([key]) => key === "tokyo-status"))
+      .toHaveLength(2);
+    expect(unsubscribeBranch).toHaveBeenCalledTimes(1);
+    expect(fixture.ui.setWorkingVisible).toHaveBeenLastCalledWith(true);
+    expect(fixture.ui.setWorkingMessage).toHaveBeenLastCalledWith(
+      expect.stringContaining("Thinking"),
+    );
+
+    const newStatusTui = { requestRender: vi.fn() };
+    const newStatus = (fixture.widgets.get("tokyo-status") as any)(
+      newStatusTui,
+      theme,
+    );
+    const newFooterTui = { requestRender: vi.fn() };
+    const newFooter = fixture.footerFactory(newFooterTui, theme, footerData);
+    expect(newStatus).toBeDefined();
+    expect(newFooter).toBeDefined();
+    oldStatusTui.requestRender.mockClear();
+    newStatusTui.requestRender.mockClear();
+    oldStatus.invalidate();
+    oldFooter.dispose();
+    await vi.advanceTimersByTimeAsync(33);
+    expect(oldStatusTui.requestRender).not.toHaveBeenCalled();
+    expect(newStatusTui.requestRender).toHaveBeenCalled();
+    expect(editor).toBeDefined();
+
+    await fixture.emit("agent_end", { type: "agent_end", messages: [] }, fixture.ctx);
+    expect(fixture.ui.setWorkingMessage).toHaveBeenLastCalledWith();
+    await shutdown(fixture);
+  });
+
+  it("removes selector rain when a session is replaced on the same UI", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture("tui");
+    const firstCtx = {
+      ...fixture.ctx,
+      sessionManager: {
+        ...fixture.ctx.sessionManager,
+        getSessionId: () => "session-first",
+        getSessionFile: () => "/sessions/session-first.jsonl",
+      },
+    };
+    const secondCtx = {
+      ...fixture.ctx,
+      sessionManager: {
+        ...fixture.ctx.sessionManager,
+        getSessionId: () => "session-second",
+        getSessionFile: () => "/sessions/session-second.jsonl",
+      },
+    };
+
+    await fixture.emit("session_start", { reason: "startup" }, firstCtx);
+    const tui = {
+      focusedComponent: undefined as unknown,
+      hasOverlay: () => false,
+      doRender: vi.fn(),
+      requestRender: vi.fn(),
+    };
+    const editor = (fixture.editorFactory as any)(tui, {}, {});
+    tui.focusedComponent = { selector: true };
+    tui.doRender();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fixture.widgets.has("tokyo-rain-selector")).toBe(true);
+
+    await fixture.emit("session_start", { reason: "replace" }, secondCtx);
+
+    expect(fixture.widgets.has("tokyo-rain-selector")).toBe(false);
+    expect(editor).toBeDefined();
+    await fixture.emit("session_shutdown", { reason: "quit" }, secondCtx);
+  });
 });
 
 describe("Tokyo Night animation lifecycle gate", () => {
@@ -150,7 +342,7 @@ describe("Tokyo Night animation lifecycle gate", () => {
   });
 });
 
-describe("Tokyo Night slash command modes", () => {
+describe("Tokyo Night interactive lifecycle", () => {
   it("enters the settings panel only for a TUI command", async () => {
     const enter = vi.spyOn(SettingsUIController.prototype, "enter");
     for (const mode of ["rpc", "json", "print"] as const) {
@@ -196,6 +388,209 @@ describe("Tokyo Night slash command modes", () => {
     expect(fixture.setWidget).not.toHaveBeenCalled();
     expect(fixture.setEditorComponent).not.toHaveBeenCalled();
     expect(fixture.setFooter).not.toHaveBeenCalled();
+  });
+
+  it("keeps the native working row visible for interactive sessions", async () => {
+    const fixture = makeFixture("tui");
+
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    expect(fixture.ui.setWorkingVisible).toHaveBeenCalledWith(true);
+    await shutdown(fixture);
+  });
+
+  it("shows Waiting through the native working message when an agent starts", async () => {
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+
+    expect(fixture.ui.setWorkingMessage).toHaveBeenLastCalledWith(
+      expect.stringContaining("Waiting"),
+    );
+    await shutdown(fixture);
+  });
+
+  it("shows Thinking when the assistant emits thinking output", async () => {
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+    fixture.ui.setWorkingMessage.mockClear();
+
+    await fixture.emit(
+      "message_update",
+      {
+        type: "message_update",
+        message: { role: "assistant" },
+        assistantMessageEvent: {
+          type: "thinking_delta",
+          contentIndex: 0,
+          delta: "reasoning",
+          partial: { role: "assistant" },
+        },
+      },
+      fixture.ctx,
+    );
+
+    expect(fixture.ui.setWorkingMessage).toHaveBeenLastCalledWith(
+      expect.stringContaining("Thinking"),
+    );
+    await shutdown(fixture);
+  });
+
+  it("shows Streaming when the assistant emits text output", async () => {
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+    fixture.ui.setWorkingMessage.mockClear();
+
+    await fixture.emit(
+      "message_update",
+      {
+        type: "message_update",
+        message: { role: "assistant" },
+        assistantMessageEvent: {
+          type: "text_delta",
+          contentIndex: 0,
+          delta: "answer",
+          partial: { role: "assistant" },
+        },
+      },
+      fixture.ctx,
+    );
+
+    expect(fixture.ui.setWorkingMessage).toHaveBeenLastCalledWith(
+      expect.stringContaining("Streaming"),
+    );
+    await shutdown(fixture);
+  });
+
+  it("shows the active tool through the native working message", async () => {
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+    fixture.ui.setWorkingMessage.mockClear();
+
+    await fixture.emit(
+      "tool_execution_start",
+      {
+        type: "tool_execution_start",
+        toolCallId: "tool-1",
+        toolName: "bash",
+        args: { command: "pwd" },
+      },
+      fixture.ctx,
+    );
+
+    expect(fixture.ui.setWorkingMessage).toHaveBeenLastCalledWith(
+      expect.stringContaining("Using tools · bash"),
+    );
+    await shutdown(fixture);
+  });
+
+  it("refreshes the native working message with the active tool duration", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+    await fixture.emit(
+      "tool_execution_start",
+      {
+        type: "tool_execution_start",
+        toolCallId: "tool-1",
+        toolName: "bash",
+        args: {},
+      },
+      fixture.ctx,
+    );
+    fixture.ui.setWorkingMessage.mockClear();
+
+    vi.advanceTimersByTime(1500);
+
+    expect(fixture.ui.setWorkingMessage).toHaveBeenLastCalledWith(
+      expect.stringContaining("bash 1.5s"),
+    );
+    await shutdown(fixture);
+  });
+
+  it("keeps the remaining parallel tool visible until all tools finish", async () => {
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+    await fixture.emit(
+      "tool_execution_start",
+      { type: "tool_execution_start", toolCallId: "tool-1", toolName: "read", args: {} },
+      fixture.ctx,
+    );
+    await fixture.emit(
+      "tool_execution_start",
+      { type: "tool_execution_start", toolCallId: "tool-2", toolName: "bash", args: {} },
+      fixture.ctx,
+    );
+    fixture.ui.setWorkingMessage.mockClear();
+
+    await fixture.emit(
+      "tool_execution_end",
+      {
+        type: "tool_execution_end",
+        toolCallId: "tool-1",
+        toolName: "read",
+        result: {},
+        isError: false,
+      },
+      fixture.ctx,
+    );
+
+    expect(fixture.ui.setWorkingMessage).toHaveBeenLastCalledWith(
+      expect.stringContaining("Using tools · bash"),
+    );
+
+    await fixture.emit(
+      "tool_execution_end",
+      {
+        type: "tool_execution_end",
+        toolCallId: "tool-2",
+        toolName: "bash",
+        result: {},
+        isError: false,
+      },
+      fixture.ctx,
+    );
+
+    expect(fixture.ui.setWorkingMessage).toHaveBeenLastCalledWith(
+      expect.stringContaining("Waiting"),
+    );
+    await shutdown(fixture);
+  });
+
+  it("resets the native working message when the agent ends", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+    fixture.ui.setWorkingMessage.mockClear();
+
+    await fixture.emit("agent_end", { type: "agent_end", messages: [] }, fixture.ctx);
+    vi.advanceTimersByTime(500);
+
+    expect(fixture.ui.setWorkingMessage).toHaveBeenLastCalledWith();
+    expect(fixture.ui.setWorkingMessage).not.toHaveBeenCalledWith(
+      expect.stringContaining("Waiting"),
+    );
+    await shutdown(fixture);
+  });
+
+  it("restores the native working defaults when the TUI session shuts down", async () => {
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+    fixture.ui.setWorkingVisible.mockClear();
+    fixture.ui.setWorkingMessage.mockClear();
+
+    await shutdown(fixture);
+
+    expect(fixture.ui.setWorkingMessage).toHaveBeenLastCalledWith();
+    expect(fixture.ui.setWorkingVisible).toHaveBeenLastCalledWith(true);
   });
 });
 

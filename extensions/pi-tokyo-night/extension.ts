@@ -63,6 +63,20 @@ type BranchState = {
   cwd: string | undefined;
 };
 
+type WorkingPhase = "waiting" | "thinking" | "streaming";
+
+type WorkingTool = {
+  name: string;
+  startedAt: number;
+};
+
+type NativeWorkingState = {
+  phase: WorkingPhase;
+  phaseStartedAt: number | undefined;
+  activeTools: Map<string, WorkingTool>;
+  timer: ReturnType<typeof setInterval> | undefined;
+};
+
 type SessionState = {
   generation: number;
   ui: ExtensionUIContext;
@@ -78,6 +92,7 @@ type SessionState = {
   statusRenderDebounceTimeout: ReturnType<typeof setTimeout> | undefined;
   statusTui: TUI | null;
   requestStatusRender: (() => void) | null;
+  working: NativeWorkingState;
   origSetWidget: ((...args: any[]) => any) | null;
   setWidgetWrapper: ((...args: any[]) => any) | null;
   editor: BorderlessEditor | null;
@@ -114,6 +129,14 @@ function isAbortError(err: unknown): boolean {
  * observable seam because terminals can report widths of 0, 1, or 2 during
  * resize and redraw races.
  */
+export function coordinateSelectorTransition(
+  syncOverlay: () => void,
+  requestFullRender: () => void,
+): void {
+  syncOverlay();
+  requestFullRender();
+}
+
 export function buildStatusWidgetLines(
   width: number,
   hideSideBorders: boolean,
@@ -236,6 +259,108 @@ export default function (pi: ExtensionAPI) {
   const isInteractiveTui = (ctx: ExtensionContext): boolean =>
     ctx.mode === "tui" && ctx.hasUI;
 
+  const formatWorkingDuration = (milliseconds: number): string => {
+    const seconds = Math.max(0, milliseconds) / 1000;
+    if (seconds < 60) return `${seconds.toFixed(1)}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = Math.floor(seconds % 60).toString().padStart(2, "0");
+    if (minutes < 60) return `${minutes}:${remainingSeconds}`;
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = (minutes % 60).toString().padStart(2, "0");
+    return `${hours}:${remainingMinutes}:${remainingSeconds}`;
+  };
+
+  const formatWorkingMessage = (working: NativeWorkingState): string => {
+    const activeTool = working.activeTools.values().next().value as
+      | WorkingTool
+      | undefined;
+    if (activeTool) {
+      const extraTools = working.activeTools.size > 1
+        ? ` +${working.activeTools.size - 1}`
+        : "";
+      return `Using tools · ${activeTool.name} ${formatWorkingDuration(
+        Date.now() - activeTool.startedAt,
+      )}${extraTools}`;
+    }
+
+    const label = working.phase[0].toUpperCase() + working.phase.slice(1);
+    const elapsed = working.phaseStartedAt === undefined
+      ? "0.0s"
+      : formatWorkingDuration(Date.now() - working.phaseStartedAt);
+    return `${label} ${elapsed}`;
+  };
+
+  const stopWorkingTimer = (session: SessionState): void => {
+    if (session.working.timer !== undefined) {
+      clearInterval(session.working.timer);
+      session.working.timer = undefined;
+    }
+  };
+
+  const resetWorkingState = (session: SessionState): void => {
+    stopWorkingTimer(session);
+    session.working.phase = "waiting";
+    session.working.phaseStartedAt = undefined;
+    session.working.activeTools.clear();
+  };
+
+  const setWorkingPhase = (
+    session: SessionState,
+    phase: WorkingPhase,
+    restart = false,
+  ): void => {
+    if (
+      !restart &&
+      session.working.phase === phase &&
+      session.working.phaseStartedAt !== undefined
+    ) {
+      return;
+    }
+    session.working.phase = phase;
+    session.working.phaseStartedAt = Date.now();
+  };
+
+  const updateWorkingMessage = (session: SessionState): void => {
+    if (!isCurrentSession(session) || session.mode !== "tui" || !session.hasUI) {
+      return;
+    }
+    try {
+      session.ui.setWorkingMessage(formatWorkingMessage(session.working));
+    } catch (err) {
+      if (!isStaleExtensionContextError(err)) {
+        handleExtensionError(err, "working message update");
+      }
+    }
+  };
+
+  const startWorkingTimer = (session: SessionState): void => {
+    stopWorkingTimer(session);
+    updateWorkingMessage(session);
+    session.working.timer = setInterval(() => {
+      if (!isCurrentSession(session)) {
+        stopWorkingTimer(session);
+        return;
+      }
+      updateWorkingMessage(session);
+    }, 250);
+    session.working.timer.unref?.();
+  };
+
+  const isCurrentInteractiveSession = (
+    ctx: ExtensionContext,
+  ): SessionState | undefined => {
+    if (!isInteractiveTui(ctx)) return undefined;
+    try {
+      const session = sessionsByIdentity.get(getSessionIdentity(ctx));
+      return session && isCurrentSession(session) ? session : undefined;
+    } catch (err) {
+      if (!isStaleExtensionContextError(err)) {
+        handleExtensionError(err, "working session lookup");
+      }
+      return undefined;
+    }
+  };
+
   const isCurrentSession = (session: SessionState): boolean =>
     activeSession === session &&
     !session.disposed &&
@@ -247,6 +372,7 @@ export default function (pi: ExtensionAPI) {
   };
 
   const clearSessionTimers = (session: SessionState): void => {
+    resetWorkingState(session);
     if (session.editorPollTimeout !== undefined) {
       clearTimeout(session.editorPollTimeout);
       session.editorPollTimeout = undefined;
@@ -290,6 +416,20 @@ export default function (pi: ExtensionAPI) {
   };
 
   const retireActiveSession = (session: SessionState): void => {
+    const sharedWithCurrentSession =
+      activeSession !== null &&
+      activeSession !== session &&
+      activeSession.ui === session.ui;
+    if (!sharedWithCurrentSession && session.mode === "tui" && session.hasUI) {
+      try {
+        session.ui.setWidget("tokyo-rain-selector", undefined);
+      } catch (err) {
+        if (!isStaleExtensionContextError(err)) {
+          console.error(`${EXT_PREFIX} selector rain session cleanup failed:`, err);
+        }
+      }
+    }
+
     if (sessionsByIdentity.get(session.identityKey) === session) {
       sessionsByIdentity.delete(session.identityKey);
     }
@@ -375,8 +515,10 @@ export default function (pi: ExtensionAPI) {
   const selectorDetector = new SelectorDetector({
     getEditorFocusTarget: () => ownedEditor,
     requestEditorRender: () => {
-      ownedEditor?.requestRender();
-      requestRainOverlayRenderCallback();
+      coordinateSelectorTransition(
+        requestRainOverlayRenderCallback,
+        () => ownedEditor?.tuiRef.requestRender(true),
+      );
     },
     requestStatusRender: () => requestStatusRenderCallback(),
   });
@@ -564,15 +706,88 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // ── agent_start guard (registered once per extension instance) ──────────
+  // ── Native working indicator state (registered once per extension instance)
   pi.on("agent_start", async (_event, ctx) => {
-    if (!isInteractiveTui(ctx)) return;
+    const session = isCurrentInteractiveSession(ctx);
+    if (!session) return;
+
+    setWorkingPhase(session, "waiting", true);
+    session.working.activeTools.clear();
     try {
-      const ui = editorUIContext ?? ctx.ui;
-      ui.setWorkingVisible(false);
+      session.ui.setWorkingVisible(true);
     } catch (err) {
-      handleExtensionError(err, "agent_start guard");
+      if (!isStaleExtensionContextError(err)) {
+        handleExtensionError(err, "working visibility");
+      }
     }
+    startWorkingTimer(session);
+  });
+
+  pi.on("turn_start", async (_event, ctx) => {
+    const session = isCurrentInteractiveSession(ctx);
+    if (!session || session.working.phaseStartedAt === undefined) return;
+
+    setWorkingPhase(session, "waiting", true);
+    updateWorkingMessage(session);
+  });
+
+  pi.on("agent_end", async (_event, ctx) => {
+    const session = isCurrentInteractiveSession(ctx);
+    if (!session) return;
+
+    resetWorkingState(session);
+    try {
+      session.ui.setWorkingMessage();
+    } catch (err) {
+      if (!isStaleExtensionContextError(err)) {
+        handleExtensionError(err, "working message reset");
+      }
+    }
+  });
+
+  pi.on("message_update", async (event, ctx) => {
+    const session = isCurrentInteractiveSession(ctx);
+    if (!session || session.working.phaseStartedAt === undefined) return;
+
+    let nextPhase: WorkingPhase;
+    switch (event.assistantMessageEvent.type) {
+      case "thinking_start":
+      case "thinking_delta":
+      case "toolcall_start":
+      case "toolcall_delta":
+        nextPhase = "thinking";
+        break;
+      case "text_start":
+      case "text_delta":
+        nextPhase = "streaming";
+        break;
+      default:
+        return;
+    }
+    setWorkingPhase(session, nextPhase);
+    updateWorkingMessage(session);
+  });
+
+  pi.on("tool_execution_start", async (event, ctx) => {
+    const session = isCurrentInteractiveSession(ctx);
+    if (!session || session.working.phaseStartedAt === undefined) return;
+
+    session.working.activeTools.set(event.toolCallId, {
+      name: event.toolName,
+      startedAt: Date.now(),
+    });
+    updateWorkingMessage(session);
+  });
+
+  pi.on("tool_execution_end", async (event, ctx) => {
+    const session = isCurrentInteractiveSession(ctx);
+    if (!session || session.working.phaseStartedAt === undefined) return;
+
+    session.working.activeTools.delete(event.toolCallId);
+    if (session.working.activeTools.size === 0) {
+      setWorkingPhase(session, "waiting");
+    }
+    updateWorkingMessage(session);
   });
 
   refreshCodexQuotaState = () => {
@@ -683,6 +898,12 @@ export default function (pi: ExtensionAPI) {
       statusRenderDebounceTimeout: undefined,
       statusTui: null,
       requestStatusRender: null,
+      working: {
+        phase: "waiting",
+        phaseStartedAt: undefined,
+        activeTools: new Map(),
+        timer: undefined,
+      },
       origSetWidget: null,
       setWidgetWrapper: null,
       editor: null,
@@ -704,10 +925,25 @@ export default function (pi: ExtensionAPI) {
     if (mode !== "tui" || !hasUI) return;
     editorUIContext = ui;
 
+    let selectorRainTui: TUI | null = null;
+    let selectorRainRegistered = false;
+    let statusWidgetRegistered = false;
+    let footerRegistered = false;
+    let syncSelectorRainWidget: () => void = () => {};
+    let registerStatusWidget: () => void = () => {};
+    let registerFooter: () => void = () => {};
+    let footerSubscription: { dispose: () => void } | null = null;
+    const clearFooterSubscription = (): void => {
+      const subscription = footerSubscription;
+      footerSubscription = null;
+      subscription?.dispose();
+    };
+
     if (mode === "tui") {
       // ── Register custom editor (wrapping previous) ──────────────────────
       ui.setEditorComponent(borderlessEditorFactory);
-      ui.setWorkingVisible(false);
+      ui.setWorkingVisible(true);
+      ui.setWorkingMessage();
       const rootTui = ownedEditor?.tuiRef;
       rootTui?.requestRender(true);
 
@@ -742,8 +978,27 @@ export default function (pi: ExtensionAPI) {
               }
 
               if (currentFactory === undefined) {
+                // Pi's resetExtensionUI() clears extension widgets, footer,
+                // and the custom editor. Drop every old UI reference before
+                // registering the complete composition again.
+                selectorRainRegistered = false;
+                selectorRainTui = null;
+                statusWidgetRegistered = false;
+                session.statusTui = null;
+                footerRegistered = false;
+                session.footerData = null;
+                selectorDetector.overlayTui = null;
+                clearFooterSubscription();
+                if (session.statusRenderDebounceTimeout !== undefined) {
+                  clearTimeout(session.statusRenderDebounceTimeout);
+                  session.statusRenderDebounceTimeout = undefined;
+                }
                 ui.setEditorComponent(borderlessEditorFactory);
-                ui.setWorkingVisible(false);
+                registerStatusWidget();
+                registerFooter();
+                ui.setWorkingVisible(true);
+                applyPanelState();
+                requestRainOverlayRenderCallback();
                 session.editorPollDelay = BASE_POLL_MS;
               } else {
                 // Never replace another extension's editor. Keep observing it,
@@ -814,8 +1069,6 @@ export default function (pi: ExtensionAPI) {
     // The selector replaces the editor container in Pi, so the editor cannot
     // render the panel while a selector owns that area. Register the fallback
     // widget only for the active selector state.
-    let selectorRainTui: TUI | null = null;
-    let selectorRainRegistered = false;
     const selectorRainFactory = (tui: TUI) => {
       selectorRainTui = tui;
       return {
@@ -829,7 +1082,7 @@ export default function (pi: ExtensionAPI) {
         },
       };
     };
-    const syncSelectorRainWidget = () => {
+    syncSelectorRainWidget = () => {
       if (!isCurrentSession(session) || mode !== "tui") return;
       const shouldRegister =
         selectorDetector.isSideBordersHidden() && rainManager.isRunning;
@@ -885,83 +1138,125 @@ export default function (pi: ExtensionAPI) {
     requestStatusRenderRef = requestStatusRender;
     selectorDetector.setStatusRenderRef(requestStatusRender);
 
-    ui.setWidget(
-      "tokyo-status",
-      (tui: TUI, theme: Theme) => {
-        session.statusTui = tui;
-        return {
-          invalidate() {
-            requestStatusRender();
-          },
-          render(width: number): string[] {
-            try {
-              if (!isCurrentSession(session)) return [];
-              const currentCwd = ctx.cwd;
-              if (session.cwd !== currentCwd) session.cwd = currentCwd;
-              updateBranch(session, session.cwd);
+    const statusWidgetFactory = (tui: TUI, theme: Theme) => {
+      session.statusTui = tui;
+      return {
+        invalidate() {
+          requestStatusRender();
+        },
+        render(width: number): string[] {
+          try {
+            if (!isCurrentSession(session)) return [];
+            const currentCwd = ctx.cwd;
+            if (session.cwd !== currentCwd) session.cwd = currentCwd;
+            updateBranch(session, session.cwd);
 
-              // selectorDetector.isSideBordersHidden() combines the cached
-              // active flag with a live check on editorTui.
-              const hideSideBorders = selectorDetector.isSideBordersHidden();
-              const outputWidth = safeTerminalWidth(width);
-              const contentWidth =
-                !hideSideBorders && outputWidth >= 2
-                  ? outputWidth - 2
-                  : outputWidth;
-              const statusLines = buildStatusLines(
-                contentWidth,
-                theme,
-                ctx,
-                session.branch.cachedBranch,
-                pi.getThinkingLevel(),
-                configManager,
-                codexUsageStore,
-              );
-              return buildStatusWidgetLines(
-                outputWidth,
-                hideSideBorders,
-                statusLines,
-                configManager.get().editorFrame,
-              );
-            } catch (err) {
-              if (isStaleExtensionContextError(err)) return [];
-              console.error(`${EXT_PREFIX} status render failed:`, err);
-              return [];
-            }
-          },
-        };
-      },
-      { placement: "belowEditor" },
-    );
+            // selectorDetector.isSideBordersHidden() combines the cached
+            // active flag with a live check on editorTui.
+            const hideSideBorders = selectorDetector.isSideBordersHidden();
+            const outputWidth = safeTerminalWidth(width);
+            const contentWidth =
+              !hideSideBorders && outputWidth >= 2
+                ? outputWidth - 2
+                : outputWidth;
+            const statusLines = buildStatusLines(
+              contentWidth,
+              theme,
+              ctx,
+              session.branch.cachedBranch,
+              pi.getThinkingLevel(),
+              configManager,
+              codexUsageStore,
+            );
+            return buildStatusWidgetLines(
+              outputWidth,
+              hideSideBorders,
+              statusLines,
+              configManager.get().editorFrame,
+            );
+          } catch (err) {
+            if (isStaleExtensionContextError(err)) return [];
+            console.error(`${EXT_PREFIX} status render failed:`, err);
+            return [];
+          }
+        },
+      };
+    };
+    registerStatusWidget = () => {
+      if (!isCurrentSession(session) || statusWidgetRegistered) return;
+      try {
+        ui.setWidget(
+          "tokyo-status",
+          statusWidgetFactory,
+          { placement: "belowEditor" },
+        );
+        statusWidgetRegistered = true;
+      } catch (err) {
+        if (!isStaleExtensionContextError(err)) {
+          console.error(`${EXT_PREFIX} status widget registration failed:`, err);
+        }
+      }
+    };
+    registerStatusWidget();
 
     // ── Footer: participate in Footer Data Provider ───────────────────────
     // Keep the existing footer ownership semantics: this empty component
     // preserves footerData for other extensions while our widget is visible.
-    ui.setFooter(
-      (tui: TUI, _theme: Theme, footerData: ReadonlyFooterDataProvider) => {
-        selectorDetector.overlayTui = tui;
-        session.footerData = footerData;
+    const footerFactory = (
+      tui: TUI,
+      _theme: Theme,
+      footerData: ReadonlyFooterDataProvider,
+    ) => {
+      selectorDetector.overlayTui = tui;
+      session.footerData = footerData;
+      syncFooterBranch(session, footerData);
+      const unsub = footerData.onBranchChange(() => {
+        if (!isCurrentSession(session)) return;
         syncFooterBranch(session, footerData);
-        const unsub = footerData.onBranchChange(() => {
-          if (!isCurrentSession(session)) return;
-          syncFooterBranch(session, footerData);
-          requestStatusRenderFor(session);
-        });
+        requestStatusRenderFor(session);
+      });
+      const subscription = {
+        active: true,
+        dispose() {
+          if (!subscription.active) return;
+          subscription.active = false;
+          unsub();
+        },
+      };
+      footerSubscription = subscription;
 
-        return {
-          dispose() {
-            unsub();
-            if (session.footerData === footerData) session.footerData = null;
-          },
-          invalidate() {
-            requestStatusRender();
-          },
-          render(): string[] {
-            return [];
-          },
-        };
-      },
-    );
+      return {
+        dispose() {
+          const isCurrentFooter = footerSubscription === subscription;
+          if (isCurrentFooter) footerSubscription = null;
+          subscription.dispose();
+          if (isCurrentFooter && session.footerData === footerData) {
+            session.footerData = null;
+          }
+          if (isCurrentFooter && selectorDetector.overlayTui === tui) {
+            selectorDetector.overlayTui = null;
+          }
+        },
+        invalidate() {
+          requestStatusRender();
+        },
+        render(): string[] {
+          return [];
+        },
+      };
+    };
+    registerFooter = () => {
+      if (!isCurrentSession(session) || footerRegistered) return;
+      try {
+        ui.setFooter(footerFactory);
+        footerRegistered = true;
+      } catch (err) {
+        if (!isStaleExtensionContextError(err)) {
+          console.error(`${EXT_PREFIX} footer registration failed:`, err);
+        }
+      }
+    };
+    registerFooter();
   });
 
   // Slash command: /tokyo-night — toggle the editor-embedded settings panel.
@@ -1058,6 +1353,15 @@ export default function (pi: ExtensionAPI) {
     // ── Full UI teardown ───────────────────────────────────────────────────
     // Preserve the existing independent teardown calls, including the
     // setWidget/editor/footer ownership semantics.
+    try {
+      resetWorkingState(session);
+      session.ui.setWorkingMessage();
+      session.ui.setWorkingVisible(true);
+    } catch (err) {
+      if (!isStaleExtensionContextError(err)) {
+        console.error(`${EXT_PREFIX} working indicator teardown failed:`, err);
+      }
+    }
     try {
       session.ui.setWidget("tokyo-rain-selector", undefined);
     } catch (err) {
