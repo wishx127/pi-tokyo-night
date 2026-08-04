@@ -4,7 +4,7 @@ A [pi](https://github.com/earendil-works/pi) theme + extension that brings the t
 
 <p>
 
-  <img src="screenshot.png" alt="pi-tokyo-night" width="1100">
+  <img src="assets/screenshot.png" alt="pi-tokyo-night" width="1100">
 
 </p>
 

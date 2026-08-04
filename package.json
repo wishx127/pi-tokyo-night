@@ -23,7 +23,8 @@
     ],
     "extensions": [
       "./extensions/pi-tokyo-night"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/wishx127/pi-tokyo-night/main/assets/thumbnail.png"
   },
   "author": "wishxhuang",
   "license": "MIT",
@@ -35,7 +36,7 @@
     "themes/**/*",
     "extensions/**/*",
     "README.md",
-    "screenshot.png"
+    "assets/**/*"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
