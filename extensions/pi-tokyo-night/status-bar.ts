@@ -9,10 +9,10 @@ import {
 } from "@earendil-works/pi-tui";
 import {
   formatStatus,
-  getKimiSnapshot,
   isCodexModel,
   isKimiModel,
   type CodexUsageStore,
+  type KimiUsageStore,
   type UsageSnapshot,
 } from "./usage";
 import {
@@ -345,6 +345,7 @@ function buildStatusLayout(
   thinkingLevel: string,
   config: TokyoConfigManager,
   codexUsageStore?: Pick<CodexUsageStore, "getSnapshot">,
+  kimiUsageStore?: Pick<KimiUsageStore, "getSnapshot">,
 ): StatusLayout {
   // Use a slightly smaller width to account for potential width miscalculations
   // with Nerd Font glyphs that may be rendered as double-width by the terminal
@@ -448,7 +449,7 @@ function buildStatusLayout(
   );
   const kimiModule = buildLimitModule(
     config.get().kimiQuota && isKimiModel(ctx.model)
-      ? getKimiSnapshot()
+      ? kimiUsageStore?.getSnapshot()
       : undefined,
   );
 
@@ -505,6 +506,7 @@ export function buildStatusLine(
   thinkingLevel: string,
   config: TokyoConfigManager,
   codexUsageStore?: Pick<CodexUsageStore, "getSnapshot">,
+  kimiUsageStore?: Pick<KimiUsageStore, "getSnapshot">,
 ): string {
   const layout = buildStatusLayout(
     width,
@@ -514,6 +516,7 @@ export function buildStatusLine(
     thinkingLevel,
     config,
     codexUsageStore,
+    kimiUsageStore,
   );
   return truncateToWidth(layout.oneLine, width);
 }
@@ -526,6 +529,7 @@ export function buildStatusLines(
   thinkingLevel: string,
   config: TokyoConfigManager,
   codexUsageStore?: Pick<CodexUsageStore, "getSnapshot">,
+  kimiUsageStore?: Pick<KimiUsageStore, "getSnapshot">,
 ): string[] {
   if (!Number.isFinite(width) || width <= 0) return [];
 
@@ -538,6 +542,7 @@ export function buildStatusLines(
     thinkingLevel,
     config,
     codexUsageStore,
+    kimiUsageStore,
   );
 
   if (visibleWidth(layout.oneLine) <= renderWidth) {

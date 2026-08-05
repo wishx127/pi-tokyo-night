@@ -203,7 +203,6 @@ export class BorderlessEditor extends CustomEditor {
     // each render cycle, since Pi calls doRender after updating focus.
     const originalDoRender = getDoRender(tui);
     if (originalDoRender) {
-      this.originalDoRender = originalDoRender;
       const patchedDoRender = () => {
         try {
           originalDoRender();
@@ -217,8 +216,10 @@ export class BorderlessEditor extends CustomEditor {
           );
         }
       };
-      this.patchedDoRender = patchedDoRender;
-      setDoRender(tui, patchedDoRender);
+      if (setDoRender(tui, patchedDoRender)) {
+        this.originalDoRender = originalDoRender;
+        this.patchedDoRender = patchedDoRender;
+      }
     }
   }
 
@@ -241,7 +242,13 @@ export class BorderlessEditor extends CustomEditor {
         this.patchedDoRender &&
         internals?.doRender === this.patchedDoRender
       ) {
-        setDoRender(this.tuiRef, this.originalDoRender);
+        const restored = setDoRender(this.tuiRef, this.originalDoRender);
+        if (!restored) {
+          handleExtensionError(
+            new Error("TUI doRender patch could not be restored"),
+            "BorderlessEditor dispose",
+          );
+        }
       }
     } catch (err) {
       handleExtensionError(err, "BorderlessEditor dispose");

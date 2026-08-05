@@ -14,28 +14,54 @@ export interface SelectorDetectorCallbacks {
   requestStatusRender(): void;
 }
 
-/** Cast TUI to the private properties used by selector detection. */
+/**
+ * Cast a TUI to the small private surface used by the adapters below.
+ * Individual adapters perform their own capability checks because editor
+ * render patching needs fewer fields than selector detection.
+ */
 export function asTUIInternals(tui: TUI | null): TUIInternals | null {
-  return tui as unknown as TUIInternals | null;
+  if (tui === null || (typeof tui !== "object" && typeof tui !== "function")) {
+    return null;
+  }
+  return tui as unknown as TUIInternals;
+}
+
+function hasSelectorCapabilities(
+  internals: TUIInternals,
+): boolean {
+  return (
+    "focusedComponent" in internals &&
+    typeof internals.hasOverlay === "function"
+  );
 }
 
 /** Read the current TUI render function while keeping the private API access
  *  in this adapter module. The returned function is bound to its TUI so it
  *  preserves the original call context when used by the editor patch. */
 export function getDoRender(tui: TUI | null): (() => void) | null {
-  const internals = asTUIInternals(tui);
-  if (!internals || typeof internals.doRender !== "function") return null;
-  return internals.doRender.bind(internals);
+  try {
+    const internals = asTUIInternals(tui);
+    if (!internals || typeof internals.doRender !== "function") return null;
+    return internals.doRender.bind(internals);
+  } catch {
+    return null;
+  }
 }
 
 /** Replace the TUI render function through the private API adapter. */
 export function setDoRender(
   tui: TUI | null,
   doRender: (() => void) | null,
-): void {
-  const internals = asTUIInternals(tui);
-  if (!internals || !doRender) return;
-  internals.doRender = doRender;
+): boolean {
+  try {
+    const internals = asTUIInternals(tui);
+    if (!internals || !doRender) return false;
+    internals.doRender = doRender;
+    return true;
+  } catch {
+    // A private patch is optional; preserve native rendering if it is rejected.
+    return false;
+  }
 }
 
 /**
@@ -50,20 +76,26 @@ export function isSelectorActive(
   const internals = asTUIInternals(tui);
   if (!internals) return false;
 
-  if (internals.focusedComponent === editorFocusTarget) return false;
-  if (internals.hasOverlay()) return true;
+  try {
+    if (!hasSelectorCapabilities(internals)) return false;
+    if (internals.focusedComponent === editorFocusTarget) return false;
+    if (internals.hasOverlay()) return true;
 
-  const overlayStack: unknown = Reflect.get(internals, "overlayStack");
-  if (
-    Array.isArray(overlayStack) &&
-    overlayStack.some(
-      (entry: { hidden?: boolean }) => entry && entry.hidden !== true,
-    )
-  ) {
-    return true;
+    const overlayStack: unknown = Reflect.get(internals, "overlayStack");
+    if (
+      Array.isArray(overlayStack) &&
+      overlayStack.some(
+        (entry: { hidden?: boolean }) => entry && entry.hidden !== true,
+      )
+    ) {
+      return true;
+    }
+
+    return internals.focusedComponent != null;
+  } catch {
+    // Private TUI probes are compatibility hints, not required behavior.
+    return false;
   }
-
-  return internals.focusedComponent != null;
 }
 
 /**

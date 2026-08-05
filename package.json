@@ -34,7 +34,8 @@
   },
   "files": [
     "themes/**/*",
-    "extensions/**/*",
+    "extensions/**/*.ts",
+    "!extensions/**/*.test.ts",
     "README.md",
     "assets/**/*"
   ],

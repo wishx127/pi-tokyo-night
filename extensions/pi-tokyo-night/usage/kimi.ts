@@ -124,6 +124,28 @@ export type KimiUsageResult =
   | { ok: true; snapshot: UsageSnapshot }
   | { ok: false; error: string };
 
+export interface KimiUsageStore {
+  getSnapshot(): UsageSnapshot | undefined;
+  setSnapshot(snapshot: UsageSnapshot): void;
+  clearSnapshot(): void;
+}
+
+export function createKimiUsageStore(): KimiUsageStore {
+  let snapshot: UsageSnapshot | undefined;
+
+  return {
+    getSnapshot(): UsageSnapshot | undefined {
+      return snapshot;
+    },
+    setSnapshot(nextSnapshot: UsageSnapshot): void {
+      snapshot = nextSnapshot;
+    },
+    clearSnapshot(): void {
+      snapshot = undefined;
+    },
+  };
+}
+
 function timeUnitSeconds(timeUnit: string | undefined): number | undefined {
   switch (timeUnit) {
     case "TIME_UNIT_SECOND":
@@ -204,7 +226,10 @@ export function parseKimiUsage(payload: unknown): UsageSnapshot | undefined {
   };
 }
 
-export async function fetchKimiUsage(apiKey: string): Promise<KimiUsageResult> {
+export async function fetchKimiUsage(
+  apiKey: string,
+  signal?: AbortSignal,
+): Promise<KimiUsageResult> {
   const baseUrl = (process.env.KIMI_CODE_BASE_URL ?? DEFAULT_KIMI_BASE_URL).replace(
     /\/+$/,
     "",
@@ -212,9 +237,13 @@ export async function fetchKimiUsage(apiKey: string): Promise<KimiUsageResult> {
 
   let response: Response;
   try {
+    const timeoutSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
+    const requestSignal = signal
+      ? AbortSignal.any([signal, timeoutSignal])
+      : timeoutSignal;
     response = await fetch(`${baseUrl}/usages`, {
       headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      signal: requestSignal,
     });
   } catch (err) {
     return { ok: false, error: `network: ${err instanceof Error ? err.message : String(err)}` };
@@ -234,20 +263,4 @@ export async function fetchKimiUsage(apiKey: string): Promise<KimiUsageResult> {
   const snapshot = parseKimiUsage(payload);
   if (!snapshot) return { ok: false, error: "no usage data in response" };
   return { ok: true, snapshot };
-}
-
-// ── Snapshot state ─────────────────────────────────────────────────────────
-
-let snapshot: UsageSnapshot | undefined;
-
-export function setKimiSnapshot(snap: UsageSnapshot): void {
-  snapshot = snap;
-}
-
-export function getKimiSnapshot(): UsageSnapshot | undefined {
-  return snapshot;
-}
-
-export function clearKimiSnapshot(): void {
-  snapshot = undefined;
 }

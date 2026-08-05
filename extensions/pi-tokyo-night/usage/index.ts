@@ -6,12 +6,11 @@ export {
   type CodexUsageStore,
 } from "./codex";
 export {
-  clearKimiSnapshot,
+  createKimiUsageStore,
   fetchKimiUsage,
-  getKimiSnapshot,
   isKimiModel,
   parseKimiUsage,
   resolveKimiApiKey,
-  setKimiSnapshot,
   type KimiUsageResult,
+  type KimiUsageStore,
 } from "./kimi";

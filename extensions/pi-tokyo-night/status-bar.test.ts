@@ -1,9 +1,9 @@
-import { describe, expect, it, vi, afterEach } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { buildStatusLine, buildStatusLines } from "./status-bar";
-import { clearKimiSnapshot, setKimiSnapshot } from "./usage";
+import { createKimiUsageStore } from "./usage";
 import type { UsageSnapshot } from "./usage";
 
 const theme = {
@@ -322,10 +322,6 @@ describe("buildStatusLine provider quota modules", () => {
     model: { id: "quota-model", provider, contextWindow: 1000 },
   } as unknown as ExtensionContext);
 
-  afterEach(() => {
-    clearKimiSnapshot();
-  });
-
   it("renders the Codex limit module from the injected store", () => {
     const line = buildStatusLine(
       500,
@@ -364,8 +360,9 @@ describe("buildStatusLine provider quota modules", () => {
     expect(toggleOff).not.toContain("LIMIT");
   });
 
-  it("renders the Kimi limit module from the polled snapshot", () => {
-    setKimiSnapshot(quotaSnapshot);
+  it("renders the Kimi limit module from the session store snapshot", () => {
+    const kimiStore = createKimiUsageStore();
+    kimiStore.setSnapshot(quotaSnapshot);
 
     const line = buildStatusLine(
       500,
@@ -374,13 +371,16 @@ describe("buildStatusLine provider quota modules", () => {
       "",
       "high",
       quotaConfig({ kimiQuota: true }),
+      undefined,
+      kimiStore,
     );
 
     expect(line).toContain("LIMIT 5h 75%");
   });
 
-  it("hides the Kimi module when the model switches away or the snapshot is stale", () => {
-    setKimiSnapshot(quotaSnapshot);
+  it("hides the Kimi module when the model switches away or the snapshot is absent", () => {
+    const kimiStore = createKimiUsageStore();
+    kimiStore.setSnapshot(quotaSnapshot);
 
     const otherProvider = buildStatusLine(
       500,
@@ -389,18 +389,21 @@ describe("buildStatusLine provider quota modules", () => {
       "",
       "high",
       quotaConfig({ kimiQuota: true }),
+      undefined,
+      kimiStore,
     );
-    const toggleOff = buildStatusLine(
+    const noStore = buildStatusLine(
       500,
       theme,
       ctxWithModel("kimi-coding"),
       "",
       "high",
-      quotaConfig({}),
+      quotaConfig({ kimiQuota: true }),
+      undefined,
     );
 
     expect(otherProvider).not.toContain("LIMIT");
-    expect(toggleOff).not.toContain("LIMIT");
+    expect(noStore).not.toContain("LIMIT");
   });
 });
 

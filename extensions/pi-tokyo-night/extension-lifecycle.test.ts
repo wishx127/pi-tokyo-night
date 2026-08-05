@@ -1006,6 +1006,162 @@ describe("Tokyo Night extension instance isolation", () => {
   });
 });
 
+describe("Tokyo Night Kimi quota polling lifecycle", () => {
+  it.each(["rpc", "json", "print"] as const)(
+    "does not poll from a %s session",
+    async (mode) => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch");
+      const fixture = makeFixture(mode);
+      fixture.ctx.model = { id: "kimi-model", provider: "kimi-coding" };
+      fixture.ctx.modelRegistry = {
+        getApiKeyForProvider: vi.fn(async () => "test-key"),
+      };
+
+      await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(fetchSpy).not.toHaveBeenCalled();
+      await shutdown(fixture);
+    },
+  );
+
+  it("ignores a Kimi response after the model leaves Kimi", async () => {
+    vi.useFakeTimers();
+    let resolveFetch!: (response: Response) => void;
+    const pendingFetch = new Promise<Response>((resolve) => {
+      resolveFetch = resolve;
+    });
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(() => pendingFetch);
+    const fixture = makeFixture("tui");
+    fixture.ctx.model = { id: "kimi-model", provider: "kimi-coding" };
+    fixture.ctx.modelRegistry = {
+      getApiKeyForProvider: vi.fn(async () => "test-key"),
+    };
+
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    const requestSignal = fetchSpy.mock.calls[0]?.[1]?.signal;
+    expect(requestSignal).toEqual(expect.any(AbortSignal));
+
+    const statusTui = { requestRender: vi.fn() };
+    const statusFactory = fixture.widgets.get("tokyo-status");
+    expect(statusFactory).toEqual(expect.any(Function));
+    statusFactory(statusTui, theme);
+
+    fixture.ctx.model = { id: "other-model", provider: "openai-codex" };
+    await fixture.emit(
+      "model_select",
+      { model: fixture.ctx.model },
+      fixture.ctx,
+    );
+    expect(requestSignal?.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(33);
+    statusTui.requestRender.mockClear();
+
+    resolveFetch({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        limits: [
+          {
+            window: { duration: "300", timeUnit: "TIME_UNIT_MINUTE" },
+            detail: {
+              limit: "100",
+              used: "25",
+              resetTime: "2099-01-01T00:00:00Z",
+            },
+          },
+        ],
+      }),
+    } as Response);
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(33);
+
+    expect(statusTui.requestRender).not.toHaveBeenCalled();
+    await shutdown(fixture);
+  });
+
+  it("does not let an old session response populate its replacement store", async () => {
+    vi.useFakeTimers();
+    const pendingFetches: Array<(response: Response) => void> = [];
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(
+        () => new Promise<Response>((resolve) => pendingFetches.push(resolve)),
+      );
+    const fixture = makeFixture("tui");
+    const kimiModel = { id: "kimi-model", provider: "kimi-coding" };
+    fixture.ctx.model = kimiModel;
+    fixture.ctx.modelRegistry = {
+      getApiKeyForProvider: vi.fn(async () => "test-key"),
+    };
+
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fetchSpy).toHaveBeenCalledOnce();
+
+    const replacementCtx = {
+      ...fixture.ctx,
+      model: kimiModel,
+      sessionManager: {
+        ...fixture.ctx.sessionManager,
+        getSessionId: () => "session-2",
+        getSessionFile: () => "/sessions/session-2.jsonl",
+      },
+    };
+    await fixture.emit("session_start", { reason: "replace" }, replacementCtx);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    const oldSignal = fetchSpy.mock.calls[0]?.[1]?.signal;
+    expect(oldSignal).toEqual(expect.any(AbortSignal));
+    expect(oldSignal?.aborted).toBe(true);
+
+    const statusFactory = fixture.widgets.get("tokyo-status");
+    expect(statusFactory).toEqual(expect.any(Function));
+    const status = statusFactory({ requestRender: vi.fn() }, theme);
+
+    pendingFetches[0]?.({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        limits: [
+          {
+            window: { duration: "300", timeUnit: "TIME_UNIT_MINUTE" },
+            detail: {
+              limit: "100",
+              used: "25",
+              resetTime: "2099-01-01T00:00:00Z",
+            },
+          },
+        ],
+      }),
+    } as Response);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(status.render(500).join("\\n")).not.toContain("LIMIT");
+
+    pendingFetches[1]?.({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    } as Response);
+    await Promise.resolve();
+    await Promise.resolve();
+    await fixture.emit("session_shutdown", { reason: "quit" }, replacementCtx);
+  });
+});
+
 describe("Tokyo Night editor ownership polling", () => {
   it("backs off after stable ownership and clears the timer on shutdown", async () => {
     vi.useFakeTimers();

@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { TUI } from "@earendil-works/pi-tui";
 import {
+  getDoRender,
+  isSelectorActive,
+  setDoRender,
   SelectorDetector,
   type SelectorDetectorCallbacks,
   type TUIInternals,
@@ -176,5 +179,60 @@ describe("SelectorDetector", () => {
 
     // Editor render is still called via the normal callback
     expect(callbacks.requestEditorRender).toHaveBeenCalledOnce();
+  });
+
+  it("fails open when private TUI capabilities are unavailable", () => {
+    const editorTarget = { __editor: true };
+    const callbacks = makeCallbacks(editorTarget);
+    const detector = new SelectorDetector(callbacks);
+    const unsupportedTui = {} as TUI;
+
+    expect(() => isSelectorActive(unsupportedTui, editorTarget)).not.toThrow();
+    expect(isSelectorActive(unsupportedTui, editorTarget)).toBe(false);
+    expect(detector.check(unsupportedTui, null)).toBe(false);
+    expect(detector.isSideBordersHidden()).toBe(false);
+  });
+
+  it("fails open when a private overlay probe throws", () => {
+    const tui = {
+      focusedComponent: { __selector: true },
+      hasOverlay: () => {
+        throw new Error("unsupported overlay probe");
+      },
+      doRender: vi.fn(),
+      requestRender: vi.fn(),
+    } as unknown as TUI;
+
+    expect(() => isSelectorActive(tui, { __editor: true })).not.toThrow();
+    expect(isSelectorActive(tui, { __editor: true })).toBe(false);
+  });
+
+  it("fails open when private render access throws", () => {
+    const tui = {
+      get doRender(): never {
+        throw new Error("unsupported render probe");
+      },
+      set doRender(_value: () => void) {
+        throw new Error("unsupported render patch");
+      },
+    } as unknown as TUI;
+
+    expect(() => getDoRender(tui)).not.toThrow();
+    expect(getDoRender(tui)).toBeNull();
+    expect(() => setDoRender(tui, vi.fn())).not.toThrow();
+    expect(setDoRender(tui, vi.fn())).toBe(false);
+  });
+
+  it("fails open when capability detection itself throws", () => {
+    const tui = {} as Record<string, unknown>;
+    Object.defineProperty(tui, "focusedComponent", { value: { __selector: true } });
+    Object.defineProperty(tui, "hasOverlay", {
+      get() {
+        throw new Error("unsupported capability getter");
+      },
+    });
+
+    expect(() => isSelectorActive(tui as unknown as TUI, { __editor: true })).not.toThrow();
+    expect(isSelectorActive(tui as unknown as TUI, { __editor: true })).toBe(false);
   });
 });

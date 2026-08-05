@@ -1,13 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
+import path from "node:path";
 import {
-  clearKimiSnapshot,
+  createKimiUsageStore,
   fetchKimiUsage,
-  getKimiSnapshot,
   isKimiModel,
   parseKimiUsage,
   resolveKimiApiKey,
-  setKimiSnapshot,
 } from "./index";
 import type { UsageSnapshot } from "./types";
 
@@ -18,11 +17,14 @@ vi.mock("@earendil-works/pi-coding-agent", () => ({
 const NOW = new Date("2026-07-25T12:00:00Z");
 
 function mockFs(files: Record<string, unknown>): void {
+  const normalizedFiles = new Map(
+    Object.entries(files).map(([file, value]) => [path.normalize(file), value]),
+  );
   vi.spyOn(fs, "readFileSync").mockImplementation(((
     p: fs.PathOrFileDescriptor,
   ) => {
-    const key = String(p);
-    if (key in files) return JSON.stringify(files[key]);
+    const key = path.normalize(String(p));
+    if (normalizedFiles.has(key)) return JSON.stringify(normalizedFiles.get(key));
     const err = new Error(`ENOENT: no such file: ${key}`) as NodeJS.ErrnoException;
     err.code = "ENOENT";
     throw err;
@@ -139,20 +141,22 @@ describe("parseKimiUsage", () => {
   });
 });
 
-describe("Kimi snapshot state", () => {
-  afterEach(() => {
-    clearKimiSnapshot();
-  });
-
-  it("sets, gets, and clears the snapshot", () => {
-    expect(getKimiSnapshot()).toBeUndefined();
-
+describe("Kimi snapshot stores", () => {
+  it("keeps snapshots isolated between stores", () => {
+    const first = createKimiUsageStore();
+    const second = createKimiUsageStore();
     const snap: UsageSnapshot = { capturedAt: 123 };
-    setKimiSnapshot(snap);
-    expect(getKimiSnapshot()).toBe(snap);
 
-    clearKimiSnapshot();
-    expect(getKimiSnapshot()).toBeUndefined();
+    expect(first.getSnapshot()).toBeUndefined();
+    expect(second.getSnapshot()).toBeUndefined();
+
+    first.setSnapshot(snap);
+
+    expect(first.getSnapshot()).toBe(snap);
+    expect(second.getSnapshot()).toBeUndefined();
+
+    first.clearSnapshot();
+    expect(first.getSnapshot()).toBeUndefined();
   });
 });
 
