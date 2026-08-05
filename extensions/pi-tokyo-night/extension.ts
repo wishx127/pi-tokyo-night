@@ -26,6 +26,7 @@ import {
   setKimiSnapshot,
 } from "./usage";
 import { TokyoConfigManager } from "./config";
+import { installConsoleLogBridge } from "./console-bridge";
 import {
   EXT_PREFIX,
   handleExtensionError,
@@ -179,7 +180,12 @@ export function buildStatusWidgetLines(
   ];
 }
 
-export default function (pi: ExtensionAPI) {
+export function registerTokyoNightExtension(
+  pi: ExtensionAPI,
+  dependencies: {
+    installConsoleLogBridge?: typeof installConsoleLogBridge;
+  } = {},
+) {
   // Every invocation gets its own composition root. Do not move these values
   // to module scope: Pi can replace an extension runtime while old callbacks
   // and asynchronous work are still unwinding.
@@ -258,6 +264,9 @@ export default function (pi: ExtensionAPI) {
 
   const isInteractiveTui = (ctx: ExtensionContext): boolean =>
     ctx.mode === "tui" && ctx.hasUI;
+  const consoleLogBridge = (
+    dependencies.installConsoleLogBridge ?? installConsoleLogBridge
+  )();
 
   const formatWorkingDuration = (milliseconds: number): string => {
     const seconds = Math.max(0, milliseconds) / 1000;
@@ -847,6 +856,13 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
+    // Keep extension console output away from the terminal while this session
+    // owns the interactive TUI. This remains process-wide across reloads so
+    // late errors from a retiring runtime cannot corrupt the next frame.
+    consoleLogBridge.setInteractive(isInteractiveTui(ctx));
+    // Do not disable it in session_shutdown: retiring async work can log after
+    // Pi invalidates its old context. The next session_start sets the mode.
+
     const sessionIdentity = getSessionIdentity(ctx);
     const ui = ctx.ui;
     const mode = ctx.mode;
@@ -1392,3 +1408,5 @@ export default function (pi: ExtensionAPI) {
     }
   });
 }
+
+export default registerTokyoNightExtension;
