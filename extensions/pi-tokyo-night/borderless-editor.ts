@@ -138,6 +138,8 @@ export interface BorderlessEditorDependencies {
   settingsController: SettingsUIController;
   /** Rain animation state manager — used to read isRunning and getSnapshot(). */
   rainManager: RainAnimationManager;
+  /** Notify the composition root after the host TUI completes a render. */
+  onTuiRender?: (editor: BorderlessEditor) => void;
 }
 
 /**
@@ -207,6 +209,7 @@ export class BorderlessEditor extends CustomEditor {
         try {
           originalDoRender();
         } finally {
+          dependencies.onTuiRender?.(this);
           // After Pi's render cycle, check if our editor is still focused.
           // selectorDetector.check() updates the active flag and triggers
           // coordinated re-render if state changed.

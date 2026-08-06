@@ -149,6 +149,109 @@ describe("Tokyo Night status widget narrow widths", () => {
   });
 });
 
+describe("Tokyo Night status branch cache", () => {
+  it("does not re-read the footer branch during every status render", async () => {
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const getGitBranch = vi.fn(() => "main");
+    let branchChanged: (() => void) | undefined;
+    const footerData = {
+      getGitBranch,
+      getExtensionStatuses: () => new Map(),
+      getAvailableProviderCount: () => 0,
+      onBranchChange: vi.fn((callback: () => void) => {
+        branchChanged = callback;
+        return vi.fn();
+      }),
+    } as any;
+    (fixture.footerFactory as any)({ requestRender: vi.fn() }, theme, footerData);
+
+    const statusFactory = fixture.widgets.get("tokyo-status") as any;
+    const status = statusFactory({ requestRender: vi.fn() }, theme);
+    expect(getGitBranch).toHaveBeenCalledTimes(1);
+
+    expect(status.render(80).join("\n")).toContain("main");
+    status.render(80);
+    status.render(80);
+
+    expect(getGitBranch).toHaveBeenCalledTimes(1);
+
+    getGitBranch.mockReturnValue("feature");
+    branchChanged?.();
+    expect(status.render(80).join("\n")).toContain("feature");
+    expect(getGitBranch).toHaveBeenCalledTimes(2);
+    await shutdown(fixture);
+  });
+});
+
+describe("Tokyo Night rain render scheduling", () => {
+  it("throttles redundant rain redraws while the agent is working", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const tui = {
+      focusedComponent: undefined as unknown,
+      hasOverlay: () => false,
+      doRender: vi.fn(),
+      requestRender: vi.fn(),
+    };
+    (fixture.editorFactory as any)(tui, {}, {});
+    tui.doRender();
+
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+    tui.requestRender.mockClear();
+
+    await vi.advanceTimersByTimeAsync(490);
+    expect(tui.requestRender).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(40);
+    expect(tui.requestRender).toHaveBeenCalledTimes(1);
+
+    tui.requestRender.mockClear();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(tui.requestRender).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(40);
+    expect(tui.requestRender).toHaveBeenCalledTimes(1);
+
+    await fixture.emit("agent_end", { type: "agent_end", messages: [] }, fixture.ctx);
+    tui.requestRender.mockClear();
+    await vi.advanceTimersByTimeAsync(130);
+    expect(tui.requestRender).toHaveBeenCalledTimes(1);
+
+    await shutdown(fixture);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("uses a completed host render as the busy throttle anchor", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const tui = {
+      focusedComponent: undefined as unknown,
+      hasOverlay: () => false,
+      doRender: vi.fn(),
+      requestRender: vi.fn(),
+    };
+    (fixture.editorFactory as any)(tui, {}, {});
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+    tui.requestRender.mockClear();
+
+    await vi.advanceTimersByTimeAsync(300);
+    tui.doRender();
+    await vi.advanceTimersByTimeAsync(400);
+    expect(tui.requestRender).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(300);
+    expect(tui.requestRender).toHaveBeenCalledTimes(1);
+
+    await shutdown(fixture);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
 describe("Tokyo Night selector transition lifecycle", () => {
   it("registers/removes the rain overlay and forces a full root render", async () => {
     vi.useFakeTimers();

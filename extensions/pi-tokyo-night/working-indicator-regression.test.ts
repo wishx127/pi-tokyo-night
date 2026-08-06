@@ -260,6 +260,25 @@ describe("WorkingIndicator non-interactive guards", () => {
 });
 
 describe("WorkingIndicator state reset", () => {
+  it("coalesces repeated message deltas within the same phase", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture("tui");
+    await fixture.emit("session_start", { type: "session_start" }, fixture.ctx);
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+    fixture.ui.ui.setWorkingMessage.mockClear();
+
+    await fixture.emit("message_update", thinkingUpdate, fixture.ctx);
+    expect(fixture.ui.ui.setWorkingMessage).toHaveBeenCalledTimes(1);
+
+    for (let i = 0; i < 100; i++) {
+      await fixture.emit("message_update", thinkingUpdate, fixture.ctx);
+    }
+
+    expect(fixture.ui.ui.setWorkingMessage).toHaveBeenCalledTimes(1);
+    await shutdown(fixture);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("times the current Thinking phase independently from the agent start", async () => {
     vi.useFakeTimers();
     const fixture = makeFixture("tui");

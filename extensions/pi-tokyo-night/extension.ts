@@ -94,6 +94,8 @@ type SessionState = {
   statusTui: TUI | null;
   requestStatusRender: (() => void) | null;
   working: NativeWorkingState;
+  lastTuiRenderAt: number;
+  lastRainRenderRequestAt: number;
   origSetWidget: ((...args: any[]) => any) | null;
   setWidgetWrapper: ((...args: any[]) => any) | null;
   editor: BorderlessEditor | null;
@@ -375,16 +377,17 @@ export function registerTokyoNightExtension(
     session: SessionState,
     phase: WorkingPhase,
     restart = false,
-  ): void => {
+  ): boolean => {
     if (
       !restart &&
       session.working.phase === phase &&
       session.working.phaseStartedAt !== undefined
     ) {
-      return;
+      return false;
     }
     session.working.phase = phase;
     session.working.phaseStartedAt = Date.now();
+    return true;
   };
 
   const updateWorkingMessage = (session: SessionState): void => {
@@ -432,6 +435,49 @@ export function registerTokyoNightExtension(
     activeSession === session &&
     !session.disposed &&
     session.generation === sessionGeneration;
+
+  const RAIN_BUSY_RENDER_INTERVAL_MS = 500;
+
+  const noteSessionTuiRender = (
+    session: SessionState,
+    editor?: BorderlessEditor,
+  ): void => {
+    if (!isCurrentSession(session)) return;
+    if (
+      editor &&
+      (ownedEditor !== editor || session.editor !== editor)
+    ) {
+      return;
+    }
+    session.lastTuiRenderAt = Date.now();
+  };
+
+  const requestRainRender = (session: SessionState): void => {
+    if (
+      !isCurrentSession(session) ||
+      session.mode !== "tui" ||
+      !session.hasUI ||
+      !configManager.get().panel
+    ) {
+      return;
+    }
+
+    const now = Date.now();
+    const isWorking = session.working.phaseStartedAt !== undefined;
+    const hasRecentTimestamp = (timestamp: number): boolean =>
+      now >= timestamp && now - timestamp < RAIN_BUSY_RENDER_INTERVAL_MS;
+    if (
+      isWorking &&
+      (hasRecentTimestamp(session.lastTuiRenderAt) ||
+        hasRecentTimestamp(session.lastRainRenderRequestAt))
+    ) {
+      return;
+    }
+
+    session.lastRainRenderRequestAt = now;
+    ownedEditor?.requestRender();
+    requestRainOverlayRenderCallback();
+  };
 
   const abortBranchRequest = (branch: BranchState): void => {
     branch.requestController?.abort();
@@ -591,8 +637,8 @@ export function registerTokyoNightExtension(
 
   const rainManager = new RainAnimationManager(configManager, {
     requestRender: () => {
-      ownedEditor?.requestRender();
-      requestRainOverlayRenderCallback();
+      const session = activeSession;
+      if (session) requestRainRender(session);
     },
   });
 
@@ -640,12 +686,19 @@ export function registerTokyoNightExtension(
     ) {
       BorderlessEditor.activeInstance = null;
     }
+    const editorSession = activeSession;
     const editor = new BorderlessEditor(
       tui,
       theme,
       keybindings,
       editorUIContext!,
-      borderlessEditorDependencies,
+      {
+        ...borderlessEditorDependencies,
+        onTuiRender: editorSession
+          ? (renderedEditor) =>
+              noteSessionTuiRender(editorSession, renderedEditor)
+          : undefined,
+      },
       options,
     );
     ownedEditor = editor;
@@ -707,7 +760,8 @@ export function registerTokyoNightExtension(
   ): Promise<void> => {
     if (!isCurrentSession(session)) return;
 
-    if (session.branch.cwd !== cwd) {
+    const cwdChanged = session.branch.cwd !== cwd;
+    if (cwdChanged) {
       session.branch.cwd = cwd;
       abortBranchRequest(session.branch);
       session.branch.cachedBranch = "";
@@ -719,7 +773,7 @@ export function registerTokyoNightExtension(
     // Footer data is Pi's cached source of truth. In particular, do not start
     // a git process while the footer provider is available.
     if (session.footerData) {
-      syncFooterBranch(session, session.footerData);
+      if (cwdChanged) syncFooterBranch(session, session.footerData);
       return;
     }
 
@@ -830,8 +884,9 @@ export function registerTokyoNightExtension(
       default:
         return;
     }
-    setWorkingPhase(session, nextPhase);
-    updateWorkingMessage(session);
+    if (setWorkingPhase(session, nextPhase)) {
+      updateWorkingMessage(session);
+    }
   });
 
   pi.on("tool_execution_start", async (event, ctx) => {
@@ -991,6 +1046,8 @@ export function registerTokyoNightExtension(
         activeTools: new Map(),
         timer: undefined,
       },
+      lastTuiRenderAt: Date.now(),
+      lastRainRenderRequestAt: Date.now(),
       origSetWidget: null,
       setWidgetWrapper: null,
       editor: null,
@@ -1163,6 +1220,7 @@ export function registerTokyoNightExtension(
         invalidate() {},
         render(width: number): string[] {
           if (!selectorDetector.isSideBordersHidden()) return [];
+          noteSessionTuiRender(session);
           return ownedEditor?.renderSelectorOverlay(width) ?? [];
         },
         dispose() {
@@ -1298,11 +1356,11 @@ export function registerTokyoNightExtension(
     ) => {
       selectorDetector.overlayTui = tui;
       session.footerData = footerData;
+      session.branch.cwd = session.cwd;
       syncFooterBranch(session, footerData);
       const unsub = footerData.onBranchChange(() => {
         if (!isCurrentSession(session)) return;
         syncFooterBranch(session, footerData);
-        requestStatusRenderFor(session);
       });
       const subscription = {
         active: true,

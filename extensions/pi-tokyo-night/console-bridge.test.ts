@@ -9,7 +9,7 @@ import {
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { TUI } from "@earendil-works/pi-tui";
+import { TuiMainScreen } from "@earendil-works/pi-tui";
 import {
   createConsoleLogBridge,
   flushConsoleLogWrites,
@@ -204,7 +204,7 @@ describe("Tokyo Night TUI console bridge", () => {
       logFilePath: path.join(os.tmpdir(), "pi-tokyo-night-tui-test.log"),
       appendLine: vi.fn(),
     });
-    const tui = new TUI(terminal as any, false);
+    const tui = new TuiMainScreen(terminal as any, false);
     const component = {
       render: vi.fn(() => ["rain", "input"]),
       invalidate: vi.fn(),

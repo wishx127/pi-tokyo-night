@@ -276,6 +276,105 @@ describe("buildStatusLine", () => {
     expect(line).toContain("100%/1.0k");
   });
 
+  it("caches context usage briefly and refreshes after the cache window", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      let tokens = 100;
+      const getContextUsage = vi.fn(() => ({
+        tokens,
+        contextWindow: 1000,
+        percent: tokens / 10,
+      }));
+      const ctx = makeContext([], getContextUsage);
+
+      const first = buildStatusLine(500, theme, ctx, "", "high", config);
+      const second = buildStatusLine(500, theme, ctx, "", "high", config);
+
+      expect(first).toContain("10%/1.0k");
+      expect(second).toContain("10%/1.0k");
+      expect(getContextUsage).toHaveBeenCalledTimes(1);
+
+      tokens = 200;
+      vi.setSystemTime(249);
+      expect(buildStatusLine(500, theme, ctx, "", "high", config)).toContain(
+        "10%/1.0k",
+      );
+      expect(getContextUsage).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(250);
+      const refreshed = buildStatusLine(500, theme, ctx, "", "high", config);
+      expect(getContextUsage).toHaveBeenCalledTimes(2);
+      expect(refreshed).toContain("20%/1.0k");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refreshes context usage when the active leaf changes", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      let leaf = "leaf-a";
+      let tokens = 100;
+      const getContextUsage = vi.fn(() => ({
+        tokens,
+        contextWindow: 1000,
+        percent: tokens / 10,
+      }));
+      const ctx = makeContext([], getContextUsage, {
+        getBranch: () => [],
+        getLeafId: () => leaf,
+        getSessionId: () => "session-a",
+      });
+
+      expect(buildStatusLine(500, theme, ctx, "", "high", config)).toContain(
+        "10%/1.0k",
+      );
+      tokens = 200;
+      leaf = "leaf-b";
+
+      expect(buildStatusLine(500, theme, ctx, "", "high", config)).toContain(
+        "20%/1.0k",
+      );
+      expect(getContextUsage).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refreshes context usage when the model changes", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      let tokens = 100;
+      const getContextUsage = vi.fn(() => ({
+        tokens,
+        contextWindow: 1000,
+        percent: tokens / 10,
+      }));
+      const ctx = makeContext([], getContextUsage);
+
+      expect(buildStatusLine(500, theme, ctx, "", "high", config)).toContain(
+        "10%/1.0k",
+      );
+      tokens = 200;
+      ctx.model = {
+        id: "other-model",
+        provider: "other-provider",
+        api: "other-api",
+        contextWindow: 1000,
+      } as any;
+
+      expect(buildStatusLine(500, theme, ctx, "", "high", config)).toContain(
+        "20%/1.0k",
+      );
+      expect(getContextUsage).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("reuses stats for one leaf, invalidates on leaf changes, and isolates sessions", () => {
     const getBranch = vi.fn(() => [makeAssistant(10, 20)]);
     let leaf = "leaf-a";

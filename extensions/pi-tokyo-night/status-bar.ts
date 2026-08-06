@@ -78,9 +78,92 @@ type StatsCacheEntry = {
   stats: SessionStats;
 };
 
+type ContextUsage = {
+  tokens: number | null;
+  contextWindow: number;
+  percent: number | null;
+};
+
+type ContextUsageGetter = () => ContextUsage | undefined;
+
+type ContextUsageCacheEntry = {
+  sessionId: string | undefined;
+  leafId: string | null | undefined;
+  model: ExtensionContext["model"];
+  capturedAt: number;
+  usage: ContextUsage | undefined;
+};
+
 // Session branches are immutable between leaf changes. Keep this cache keyed by
 // manager identity so a reused module can never share stats between sessions.
 const sessionStatsCache = new WeakMap<object, StatsCacheEntry>();
+
+// Context usage can change while a leaf is streaming, so this is intentionally
+// a short-lived cache rather than a leaf-only cache. It prevents animation and
+// input redraws from repeatedly traversing a long session branch while keeping
+// the status bar responsive to recent usage changes.
+const CONTEXT_USAGE_CACHE_TTL_MS = 250;
+const contextUsageCache = new WeakMap<object, ContextUsageCacheEntry>();
+
+function getContextUsageIdentity(ctx: ExtensionContext): {
+  manager: object;
+  sessionId: string | undefined;
+  leafId: string | null | undefined;
+  model: ExtensionContext["model"];
+} {
+  const manager = ctx.sessionManager as unknown as {
+    getLeafId?: () => string | null;
+    getSessionId?: () => string;
+  };
+  let sessionId: string | undefined;
+  let leafId: string | null | undefined;
+  try {
+    sessionId = typeof manager.getSessionId === "function"
+      ? manager.getSessionId()
+      : undefined;
+    leafId = typeof manager.getLeafId === "function"
+      ? manager.getLeafId()
+      : undefined;
+  } catch {
+    // Cache by manager and TTL when a host-provided identity method is absent
+    // or temporarily unavailable; rendering must remain best-effort.
+  }
+  return {
+    manager: ctx.sessionManager as unknown as object,
+    sessionId,
+    leafId,
+    model: ctx.model,
+  };
+}
+
+function getCachedContextUsage(
+  ctx: ExtensionContext,
+  getContextUsage: ContextUsageGetter,
+): ContextUsage | undefined {
+  const identity = getContextUsageIdentity(ctx);
+  const now = Date.now();
+  const cached = contextUsageCache.get(identity.manager);
+  if (
+    cached &&
+    cached.sessionId === identity.sessionId &&
+    cached.leafId === identity.leafId &&
+    cached.model === identity.model &&
+    now >= cached.capturedAt &&
+    now - cached.capturedAt < CONTEXT_USAGE_CACHE_TTL_MS
+  ) {
+    return cached.usage;
+  }
+
+  const usage = getContextUsage.call(ctx);
+  contextUsageCache.set(identity.manager, {
+    sessionId: identity.sessionId,
+    leafId: identity.leafId,
+    model: identity.model,
+    capturedAt: Date.now(),
+    usage,
+  });
+  return usage;
+}
 
 function calculateSessionStats(ctx: ExtensionContext): SessionStats {
   let input = 0;
@@ -375,15 +458,11 @@ function buildStatusLayout(
       : 0;
 
   const getContextUsage = (
-    ctx as unknown as { getContextUsage?: () => {
-      tokens: number | null;
-      contextWindow: number;
-      percent: number | null;
-    } | undefined }
+    ctx as unknown as { getContextUsage?: ContextUsageGetter }
   ).getContextUsage;
   if (typeof getContextUsage === "function") {
     try {
-      const usage = getContextUsage.call(ctx);
+      const usage = getCachedContextUsage(ctx, getContextUsage);
       if (usage) {
         if (Number.isFinite(usage.contextWindow) && usage.contextWindow > 0) {
           maxCtx = usage.contextWindow;
