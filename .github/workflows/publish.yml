@@ -10,22 +10,52 @@ permissions:
   contents: read
 
 jobs:
-  publish:
+  compatibility:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - label: minimum
+            version: 0.79.0
+          - label: historical
+            version: 0.82.0
+          - label: latest
+            version: latest
     steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
-
       - run: npm ci
-
+      - name: Resolve Pi version
+        id: pi_version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ matrix.version }}
+        run: |
+          if [ "$REQUESTED_VERSION" = "latest" ]; then
+            version="$(npm view @earendil-works/pi-coding-agent version)"
+          else
+            version="$REQUESTED_VERSION"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - run: npm install --no-save --package-lock=false --ignore-scripts @earendil-works/pi-ai@${{ steps.pi_version.outputs.version }} @earendil-works/pi-coding-agent@${{ steps.pi_version.outputs.version }} @earendil-works/pi-tui@${{ steps.pi_version.outputs.version }}
       - run: npm run check
-
       - run: npm pack --dry-run
 
+  publish:
+    needs: compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+      - run: npm pack --dry-run
       - run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

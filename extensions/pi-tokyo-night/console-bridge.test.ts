@@ -9,7 +9,8 @@ import {
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { TuiMainScreen } from "@earendil-works/pi-tui";
+import * as PiTui from "@earendil-works/pi-tui";
+import type { TUI } from "@earendil-works/pi-tui";
 import {
   createConsoleLogBridge,
   flushConsoleLogWrites,
@@ -63,6 +64,14 @@ function makeTerminal() {
     setProgress: vi.fn(),
   };
 }
+
+type RuntimeTuiConstructor = new (terminal: unknown, showHardwareCursor?: boolean) => TUI;
+
+const tuiExports = PiTui as unknown as {
+  TUI?: RuntimeTuiConstructor;
+  TuiMainScreen?: RuntimeTuiConstructor;
+};
+const RuntimeTui = tuiExports.TuiMainScreen ?? tuiExports.TUI;
 
 async function waitForTuiRender(): Promise<void> {
   await new Promise<void>((resolve) => setImmediate(resolve));
@@ -204,7 +213,8 @@ describe("Tokyo Night TUI console bridge", () => {
       logFilePath: path.join(os.tmpdir(), "pi-tokyo-night-tui-test.log"),
       appendLine: vi.fn(),
     });
-    const tui = new TuiMainScreen(terminal as any, false);
+    if (!RuntimeTui) throw new Error("Pi TUI runtime constructor is unavailable");
+    const tui = new RuntimeTui(terminal, false);
     const component = {
       render: vi.fn(() => ["rain", "input"]),
       invalidate: vi.fn(),

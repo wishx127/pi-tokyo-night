@@ -1,11 +1,9 @@
 # pi-tokyo-night
 
-A [pi](https://github.com/earendil-works/pi) theme + extension that brings the tokyo-night color scheme to your terminal, with a Powerline-style status bar and an animated panel.
+A [pi](https://github.com/earendil-works/pi) theme + extension that brings the tokyo-night color scheme to your terminal, with a Powerline-style status bar and animated rain panel.
 
 <p>
-
   <img src="assets/screenshot.png" alt="pi-tokyo-night" width="1100">
-
 </p>
 
 ## ✨ Features

@@ -43,7 +43,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "vitest run && tsc --noEmit"
+    "check": "vitest run && tsc --noEmit",
+    "compatibility": "npm run check"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.84.0",
