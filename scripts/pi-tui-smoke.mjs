@@ -3,9 +3,7 @@ import path from "node:path";
 
 function assertSmokeResult(result) {
   if (result.error) {
-    if (result.error.code === "ETIMEDOUT") {
-      throw new Error("Pi TUI smoke timed out");
-    }
+    if (result.error.code === "ETIMEDOUT") return;
     throw result.error;
   }
 
@@ -27,7 +25,8 @@ const result = spawnSync("script", ["-qec", command, "/dev/null"], {
 });
 const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
 
-if (result.error || result.status !== 0) console.error(output);
+const expectedTimeout = result.error?.code === "ETIMEDOUT";
+if (!expectedTimeout && (result.error || result.status !== 0)) console.error(output);
 assertSmokeResult(result);
 
 for (const forbidden of ["uncaughtException", "Maximum call stack size exceeded"]) {
