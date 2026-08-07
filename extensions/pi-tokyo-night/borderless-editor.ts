@@ -7,13 +7,16 @@ import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import type { TokyoConfigManager } from "./config";
 import { handleExtensionError } from "./errors";
-import { requestHostRender } from "./pi-compat";
+import { isFullscreenTui, requestHostRender } from "./pi-compat";
 import type { SettingsUIController } from "./settings-controller";
 import { BOX, FRAME_RGB, PURPLE, RESET, fgRgb } from "./ui-primitives";
+
+const FULLSCREEN_EDITOR_MIN_ROWS = 3;
 
 export interface BorderlessEditorDependencies {
   config: TokyoConfigManager;
   settingsController: SettingsUIController;
+  renderFullscreenStatus?: (width: number) => string[];
 }
 
 export function shouldRenderEditorTopBorder(config: {
@@ -77,14 +80,60 @@ export class BorderlessEditor extends CustomEditor {
       // before rendering without locking its property descriptor.
       this.borderColor = this.emptyBorderColor;
       const config = this.dependencies.config.get();
-      if (width < 10 && config.editorFrame) return super.render(width);
-      return this.dependencies.settingsController.isActive
+      if (width < 10 && config.editorFrame) {
+        const lines = super.render(width);
+        return isFullscreenTui(this.tuiRef)
+          ? this.renderFullscreenDockLines(this.extractEditorContentLines(lines), width)
+          : lines;
+      }
+      const lines = this.dependencies.settingsController.isActive
         ? this.renderSettingsMode(width)
         : this.renderEditorMode(width);
+      return this.renderFullscreenDockLines(lines, width);
     } catch (error) {
       handleExtensionError(error, "BorderlessEditor render");
-      return super.render(width);
+      const lines = super.render(width);
+      return isFullscreenTui(this.tuiRef)
+        ? this.fillFullscreenDockRows(this.extractEditorContentLines(lines), width)
+        : lines;
     }
+  }
+
+  /**
+   * Pi fullscreen reserves a minimum-height editor dock. Compose Tokyo status
+   * into the same component so the host cannot pad between editor content and
+   * the below-editor status widget.
+   */
+  private renderFullscreenDockLines(lines: string[], width: number): string[] {
+    if (!isFullscreenTui(this.tuiRef)) return lines;
+    try {
+      return [
+        ...lines,
+        ...(this.dependencies.renderFullscreenStatus?.(width) ?? []),
+      ];
+    } catch (error) {
+      handleExtensionError(error, "BorderlessEditor fullscreen status render");
+      return this.fillFullscreenDockRows(lines, width);
+    }
+  }
+
+  private fillFullscreenDockRows(lines: string[], width: number): string[] {
+    const missingRows = Math.max(0, FULLSCREEN_EDITOR_MIN_ROWS - lines.length);
+    if (missingRows === 0) return lines;
+
+    const outputWidth = Math.max(1, Math.floor(width));
+    if (!this.dependencies.config.get().editorFrame) {
+      return [
+        ...lines,
+        ...Array.from({ length: missingRows }, () => " ".repeat(outputWidth)),
+      ];
+    }
+
+    const frameFg = (value: string) => `${fgRgb(FRAME_RGB)}${value}${RESET}`;
+    const filler = outputWidth >= 2
+      ? frameFg(`${BOX.v}${" ".repeat(outputWidth - 2)}${BOX.v}`)
+      : frameFg(BOX.v);
+    return [...lines, ...Array.from({ length: missingRows }, () => filler)];
   }
 
   private extractEditorContentLines(lines: string[]): string[] {

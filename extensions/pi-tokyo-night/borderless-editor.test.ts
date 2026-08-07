@@ -19,7 +19,12 @@ const configShape = (panel: boolean, editorFrame: boolean) => ({
   maxRainDrops: 25,
 });
 
-function makeEditor(panel = false, editorFrame = true, tui: { requestRender: (...args: any[]) => void } = { requestRender: vi.fn() }) {
+function makeEditor(
+  panel = false,
+  editorFrame = true,
+  tui: { requestRender: (...args: any[]) => void; mode?: "regular" | "fullscreen" } = { requestRender: vi.fn() },
+  renderFullscreenStatus?: (width: number) => string[],
+) {
   const settings = {
     isActive: false,
     handleInput: vi.fn(),
@@ -31,7 +36,7 @@ function makeEditor(panel = false, editorFrame = true, tui: { requestRender: (..
     {} as EditorTheme,
     {} as KeybindingsManager,
     {} as ExtensionUIContext,
-    { config: config as any, settingsController: settings as any },
+    { config: config as any, settingsController: settings as any, renderFullscreenStatus } as any,
   );
   return { editor, config, settings, tui };
 }
@@ -71,6 +76,101 @@ describe("BorderlessEditor public composition", () => {
     const lines = editor.render(40).join("\n");
     expect(lines).not.toMatch(/╭─+╮/);
     expect(lines).toContain("❯");
+  });
+
+  it("composes fullscreen status rows inside the editor dock", () => {
+    const renderFullscreenStatus = vi.fn(() => ["status row", "status bottom"]);
+    const { editor } = makeEditor(
+      true,
+      true,
+      { requestRender: vi.fn(), mode: "fullscreen" },
+      renderFullscreenStatus,
+    );
+
+    const lines = editor.render(40);
+
+    expect(renderFullscreenStatus).toHaveBeenCalledWith(40);
+    expect(lines).toHaveLength(3);
+    expect(lines.slice(-2)).toEqual(["status row", "status bottom"]);
+  });
+
+  it("does not compose fullscreen status rows in regular mode", () => {
+    const renderFullscreenStatus = vi.fn(() => ["status row", "status bottom"]);
+    const { editor } = makeEditor(
+      true,
+      true,
+      { requestRender: vi.fn(), mode: "regular" },
+      renderFullscreenStatus,
+    );
+
+    const lines = editor.render(40);
+
+    expect(renderFullscreenStatus).not.toHaveBeenCalled();
+    expect(lines).toHaveLength(1);
+  });
+
+  it("keeps fullscreen status visible through the narrow editor fallback", () => {
+    const renderFullscreenStatus = vi.fn(() => ["status row", "status bottom"]);
+    const { editor } = makeEditor(
+      true,
+      true,
+      { requestRender: vi.fn(), mode: "fullscreen" },
+      renderFullscreenStatus,
+    );
+
+    const lines = editor.render(8);
+
+    expect(renderFullscreenStatus).toHaveBeenCalledWith(8);
+    expect(lines).not.toContain("");
+    expect(lines.slice(-2)).toEqual(["status row", "status bottom"]);
+  });
+
+  it("follows a runtime renderer switch without duplicating status rows", () => {
+    const renderFullscreenStatus = vi.fn(() => ["status row", "status bottom"]);
+    const tui = { requestRender: vi.fn(), mode: "regular" as "regular" | "fullscreen" };
+    const { editor } = makeEditor(true, true, tui, renderFullscreenStatus);
+
+    expect(editor.render(40)).toHaveLength(1);
+    tui.mode = "fullscreen";
+    expect(editor.render(40)).toHaveLength(3);
+    tui.mode = "regular";
+    expect(editor.render(40)).toHaveLength(1);
+    expect(renderFullscreenStatus).toHaveBeenCalledOnce();
+  });
+
+  it("keeps fullscreen dock rows framed when status rendering fails", () => {
+    const renderFullscreenStatus = vi.fn(() => {
+      throw new Error("status failure");
+    });
+    const { editor } = makeEditor(
+      true,
+      true,
+      { requestRender: vi.fn(), mode: "fullscreen" },
+      renderFullscreenStatus,
+    );
+
+    const lines = editor.render(40);
+
+    expect(lines).toHaveLength(3);
+    expect(lines).not.toContain("");
+    expect(lines.every((line) => line.includes("│"))).toBe(true);
+  });
+
+  it("keeps fullscreen status attached while settings mode is active", () => {
+    const renderFullscreenStatus = vi.fn(() => ["status row", "status bottom"]);
+    const { editor, settings } = makeEditor(
+      true,
+      true,
+      { requestRender: vi.fn(), mode: "fullscreen" },
+      renderFullscreenStatus,
+    );
+    settings.isActive = true;
+
+    const lines = editor.render(40);
+
+    expect(lines).toHaveLength(3);
+    expect(lines).not.toContain("");
+    expect(lines.slice(-2)).toEqual(["status row", "status bottom"]);
   });
 
   it("keeps plain mode free of box chrome", () => {

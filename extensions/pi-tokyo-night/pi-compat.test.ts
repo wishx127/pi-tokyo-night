@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TUI } from "@earendil-works/pi-tui";
-import { evaluatePiCompatibility, requestHostRender } from "./pi-compat";
+import { evaluatePiCompatibility, isFullscreenTui, requestHostRender } from "./pi-compat";
 
 function createDynamicTuiProxy(
   getTarget: () => Pick<TUI, "requestRender">,
@@ -29,6 +29,12 @@ describe("Pi public compatibility contract", () => {
     });
     expect(evaluatePiCompatibility("0.84.3").supported).toBe(true);
     expect(evaluatePiCompatibility("0.78.9").supported).toBe(false);
+  });
+
+  it("detects fullscreen through the optional public TUI mode", () => {
+    expect(isFullscreenTui({ mode: "fullscreen" } as TUI)).toBe(true);
+    expect(isFullscreenTui({ mode: "regular" } as TUI)).toBe(false);
+    expect(isFullscreenTui({ requestRender: vi.fn() } as unknown as TUI)).toBe(false);
   });
 
   it("directly requests redraw through a raw public TUI-like object", () => {

@@ -21,6 +21,7 @@ function makeFixture(mode: Mode = "tui", sessionId = "session-1") {
     setFooter: vi.fn((factory: unknown) => { footerFactory = factory; }),
     setWorkingVisible: vi.fn(),
     setWorkingMessage: vi.fn(),
+    theme,
     notify: vi.fn(),
     select: vi.fn(),
     confirm: vi.fn(),
@@ -95,6 +96,38 @@ describe("public layout and lifecycle contract", () => {
     expect(rain.render(40).length).toBeGreaterThan(0);
     // A selector replaces the editor container, not the above-editor widget.
     expect(fixture.widgets.has("tokyo-rain")).toBe(true);
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("hides the separate status widget in fullscreen mode", async () => {
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const statusFactory = fixture.widgets.get("tokyo-status");
+    const tui = { requestRender: vi.fn(), mode: "regular" as "regular" | "fullscreen" };
+    const status = statusFactory(tui, theme);
+
+    expect(status.render(40).length).toBeGreaterThan(0);
+    tui.mode = "fullscreen";
+    expect(status.render(40)).toEqual([]);
+    tui.mode = "regular";
+    expect(status.render(40).length).toBeGreaterThan(0);
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("keeps the fullscreen editor/status dock free of empty separator rows", async () => {
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const tui = {
+      requestRender: vi.fn(),
+      mode: "fullscreen" as const,
+      terminal: { rows: 24, columns: 80 },
+    };
+    const editor = fixture.editorFactory(tui, { borderColor: (value: string) => value } as any, {} as any);
+
+    const lines = editor.render(40);
+
+    expect(lines.length).toBeGreaterThanOrEqual(3);
+    expect(lines).not.toContain("");
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 

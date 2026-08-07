@@ -8,7 +8,7 @@ import { TokyoConfigManager } from "./config";
 import { installConsoleLogBridge } from "./console-bridge";
 import { EXT_PREFIX, handleExtensionError, isStaleExtensionContextError } from "./errors";
 import { BorderlessEditor, type BorderlessEditorDependencies } from "./borderless-editor";
-import { evaluatePiCompatibility, requestHostRender } from "./pi-compat";
+import { evaluatePiCompatibility, isFullscreenTui, requestHostRender } from "./pi-compat";
 import { RainPanelComponent } from "./rain-panel";
 import { RainAnimationManager } from "./rain-manager";
 import { SettingsUIController } from "./settings-controller";
@@ -417,8 +417,34 @@ export function registerTokyoNightExtension(
       config: configManager,
       settingsController,
     };
+    const renderStatusLines = (width: number, theme: Theme): string[] => {
+      if (!isCurrent(session)) return [];
+      void updateBranch(session);
+      const outputWidth = safeTerminalWidth(width);
+      const lines = buildStatusLines(
+        outputWidth,
+        theme,
+        session.context,
+        session.branch.cachedBranch,
+        pi.getThinkingLevel(),
+        configManager,
+        codexUsageStore,
+        session.kimiUsageStore,
+      );
+      return buildStatusWidgetLines(outputWidth, false, lines, configManager.get().editorFrame);
+    };
     const editorFactory = (tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, options?: EditorOptions): BorderlessEditor => {
-      const editor = new BorderlessEditor(tui, theme, keybindings, session.ui, borderlessDependencies, options);
+      const editor = new BorderlessEditor(
+        tui,
+        theme,
+        keybindings,
+        session.ui,
+        {
+          ...borderlessDependencies,
+          renderFullscreenStatus: (width) => renderStatusLines(width, session.ui.theme),
+        },
+        options,
+      );
       if (isCurrent(session)) session.resources.editor = editor;
       return editor;
     };
@@ -441,20 +467,10 @@ export function registerTokyoNightExtension(
       return {
         invalidate: () => session.requestStatusRender?.(),
         render: (width: number): string[] => {
-          if (!isCurrent(session)) return [];
-          void updateBranch(session);
-          const outputWidth = safeTerminalWidth(width);
-          const lines = buildStatusLines(
-            outputWidth,
-            theme,
-            session.context,
-            session.branch.cachedBranch,
-            pi.getThinkingLevel(),
-            configManager,
-            codexUsageStore,
-            session.kimiUsageStore,
-          );
-          return buildStatusWidgetLines(outputWidth, false, lines, configManager.get().editorFrame);
+          // Fullscreen composes status inside BorderlessEditor so the host's
+          // fixed editor height cannot insert a separator row before it.
+          if (isFullscreenTui(tui)) return [];
+          return renderStatusLines(width, theme);
         },
         dispose: () => { if (session.resources.statusTui === tui) session.resources.statusTui = null; },
       };

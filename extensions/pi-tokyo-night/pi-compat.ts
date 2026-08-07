@@ -26,6 +26,10 @@ export function evaluatePiCompatibility(version: string): PiCompatibility {
   return { version, supported, minimum: "0.79.0" };
 }
 
+export function isFullscreenTui(target: TUI): boolean {
+  return (target as TUI & { readonly mode?: string }).mode === "fullscreen";
+}
+
 export function requestHostRender(
   target: HostRenderTarget | null,
   force = false,
