@@ -32,9 +32,9 @@ describe("Pi public compatibility contract", () => {
   });
 
   it("detects fullscreen through the optional public TUI mode", () => {
-    expect(isFullscreenTui({ mode: "fullscreen" } as TUI)).toBe(true);
-    expect(isFullscreenTui({ mode: "regular" } as TUI)).toBe(false);
-    expect(isFullscreenTui({ requestRender: vi.fn() } as unknown as TUI)).toBe(false);
+    expect(isFullscreenTui({ mode: "fullscreen" })).toBe(true);
+    expect(isFullscreenTui({ mode: "regular" })).toBe(false);
+    expect(isFullscreenTui({})).toBe(false);
   });
 
   it("directly requests redraw through a raw public TUI-like object", () => {

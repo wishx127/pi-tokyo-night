@@ -2,6 +2,11 @@ import type { TUI } from "@earendil-works/pi-tui";
 
 export type HostRenderTarget = Pick<TUI, "requestRender">;
 
+/** Optional fullscreen capability exposed by newer Pi TUI implementations. */
+export type TuiModeProbe = {
+  readonly mode?: string;
+};
+
 export interface PiCompatibility {
   version: string;
   supported: boolean;
@@ -26,8 +31,8 @@ export function evaluatePiCompatibility(version: string): PiCompatibility {
   return { version, supported, minimum: "0.79.0" };
 }
 
-export function isFullscreenTui(target: TUI): boolean {
-  return (target as TUI & { readonly mode?: string }).mode === "fullscreen";
+export function isFullscreenTui(target: TUI | TuiModeProbe): boolean {
+  return "mode" in target && target.mode === "fullscreen";
 }
 
 export function requestHostRender(
