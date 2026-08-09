@@ -18,7 +18,7 @@ jobs:
       matrix:
         include:
           - label: minimum
-            version: 0.79.0
+            version: 0.80.5
           - label: historical
             version: 0.82.0
           - label: latest
@@ -57,7 +57,7 @@ jobs:
       matrix:
         include:
           - label: minimum
-            version: 0.79.0
+            version: 0.80.5
           - label: latest
             version: latest
     steps:

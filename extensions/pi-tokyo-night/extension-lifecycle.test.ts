@@ -45,6 +45,7 @@ function makeFixture(mode: Mode = "tui", sessionId = "session-1") {
       getSessionFile: () => `/sessions/${sessionId}.jsonl`,
     },
     getContextUsage: () => undefined,
+    isIdle: vi.fn(() => true),
   } as any;
   let command: any;
   const pi = {
@@ -229,16 +230,36 @@ describe("public layout and lifecycle contract", () => {
     }
   });
 
-  it("keeps working state session-owned and resets on agent end", async () => {
+  it("keeps working state through agent end and resets only after the agent settles", async () => {
     vi.useFakeTimers();
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "start" }, fixture.ctx);
     await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
     expect(fixture.ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.stringContaining("Waiting"));
+    const workingMessageCalls = fixture.ui.setWorkingMessage.mock.calls.length;
+
     await fixture.emit("agent_end", { type: "agent_end" }, fixture.ctx);
+
+    expect(fixture.ui.setWorkingMessage).toHaveBeenCalledTimes(workingMessageCalls);
+    await fixture.emit("agent_settled", { type: "agent_settled" }, fixture.ctx);
     expect(fixture.ui.setWorkingMessage).toHaveBeenLastCalledWith();
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not clear a new run started by an earlier settled handler", async () => {
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "start" }, fixture.ctx);
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+    await fixture.emit("agent_end", { type: "agent_end" }, fixture.ctx);
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+    fixture.ui.setWorkingMessage.mockClear();
+    fixture.ctx.isIdle.mockReturnValue(false);
+
+    await fixture.emit("agent_settled", { type: "agent_settled" }, fixture.ctx);
+
+    expect(fixture.ui.setWorkingMessage).not.toHaveBeenCalled();
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
   it("does not let a late old shutdown clear replacement resources", async () => {

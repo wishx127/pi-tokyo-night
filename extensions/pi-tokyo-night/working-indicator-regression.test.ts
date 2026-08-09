@@ -14,6 +14,7 @@ function makeFixture(mode: "tui" | "rpc" | "json" | "print" = "tui") {
     ui, mode, hasUI: mode === "tui", cwd: "/workspace/project", model: undefined,
     modelRegistry: { getApiKeyForProvider: vi.fn(async () => undefined) },
     sessionManager: { getBranch: () => [], getLeafId: () => "leaf", getSessionId: () => "session", getSessionFile: () => "/session" },
+    isIdle: vi.fn(() => true),
   } as any;
   const pi = {
     on(event: string, handler: (...args: any[]) => unknown) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
@@ -37,6 +38,7 @@ describe("working indicator compatibility regression", () => {
       await fixture.emit("agent_start", {}, fixture.ctx);
       await fixture.emit("message_update", { assistantMessageEvent: { type: "thinking_delta" } }, fixture.ctx);
       await fixture.emit("agent_end", {}, fixture.ctx);
+      await fixture.emit("agent_settled", {}, fixture.ctx);
       expect(fixture.ui.setWorkingMessage).not.toHaveBeenCalled();
       expect(fixture.ui.setWorkingVisible).not.toHaveBeenCalled();
     }
@@ -53,6 +55,27 @@ describe("working indicator compatibility regression", () => {
     expect(vi.getTimerCount()).toBe(timerCount - 1);
     await fixture.emit("session_shutdown", { reason: "quit" }, replacement);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("pauses updates between low-level runs and clears only after settling", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", {}, fixture.ctx);
+    await fixture.emit("agent_start", {}, fixture.ctx);
+    fixture.ui.setWorkingMessage.mockClear();
+
+    await fixture.emit("agent_end", {}, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fixture.ui.setWorkingMessage).not.toHaveBeenCalled();
+
+    await fixture.emit("agent_start", {}, fixture.ctx);
+    expect(fixture.ui.setWorkingMessage).toHaveBeenLastCalledWith(expect.stringContaining("Waiting"));
+    fixture.ui.setWorkingMessage.mockClear();
+    await fixture.emit("agent_end", {}, fixture.ctx);
+    await fixture.emit("agent_settled", {}, fixture.ctx);
+    expect(fixture.ui.setWorkingMessage).toHaveBeenCalledOnce();
+    expect(fixture.ui.setWorkingMessage).toHaveBeenLastCalledWith();
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
   it("coalesces repeated phase messages", async () => {

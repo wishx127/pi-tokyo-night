@@ -7,7 +7,7 @@ import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { TokyoConfigManager } from "./core/config";
 import { installConsoleLogBridge } from "./core/console-bridge";
 import { EXT_PREFIX, handleExtensionError, isStaleExtensionContextError } from "./core/errors";
-import { evaluatePiCompatibility, isFullscreenTui, requestHostRender } from "./core/pi-compat";
+import { evaluatePiCompatibility, isFullscreenTui, MINIMUM_PI_VERSION, requestHostRender } from "./core/pi-compat";
 import { RainAnimationManager } from "./rain/rain-manager";
 import { RainPanelComponent } from "./rain/rain-panel";
 import { BorderlessEditor, type BorderlessEditorDependencies } from "./ui/borderless-editor";
@@ -526,6 +526,11 @@ export function registerTokyoNightExtension(
   pi.on("agent_end", async (_event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
     if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI) return;
+    stopWorking(session);
+  });
+  pi.on("agent_settled", async (_event, ctx) => {
+    const session = sessionsByIdentity.get(identityOf(ctx));
+    if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI || !ctx.isIdle()) return;
     resetWorking(session);
     session.ui.setWorkingMessage();
   });
@@ -571,7 +576,7 @@ export function registerTokyoNightExtension(
     if (!compatibility.supported) {
       if (!compatibilityWarningShown) {
         compatibilityWarningShown = true;
-        console.warn(`${EXT_PREFIX} Pi ${VERSION} is below the supported minimum 0.79.0; interactive UI resources will not be registered.`);
+        console.warn(`${EXT_PREFIX} Pi ${VERSION} is below the supported minimum ${MINIMUM_PI_VERSION}; interactive UI resources will not be registered.`);
       }
       return;
     }

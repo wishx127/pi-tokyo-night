@@ -22,13 +22,13 @@ function createDynamicTuiProxy(
 }
 
 describe("Pi public compatibility contract", () => {
-  it("accepts 0.79.0 and newer supported versions without selecting an implementation", () => {
-    expect(evaluatePiCompatibility("0.79.0")).toMatchObject({
-      minimum: "0.79.0",
+  it("accepts 0.80.5 and newer supported versions without selecting an implementation", () => {
+    expect(evaluatePiCompatibility("0.80.5")).toMatchObject({
+      minimum: "0.80.5",
       supported: true,
     });
     expect(evaluatePiCompatibility("0.84.3").supported).toBe(true);
-    expect(evaluatePiCompatibility("0.78.9").supported).toBe(false);
+    expect(evaluatePiCompatibility("0.80.4").supported).toBe(false);
   });
 
   it("detects fullscreen through the optional public TUI mode", () => {

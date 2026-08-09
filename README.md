@@ -105,7 +105,7 @@ Existing settings are copied here automatically on first run. Configure status m
 
 The package ships two themes: `tokyo-night-dark` and `tokyo-night-light`.
 
-Pi `0.79.7` or newer can automatically switch between separate light and dark themes. Configure both variants through Pi's `/settings` screen. For manual configuration, set Pi's own `theme` setting—not the Tokyo Night extension config—in `~/.pi/agent/settings.json` using `<light-theme>/<dark-theme>` order:
+All supported Pi versions can automatically switch between separate light and dark themes. Configure both variants through Pi's `/settings` screen. For manual configuration, set Pi's own `theme` setting—not the Tokyo Night extension config—in `~/.pi/agent/settings.json` using `<light-theme>/<dark-theme>` order:
 
 ```json
 {
@@ -137,7 +137,7 @@ Theme location:
 
 ## 📌 Requirements
 
-- [Pi Coding Agent](https://github.com/earendil-works/pi) `>=0.79.0`
+- [Pi Coding Agent](https://github.com/earendil-works/pi) `>=0.80.5`
 - Terminal with 24-bit true color support
 - [Nerd Font](https://www.nerdfonts.com/) for icons (optional)
 
