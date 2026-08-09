@@ -4,17 +4,17 @@ import { VERSION, type ExtensionAPI, type ExtensionContext, type ExtensionUICont
 import type { Model } from "@earendil-works/pi-ai";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
-import { TokyoConfigManager } from "./config";
-import { installConsoleLogBridge } from "./console-bridge";
-import { EXT_PREFIX, handleExtensionError, isStaleExtensionContextError } from "./errors";
-import { BorderlessEditor, type BorderlessEditorDependencies } from "./borderless-editor";
-import { evaluatePiCompatibility, isFullscreenTui, requestHostRender } from "./pi-compat";
-import { RainPanelComponent } from "./rain-panel";
-import { RainAnimationManager } from "./rain-manager";
-import { SettingsUIController } from "./settings-controller";
-import { buildStatusLines } from "./status-bar";
+import { TokyoConfigManager } from "./core/config";
+import { installConsoleLogBridge } from "./core/console-bridge";
+import { EXT_PREFIX, handleExtensionError, isStaleExtensionContextError } from "./core/errors";
+import { evaluatePiCompatibility, isFullscreenTui, requestHostRender } from "./core/pi-compat";
+import { RainAnimationManager } from "./rain/rain-manager";
+import { RainPanelComponent } from "./rain/rain-panel";
+import { BorderlessEditor, type BorderlessEditorDependencies } from "./ui/borderless-editor";
+import { SettingsUIController } from "./ui/settings-controller";
+import { buildStatusLines } from "./ui/status-bar";
+import { BOX, FRAME_RGB, RESET, fgRgb } from "./ui/ui-primitives";
 import { createCodexUsageStore, createKimiUsageStore, fetchKimiUsage, isCodexModel, isKimiModel, resolveKimiApiKey, type KimiUsageStore } from "./usage";
-import { BOX, FRAME_RGB, RESET, fgRgb } from "./ui-primitives";
 
 export type TokyoNightMode = "tui" | "rpc" | "json" | "print";
 
@@ -371,8 +371,13 @@ export function registerTokyoNightExtension(
     resources.rainPanel = null;
     resources.rainManager = null;
     resources.statusTui = null;
+    if (resources.footerOwned) {
+      try { session.ui.setFooter(undefined); }
+      catch (error) { if (!isStaleExtensionContextError(error)) handleExtensionError(error, "footer teardown"); }
+    }
     resources.footerSubscription?.dispose();
     resources.footerSubscription = null;
+    resources.footerOwned = false;
 
     try {
       session.ui.setWidget("tokyo-rain", undefined);
@@ -385,11 +390,6 @@ export function registerTokyoNightExtension(
     } catch (error) {
       if (!isStaleExtensionContextError(error)) handleExtensionError(error, "editor teardown");
     }
-    if (resources.footerOwned) {
-      try { session.ui.setFooter(undefined); }
-      catch (error) { if (!isStaleExtensionContextError(error)) handleExtensionError(error, "footer teardown"); }
-    }
-    resources.footerOwned = false;
     try {
       session.ui.setWorkingMessage();
       session.ui.setWorkingVisible(true);
@@ -640,7 +640,9 @@ export function registerTokyoNightExtension(
         return;
       }
       if (!isInteractive(ctx)) {
-        console.log(`${EXT_PREFIX} Settings panel is only available in interactive mode.`);
+        if (ctx.hasUI) {
+          ctx.ui.notify("Tokyo Night settings panel is only available in TUI mode.", "info");
+        }
         return;
       }
       if (settingsController.isActive) {

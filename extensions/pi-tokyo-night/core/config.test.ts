@@ -198,7 +198,73 @@ describe("TokyoConfigManager validation", () => {
 });
 
 describe("TokyoConfigManager persistence", () => {
-  it("silently falls back to defaults when settings.json is missing", () => {
+  it("migrates legacy settings into the dedicated file without deleting the legacy key", () => {
+    const settingsPath = path.join(tempDir, "settings.json");
+    const legacySettings = {
+      theme: "tokyo-night-dark",
+      "pi-tokyo-night": {
+        panel: false,
+        iconMode: "ascii",
+        statusModules: { cost: false },
+      },
+    };
+    fs.writeFileSync(settingsPath, JSON.stringify(legacySettings));
+
+    const manager = new TokyoConfigManager();
+    manager.read();
+
+    const expectedConfig = {
+      ...DEFAULT_CONFIG,
+      panel: false,
+      iconMode: "ascii",
+      statusModules: {
+        ...DEFAULT_CONFIG.statusModules,
+        cost: false,
+      },
+    };
+    expect(manager.get()).toEqual(expectedConfig);
+    expect(
+      JSON.parse(
+        fs.readFileSync(
+          path.join(tempDir, "extensions", "pi-tokyo-night.json"),
+          "utf8",
+        ),
+      ),
+    ).toEqual(expectedConfig);
+    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toEqual(
+      legacySettings,
+    );
+  });
+
+  it("keeps legacy config in memory and cleans temporary files when migration persistence fails", () => {
+    const settingsPath = path.join(tempDir, "settings.json");
+    const legacySettings = {
+      "pi-tokyo-night": { panel: false },
+    };
+    fs.writeFileSync(settingsPath, JSON.stringify(legacySettings));
+    vi.spyOn(fs, "renameSync").mockImplementation(() => {
+      throw new Error("rename failed");
+    });
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const manager = new TokyoConfigManager();
+    manager.read();
+
+    const configDirectory = path.join(tempDir, "extensions");
+    expect(manager.get()).toEqual({ ...DEFAULT_CONFIG, panel: false });
+    expect(
+      fs.existsSync(path.join(configDirectory, "pi-tokyo-night.json")),
+    ).toBe(false);
+    expect(
+      fs.readdirSync(configDirectory).filter((file) => file.endsWith(".tmp")),
+    ).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toEqual(
+      legacySettings,
+    );
+    expect(error).toHaveBeenCalled();
+  });
+
+  it("silently falls back to defaults when both config sources are missing", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const manager = new TokyoConfigManager();
     manager.set("panel", false);
@@ -209,7 +275,7 @@ describe("TokyoConfigManager persistence", () => {
     expect(manager.get()).toEqual(DEFAULT_CONFIG);
   });
 
-  it("creates missing parent directories and settings.json", () => {
+  it("creates the dedicated config file without creating settings.json", () => {
     const agentDir = path.join(tempDir, "nested", "agent");
     getAgentDir.mockReturnValue(agentDir);
     const manager = new TokyoConfigManager();
@@ -217,12 +283,16 @@ describe("TokyoConfigManager persistence", () => {
 
     expect(manager.write()).toBe(true);
 
-    const settingsPath = path.join(agentDir, "settings.json");
-    expect(fs.existsSync(settingsPath)).toBe(true);
-    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))["pi-tokyo-night"]).toEqual({
+    const configPath = path.join(
+      agentDir,
+      "extensions",
+      "pi-tokyo-night.json",
+    );
+    expect(JSON.parse(fs.readFileSync(configPath, "utf8"))).toEqual({
       ...DEFAULT_CONFIG,
       panel: false,
     });
+    expect(fs.existsSync(path.join(agentDir, "settings.json"))).toBe(false);
   });
 
   it("round-trips the kimiQuota toggle through write/read", () => {
@@ -237,25 +307,89 @@ describe("TokyoConfigManager persistence", () => {
     expect(reader.get()).toEqual({ ...DEFAULT_CONFIG, kimiQuota: false });
   });
 
-  it("preserves unrelated top-level settings", () => {
-    const settingsPath = path.join(tempDir, "settings.json");
-    fs.writeFileSync(
-      settingsPath,
-      JSON.stringify({ theme: "custom", nested: { enabled: true } }),
+  it("prefers the dedicated config over stale legacy settings", () => {
+    const configPath = path.join(
+      tempDir,
+      "extensions",
+      "pi-tokyo-night.json",
     );
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ panel: false }));
+    fs.writeFileSync(
+      path.join(tempDir, "settings.json"),
+      JSON.stringify({ "pi-tokyo-night": { panel: true } }),
+    );
+
+    const manager = new TokyoConfigManager();
+    manager.read();
+
+    expect(manager.get()).toEqual({ ...DEFAULT_CONFIG, panel: false });
+  });
+
+  it("loads partial status module visibility from the dedicated config", () => {
+    const configPath = path.join(
+      tempDir,
+      "extensions",
+      "pi-tokyo-night.json",
+    );
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(
+      configPath,
+      JSON.stringify({ statusModules: { model: false, cost: false } }),
+    );
+
+    const manager = new TokyoConfigManager();
+    manager.read();
+
+    expect(manager.get().statusModules).toEqual({
+      ...DEFAULT_CONFIG.statusModules,
+      model: false,
+      cost: false,
+    });
+  });
+
+  it("does not replace a damaged dedicated config with stale legacy settings", () => {
+    const configPath = path.join(
+      tempDir,
+      "extensions",
+      "pi-tokyo-night.json",
+    );
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, "{not json");
+    fs.writeFileSync(
+      path.join(tempDir, "settings.json"),
+      JSON.stringify({ "pi-tokyo-night": { panel: false } }),
+    );
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const manager = new TokyoConfigManager();
+    manager.read();
+
+    expect(manager.get()).toEqual(DEFAULT_CONFIG);
+    expect(error).toHaveBeenCalled();
+  });
+
+  it("never modifies unrelated top-level settings", () => {
+    const settingsPath = path.join(tempDir, "settings.json");
+    const settings = { theme: "custom", nested: { enabled: true } };
+    fs.writeFileSync(settingsPath, JSON.stringify(settings));
     const manager = new TokyoConfigManager();
     manager.set("codexQuota", true);
 
     expect(manager.write()).toBe(true);
 
-    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toEqual({
-      theme: "custom",
-      nested: { enabled: true },
-      "pi-tokyo-night": { ...DEFAULT_CONFIG, codexQuota: true },
-    });
+    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toEqual(settings);
+    expect(
+      JSON.parse(
+        fs.readFileSync(
+          path.join(tempDir, "extensions", "pi-tokyo-night.json"),
+          "utf8",
+        ),
+      ),
+    ).toEqual({ ...DEFAULT_CONFIG, codexQuota: true });
   });
 
-  it("resets to defaults when a legal settings.json has no extension node", () => {
+  it("resets to defaults when legacy settings have no extension node", () => {
     const settingsPath = path.join(tempDir, "settings.json");
     const manager = new TokyoConfigManager();
     manager.set("panel", false);
@@ -264,10 +398,16 @@ describe("TokyoConfigManager persistence", () => {
     manager.read();
 
     expect(manager.get()).toEqual(DEFAULT_CONFIG);
+    expect(
+      fs.existsSync(
+        path.join(tempDir, "extensions", "pi-tokyo-night.json"),
+      ),
+    ).toBe(false);
   });
 
-  it("resets to defaults when settings.json is damaged", () => {
+  it("resets to defaults when legacy settings are damaged", () => {
     fs.writeFileSync(path.join(tempDir, "settings.json"), "{not json");
+    vi.spyOn(console, "error").mockImplementation(() => {});
     const manager = new TokyoConfigManager();
     manager.set("panel", false);
 
@@ -299,9 +439,14 @@ describe("TokyoConfigManager persistence", () => {
 
       expect(manager.write()).toBe(true);
       expect(rename).toHaveBeenCalledTimes(2);
-      expect(JSON.parse(fs.readFileSync(path.join(tempDir, "settings.json"), "utf8"))).toMatchObject({
-        "pi-tokyo-night": { panel: false },
-      });
+      expect(
+        JSON.parse(
+          fs.readFileSync(
+            path.join(tempDir, "extensions", "pi-tokyo-night.json"),
+            "utf8",
+          ),
+        ),
+      ).toMatchObject({ panel: false });
     } finally {
       Object.defineProperty(process, "platform", {
         configurable: true,
@@ -311,16 +456,22 @@ describe("TokyoConfigManager persistence", () => {
   });
 
   it("returns false and preserves the original file when atomic rename fails", () => {
-    const settingsPath = path.join(tempDir, "settings.json");
-    const original = { theme: "custom", "pi-tokyo-night": { panel: true } };
-    fs.writeFileSync(settingsPath, JSON.stringify(original));
+    const configPath = path.join(
+      tempDir,
+      "extensions",
+      "pi-tokyo-night.json",
+    );
+    const original = { ...DEFAULT_CONFIG, panel: true };
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify(original));
     const manager = new TokyoConfigManager();
     manager.set("panel", false);
     vi.spyOn(fs, "renameSync").mockImplementation(() => {
       throw new Error("rename failed");
     });
+    vi.spyOn(console, "error").mockImplementation(() => {});
 
     expect(manager.write()).toBe(false);
-    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toEqual(original);
+    expect(JSON.parse(fs.readFileSync(configPath, "utf8"))).toEqual(original);
   });
 });

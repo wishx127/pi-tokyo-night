@@ -4,7 +4,7 @@ import {
   type SettingDescriptor,
   type TokyoConfig,
   type TokyoConfigManager,
-} from "./config";
+} from "../core/config";
 import { CYAN, FRAME_RGB, RESET, fgRgb } from "./ui-primitives";
 
 export interface SettingsControllerCallbacks {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { TokyoConfigManager } from "./config";
+import { TokyoConfigManager } from "../core/config";
 import {
   SettingsUIController,
   type SettingsControllerCallbacks,

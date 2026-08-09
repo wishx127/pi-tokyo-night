@@ -19,7 +19,7 @@ import {
   type ConsoleLogBridge,
 } from "./console-bridge";
 import { TokyoConfigManager } from "./config";
-import { registerTokyoNightExtension } from "./extension";
+import { registerTokyoNightExtension } from "../extension";
 
 type ConsoleSpy = ReturnType<typeof vi.fn> & ((...args: any[]) => void);
 

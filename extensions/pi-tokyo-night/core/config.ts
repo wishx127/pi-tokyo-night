@@ -2,7 +2,14 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
 import path from "node:path";
 import { handleExtensionError } from "./errors";
-import { DEFAULT_ICON_MODE, type IconMode } from "./icons";
+import { DEFAULT_ICON_MODE, type IconMode } from "../ui/icons";
+
+const TOKYO_CONFIG_DIRECTORY = "extensions";
+const TOKYO_CONFIG_FILE = "pi-tokyo-night.json";
+
+function getTokyoConfigPath(): string {
+  return path.join(getAgentDir(), TOKYO_CONFIG_DIRECTORY, TOKYO_CONFIG_FILE);
+}
 
 // ── Tokyo Night User Config ────────────────────────────────────────────────
 // Persisted user personalization for the Tokyo Night extension. The panel
@@ -30,7 +37,7 @@ export interface TokyoConfig {
   kimiQuota: boolean;
   /** Icon set used by the status bar. */
   iconMode: IconMode;
-  /** Visibility of status bar modules, configured in settings.json. */
+  /** Visibility of status bar modules, configured in pi-tokyo-night.json. */
   statusModules: Readonly<StatusModulesConfig>;
   /** Height of the rain panel in rows. */
   rainRows: number;
@@ -245,9 +252,22 @@ function validatedValue<K extends keyof TokyoConfig>(
     : DEFAULT_CONFIG[key];
 }
 
+function buildConfig(saved: Record<string, unknown>): Readonly<TokyoConfig> {
+  const nextConfig = { ...DEFAULT_CONFIG };
+  nextConfig.panel = validatedValue("panel", saved.panel);
+  nextConfig.editorFrame = validatedValue("editorFrame", saved.editorFrame);
+  nextConfig.codexQuota = validatedValue("codexQuota", saved.codexQuota);
+  nextConfig.kimiQuota = validatedValue("kimiQuota", saved.kimiQuota);
+  nextConfig.iconMode = validatedValue("iconMode", saved.iconMode);
+  nextConfig.statusModules = readStatusModules(saved.statusModules);
+  nextConfig.rainRows = validatedValue("rainRows", saved.rainRows);
+  nextConfig.rainTickMs = validatedValue("rainTickMs", saved.rainTickMs);
+  nextConfig.maxRainDrops = validatedValue("maxRainDrops", saved.maxRainDrops);
+  return freezeConfig(nextConfig);
+}
+
 /**
- * Manages Tokyo Night user configuration. Handles reading/writing
- * settings.json and provides access to an immutable config snapshot.
+ * Manages Tokyo Night user configuration in an extension-owned file.
  */
 export class TokyoConfigManager {
   private config: Readonly<TokyoConfig> = freezeConfig({ ...DEFAULT_CONFIG });
@@ -272,8 +292,26 @@ export class TokyoConfigManager {
     });
   }
 
-  /** Read config from settings.json. Falls back to defaults on error. */
+  /** Read the extension-owned config file. Falls back to defaults on error. */
   read(): void {
+    try {
+      const content = fs.readFileSync(getTokyoConfigPath(), "utf-8");
+      const saved: unknown = JSON.parse(content);
+      if (!isRecord(saved)) {
+        throw new Error(`${TOKYO_CONFIG_FILE} must contain an object`);
+      }
+      this.config = buildConfig(saved);
+    } catch (err) {
+      if (isMissingFileError(err)) {
+        this.readLegacyAndMigrate();
+        return;
+      }
+      handleExtensionError(err, "readTokyoConfig");
+      this.config = freezeConfig({ ...DEFAULT_CONFIG });
+    }
+  }
+
+  private readLegacyAndMigrate(): void {
     try {
       const settingsPath = path.join(getAgentDir(), "settings.json");
       const content = fs.readFileSync(settingsPath, "utf-8");
@@ -282,61 +320,38 @@ export class TokyoConfigManager {
         throw new Error("settings.json must contain an object");
       }
 
-      const nextConfig = { ...DEFAULT_CONFIG };
       const saved = settings["pi-tokyo-night"];
-      if (isRecord(saved)) {
-        nextConfig.panel = validatedValue("panel", saved.panel);
-        nextConfig.editorFrame = validatedValue(
-          "editorFrame",
-          saved.editorFrame,
-        );
-        nextConfig.codexQuota = validatedValue("codexQuota", saved.codexQuota);
-        nextConfig.kimiQuota = validatedValue("kimiQuota", saved.kimiQuota);
-        nextConfig.iconMode = validatedValue("iconMode", saved.iconMode);
-        nextConfig.statusModules = readStatusModules(saved.statusModules);
-        nextConfig.rainRows = validatedValue("rainRows", saved.rainRows);
-        nextConfig.rainTickMs = validatedValue("rainTickMs", saved.rainTickMs);
-        nextConfig.maxRainDrops = validatedValue("maxRainDrops", saved.maxRainDrops);
+      if (!isRecord(saved)) {
+        this.config = freezeConfig({ ...DEFAULT_CONFIG });
+        return;
       }
-      this.config = freezeConfig(nextConfig);
+
+      this.config = buildConfig(saved);
+      this.write();
     } catch (err) {
       if (!isMissingFileError(err)) {
-        handleExtensionError(err, "readTokyoConfig");
+        handleExtensionError(err, "migrateLegacyTokyoConfig");
       }
       this.config = freezeConfig({ ...DEFAULT_CONFIG });
     }
   }
 
-  /** Persist current config to settings.json. */
+  /** Persist current config to the extension-owned config file. */
   write(): boolean {
     let temporaryPath: string | undefined;
     try {
-      const agentDir = getAgentDir();
-      const settingsPath = path.join(agentDir, "settings.json");
-      fs.mkdirSync(agentDir, { recursive: true });
+      const configPath = getTokyoConfigPath();
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
 
-      let settings: Record<string, unknown> = {};
-      try {
-        const content = fs.readFileSync(settingsPath, "utf-8");
-        const parsed: unknown = JSON.parse(content);
-        if (!isRecord(parsed)) {
-          throw new Error("settings.json must contain an object");
-        }
-        settings = parsed;
-      } catch (err) {
-        if (!isMissingFileError(err)) throw err;
-      }
-
-      settings["pi-tokyo-night"] = { ...this.config };
-      temporaryPath = `${settingsPath}.${process.pid}.${Date.now()}.${Math.random()
+      temporaryPath = `${configPath}.${process.pid}.${Date.now()}.${Math.random()
         .toString(36)
         .slice(2)}.tmp`;
       fs.writeFileSync(
         temporaryPath,
-        JSON.stringify(settings, null, 2),
+        JSON.stringify(this.config, null, 2),
         "utf-8",
       );
-      renameConfigFile(temporaryPath, settingsPath);
+      renameConfigFile(temporaryPath, configPath);
       temporaryPath = undefined;
       return true;
     } catch (err) {

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import extension from "./extension";
-import { TokyoConfigManager } from "./config";
+import { TokyoConfigManager } from "./core/config";
 
 function makeFixture(mode: "tui" | "rpc" | "json" | "print" = "tui") {
   const handlers = new Map<string, Array<(...args: any[]) => unknown>>();

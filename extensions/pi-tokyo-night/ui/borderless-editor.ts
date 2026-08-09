@@ -5,9 +5,9 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
-import type { TokyoConfigManager } from "./config";
-import { handleExtensionError } from "./errors";
-import { isFullscreenTui, requestHostRender } from "./pi-compat";
+import type { TokyoConfigManager } from "../core/config";
+import { handleExtensionError } from "../core/errors";
+import { isFullscreenTui, requestHostRender } from "../core/pi-compat";
 import type { SettingsUIController } from "./settings-controller";
 import { BOX, FRAME_RGB, PURPLE, RESET, fgRgb } from "./ui-primitives";
 

@@ -3,8 +3,8 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { buildStatusLine, buildStatusLines } from "./status-bar";
-import { createKimiUsageStore } from "./usage";
-import type { UsageSnapshot } from "./usage";
+import { createKimiUsageStore } from "../usage";
+import type { UsageSnapshot } from "../usage";
 
 const theme = {
   fg: (_color: string, text: string) => text,

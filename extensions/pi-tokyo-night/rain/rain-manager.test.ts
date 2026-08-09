@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { RainAnimationManager } from "./rain-manager";
-import { TokyoConfigManager, DEFAULT_CONFIG } from "./config";
+import { TokyoConfigManager, DEFAULT_CONFIG } from "../core/config";
 
 // ---------------------------------------------------------------------------
 // Minimal fake config that doesn't touch the filesystem.

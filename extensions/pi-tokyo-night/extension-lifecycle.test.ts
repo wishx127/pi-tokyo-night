@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import extension, { buildStatusWidgetLines, shouldRunRainAnimation } from "./extension";
-import { TokyoConfigManager } from "./config";
+import { TokyoConfigManager } from "./core/config";
 
 const theme = { fg: (_color: string, text: string) => text } as any;
 
@@ -34,7 +34,7 @@ function makeFixture(mode: Mode = "tui", sessionId = "session-1") {
   const ctx = {
     ui,
     mode,
-    hasUI: mode === "tui",
+    hasUI: mode === "tui" || mode === "rpc",
     cwd: "/workspace/project",
     model: undefined,
     modelRegistry: { getApiKeyForProvider: vi.fn(async () => undefined) },
@@ -170,6 +170,21 @@ describe("public layout and lifecycle contract", () => {
     expect(fixture.ui.getEditorComponent()).toBe(replacement);
   });
 
+  it("restores the built-in footer while it still owns the footer slot", async () => {
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const footerData = {
+      getGitBranch: () => "main",
+      onBranchChange: () => () => {},
+    } as any;
+    fixture.footerFactory({ requestRender: vi.fn() }, theme, footerData);
+    fixture.ui.setFooter.mockClear();
+
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+
+    expect(fixture.ui.setFooter).toHaveBeenCalledWith(undefined);
+  });
+
   it("does not clear a footer after its component has disposed", async () => {
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
@@ -182,6 +197,25 @@ describe("public layout and lifecycle contract", () => {
     fixture.ui.setFooter.mockClear();
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
     expect(fixture.ui.setFooter).not.toHaveBeenCalledWith(undefined);
+  });
+
+  it("does not write protocol-breaking text outside TUI mode", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    for (const mode of ["rpc", "json", "print"] as const) {
+      const fixture = makeFixture(mode);
+      await fixture.command.handler("", fixture.ctx);
+      if (mode === "rpc") {
+        expect(fixture.ui.notify).toHaveBeenCalledWith(
+          "Tokyo Night settings panel is only available in TUI mode.",
+          "info",
+        );
+      } else {
+        expect(fixture.ui.notify).not.toHaveBeenCalled();
+      }
+    }
+
+    expect(log).not.toHaveBeenCalled();
   });
 
   it("does not perform TUI work in non-interactive modes", async () => {

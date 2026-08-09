@@ -14,13 +14,13 @@ import {
   type CodexUsageStore,
   type KimiUsageStore,
   type UsageSnapshot,
-} from "./usage";
+} from "../usage";
 import {
   DEFAULT_STATUS_MODULES,
   type StatusModulesConfig,
   type TokyoConfigManager,
-} from "./config";
-import { handleExtensionError } from "./errors";
+} from "../core/config";
+import { handleExtensionError } from "../core/errors";
 import { resolveIcons, type StatusIcons } from "./icons";
 import {
   bgRgb,

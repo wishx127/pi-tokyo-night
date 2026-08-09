@@ -46,7 +46,7 @@ jobs:
         run: npm install --no-save --package-lock=false --ignore-scripts @earendil-works/pi-ai@${{ steps.pi_version.outputs.version }} @earendil-works/pi-coding-agent@${{ steps.pi_version.outputs.version }} @earendil-works/pi-tui@${{ steps.pi_version.outputs.version }}
       - run: npm run typecheck
       - run: npm test
-      - run: npm pack --dry-run
+      - run: npm run package:check
 
   smoke:
     name: Pi TUI smoke ${{ matrix.label }}

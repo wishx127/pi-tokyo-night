@@ -1,10 +1,10 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { Component, TUI } from "@earendil-works/pi-tui";
-import type { TokyoConfigManager } from "./config";
-import { handleExtensionError } from "./errors";
-import { requestHostRender } from "./pi-compat";
+import type { TokyoConfigManager } from "../core/config";
+import { handleExtensionError } from "../core/errors";
+import { requestHostRender } from "../core/pi-compat";
+import { BOX, CYAN, FRAME_RGB, PURPLE, RESET, fgRgb } from "../ui/ui-primitives";
 import type { RainAnimationManager, RainFrameSnapshot } from "./rain-manager";
-import { BOX, CYAN, FRAME_RGB, PURPLE, RESET, fgRgb } from "./ui-primitives";
 
 export const MOON = "🌙";
 export const MOON_FG = "\x1b[38;2;255;235;170m";

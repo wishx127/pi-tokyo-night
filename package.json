@@ -4,9 +4,9 @@
   "description": "Pi theme + extension bringing Tokyo Night color scheme with a Powerline-style status bar",
   "type": "module",
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.79.0",
-    "@earendil-works/pi-coding-agent": ">=0.79.0",
-    "@earendil-works/pi-tui": ">=0.79.0"
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
   },
   "keywords": [
     "pi",
@@ -36,14 +36,16 @@
     "themes/**/*",
     "extensions/**/*.ts",
     "!extensions/**/*.test.ts",
+    "!extensions/**/*.spec.ts",
     "README.md",
-    "assets/**/*"
+    "assets/screenshot.png"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "check": "vitest run && tsc --noEmit",
+    "package:check": "node scripts/package-contract.mjs",
+    "check": "vitest run && tsc --noEmit && npm run package:check",
     "compatibility": "npm run check"
   },
   "devDependencies": {

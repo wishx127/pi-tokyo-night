@@ -71,38 +71,41 @@ Open with `/tokyo-night`, then navigate with ↑/↓ and press Enter to toggle o
 | Max Rain Drops | 25      | Simultaneous drops (5–100)                                          |
 
 
-Settings are persisted to `~/.pi/agent/settings.json` under the `pi-tokyo-night` key. Status module visibility is configured directly in this file; omitted module keys default to `true` and changes take effect on the next Pi session:
+Settings are persisted in an extension-owned file:
+
+- **Windows:** `%USERPROFILE%\.pi\agent\extensions\pi-tokyo-night.json`
+- **macOS / Linux:** `~/.pi/agent/extensions/pi-tokyo-night.json`
+
+Existing settings are copied here automatically on first run. Configure status modules in this file; unspecified modules remain enabled, and changes apply after restarting Pi:
 
 ```json
 {
-  "pi-tokyo-night": {
-    "panel": true,
-    "editorFrame": true,
-    "codexQuota": false,
-    "kimiQuota": true,
-    "iconMode": "nerd",
-    "statusModules": {
-      "model": true,
-      "thinking": true,
-      "path": true,
-      "git": true,
-      "quota": true,
-      "tokens": true,
-      "cost": true,
-      "context": true
-    },
-    "rainRows": 3,
-    "rainTickMs": 130,
-    "maxRainDrops": 25
-  }
+  "panel": true,
+  "editorFrame": true,
+  "codexQuota": false,
+  "kimiQuota": true,
+  "iconMode": "nerd",
+  "statusModules": {
+    "model": true,
+    "thinking": true,
+    "path": true,
+    "git": true,
+    "quota": true,
+    "tokens": true,
+    "cost": true,
+    "context": true
+  },
+  "rainRows": 3,
+  "rainTickMs": 130,
+  "maxRainDrops": 25
 }
 ```
 
 ## 🌗 Light / Dark auto-switching
 
-The package ships two themes: `tokyo-night-dark` and `tokyo-night-light` .
+The package ships two themes: `tokyo-night-dark` and `tokyo-night-light`.
 
-To let pi follow your terminal's light/dark mode automatically, set the theme in `~/.pi/agent/settings.json` with the `light/dark` syntax:
+Pi `0.79.7` or newer can automatically switch between separate light and dark themes. Configure both variants through Pi's `/settings` screen. For manual configuration, set Pi's own `theme` setting—not the Tokyo Night extension config—in `~/.pi/agent/settings.json` using `<light-theme>/<dark-theme>` order:
 
 ```json
 {
@@ -110,7 +113,7 @@ To let pi follow your terminal's light/dark mode automatically, set the theme in
 }
 ```
 
-Pi detects the terminal background on startup and live-switches when your terminal changes color scheme. Pick either name alone via `/settings` if you prefer to pin one variant.
+The first name is used for light terminals and the second for dark terminals. Pi detects the terminal background on startup and switches when the terminal color scheme changes. Select either theme by itself in `/settings` if you prefer to pin one variant.
 
 ### Customizing colors
 
@@ -129,12 +132,12 @@ Edit the theme file to change any color. All color variables are defined in the 
 
 Theme location:
 
-- **Windows:** `%USERPROFILE%\.pi\agent\node_modules\@wishx127\pi-tokyo-night\themes\tokyo-night-dark.json`
-- **macOS / Linux:** `~/.pi/agent/node_modules/@wishx127/pi-tokyo-night/themes/tokyo-night-dark.json`
+- **Windows:** `%USERPROFILE%\.pi\agent\npm\node_modules\@wishx127\pi-tokyo-night\themes\tokyo-night-dark.json`
+- **macOS / Linux:** `~/.pi/agent/npm/node_modules/@wishx127/pi-tokyo-night/themes/tokyo-night-dark.json`
 
 ## 📌 Requirements
 
-- [Pi Coding Agent](https://github.com/earendil-works/pi)
+- [Pi Coding Agent](https://github.com/earendil-works/pi) `>=0.79.0`
 - Terminal with 24-bit true color support
 - [Nerd Font](https://www.nerdfonts.com/) for icons (optional)
 

@@ -1,8 +1,8 @@
 import {
   EXT_PREFIX,
   isStaleExtensionContextError,
-} from "./errors";
-import { TokyoConfigManager } from "./config";
+} from "../core/errors";
+import { TokyoConfigManager } from "../core/config";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
