@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { TUI } from "@earendil-works/pi-tui";
-import { evaluatePiCompatibility, isFullscreenTui, requestHostRender } from "./pi-compat";
+import {
+  evaluatePiCompatibility,
+  isFullscreenTui,
+  requestHostRender,
+  resolveWorkingIndicatorSetter,
+} from "./pi-compat";
 
 function createDynamicTuiProxy(
   getTarget: () => Pick<TUI, "requestRender">,
@@ -41,6 +46,28 @@ describe("Pi public compatibility contract", () => {
     const requestRender = vi.fn();
     requestHostRender({ requestRender });
     expect(requestRender).toHaveBeenCalledOnce();
+  });
+
+  it("resolves the optional public working-indicator setter without requiring its SDK type", () => {
+    const setWorkingIndicator = vi.fn();
+    const target = { setWorkingIndicator };
+    const setter = resolveWorkingIndicatorSetter(target);
+    const options = { frames: ["frame"] };
+
+    setter?.(options);
+
+    expect(setWorkingIndicator).toHaveBeenCalledOnce();
+    expect(setWorkingIndicator).toHaveBeenCalledWith(options);
+    expect(resolveWorkingIndicatorSetter({})).toBeUndefined();
+  });
+
+  it("falls back when optional working-indicator capability probing throws", () => {
+    const target = Object.defineProperty({}, "setWorkingIndicator", {
+      get: () => { throw new Error("capability unavailable"); },
+    });
+
+    expect(() => resolveWorkingIndicatorSetter(target)).not.toThrow();
+    expect(resolveWorkingIndicatorSetter(target)).toBeUndefined();
   });
 
   it("does not recurse and follows a renderer switch through the dynamic proxy", () => {

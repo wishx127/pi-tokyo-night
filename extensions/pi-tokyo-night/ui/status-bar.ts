@@ -99,10 +99,9 @@ type ContextUsageCacheEntry = {
 const sessionStatsCache = new WeakMap<object, StatsCacheEntry>();
 
 // Context usage can change while a leaf is streaming, so this is intentionally
-// a short-lived cache rather than a leaf-only cache. It prevents animation and
-// input redraws from repeatedly traversing a long session branch while keeping
-// the status bar responsive to recent usage changes.
-const CONTEXT_USAGE_CACHE_TTL_MS = 250;
+// time-bounded rather than leaf-only. A one-second sample keeps the status
+// responsive without traversing a long session branch on animation frames.
+const CONTEXT_USAGE_CACHE_TTL_MS = 1000;
 const contextUsageCache = new WeakMap<object, ContextUsageCacheEntry>();
 
 function getContextUsageIdentity(ctx: ExtensionContext): {

@@ -98,12 +98,20 @@ export function renderRainPanelLines(
 export interface RainPanelDependencies {
   config: TokyoConfigManager;
   rain: RainAnimationManager;
-  onRendered(renderedAt: number): void;
 }
+
+type RainPanelCacheEntry = {
+  revision: number;
+  width: number;
+  frameEnabled: boolean;
+  rainRows: number;
+  lines: string[];
+};
 
 export class RainPanelComponent implements Component {
   private disposed = false;
   private invalidated = true;
+  private cache: RainPanelCacheEntry | undefined;
 
   constructor(
     private readonly tui: TUI,
@@ -112,25 +120,48 @@ export class RainPanelComponent implements Component {
 
   invalidate(): void {
     this.invalidated = true;
+    this.cache = undefined;
   }
 
   render(width: number): string[] {
-    if (this.disposed || !this.dependencies.config.get().panel) return [];
+    if (this.disposed) return [];
 
     try {
       const config = this.dependencies.config.get();
+      if (!config.panel) return [];
+
       const outputWidth = Math.max(0, Math.floor(width));
       const frameWidth = config.editorFrame ? Math.max(0, outputWidth - 2) : outputWidth;
       this.dependencies.rain.setRenderWidth(frameWidth);
-      const lines = renderRainPanelLines({
+      const revision = this.dependencies.rain.frameRevision;
+      const cached = this.cache;
+      if (
+        !this.invalidated &&
+        cached &&
+        cached.revision === revision &&
+        cached.width === outputWidth &&
+        cached.frameEnabled === config.editorFrame &&
+        cached.rainRows === config.rainRows
+      ) {
+        return cached.lines;
+      }
+
+      const rendered = renderRainPanelLines({
         width: outputWidth,
         frameEnabled: config.editorFrame,
         rainRows: config.rainRows,
         snapshot: this.dependencies.rain.getSnapshot(),
       });
+      const lines = config.editorFrame ? rendered : rendered.slice(1);
+      this.cache = {
+        revision,
+        width: outputWidth,
+        frameEnabled: config.editorFrame,
+        rainRows: config.rainRows,
+        lines,
+      };
       this.invalidated = false;
-      this.dependencies.onRendered(Date.now());
-      return config.editorFrame ? lines : lines.slice(1);
+      return lines;
     } catch (error) {
       handleExtensionError(error, "rain panel render");
       return [];
@@ -144,5 +175,6 @@ export class RainPanelComponent implements Component {
   dispose(): void {
     this.disposed = true;
     this.invalidated = false;
+    this.cache = undefined;
   }
 }

@@ -358,6 +358,20 @@ describe("RainAnimationManager", () => {
     mgr.stop();
   });
 
+  it("advances the public frame revision when animation state changes", () => {
+    const config = makeConfig({ rainTickMs: 100 });
+    const mgr = new RainAnimationManager(config, { requestRender: vi.fn() });
+    const initialRevision = mgr.frameRevision;
+
+    mgr.start();
+    const startedRevision = mgr.frameRevision;
+    vi.advanceTimersByTime(100);
+
+    expect(startedRevision).toBeGreaterThan(initialRevision);
+    expect(mgr.frameRevision).toBeGreaterThan(startedRevision);
+    mgr.stop();
+  });
+
   // ── Additional: isRunning reflects timer state ────────────────────────────
 
   it("isRunning is false before start and true after start, false after stop", () => {

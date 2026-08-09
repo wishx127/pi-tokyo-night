@@ -115,6 +115,67 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
+  it("reuses fully rendered status lines while semantic inputs stay unchanged", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const renderTheme = { fg: vi.fn((_color: string, text: string) => text) } as any;
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      renderTheme,
+    );
+
+    const first = status.render(120);
+    const themeCalls = renderTheme.fg.mock.calls.length;
+    const cached = status.render(120);
+
+    expect(cached).toBe(first);
+    expect(renderTheme.fg).toHaveBeenCalledTimes(themeCalls);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(status.render(120)).not.toBe(first);
+    expect(renderTheme.fg.mock.calls.length).toBeGreaterThan(themeCalls);
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("refreshes cached status data when the active model changes", async () => {
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      theme,
+    );
+    expect(status.render(500).join("\n")).toContain("pi-agent");
+
+    const model = {
+      id: "next-model",
+      provider: "test-provider",
+      api: "test-api",
+      contextWindow: 1000,
+    } as any;
+    const nextContext = { ...fixture.ctx, model };
+    await fixture.emit("model_select", { model }, nextContext);
+
+    expect(status.render(500).join("\n")).toContain("next-model");
+    await fixture.emit("session_shutdown", { reason: "quit" }, nextContext);
+  });
+
+  it("refreshes cached status data when the thinking level changes", async () => {
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      theme,
+    );
+    expect(status.render(500).join("\n")).toContain("high");
+
+    fixture.pi.getThinkingLevel = () => "low";
+    await fixture.emit("thinking_level_select", { level: "low" }, fixture.ctx);
+
+    expect(status.render(500).join("\n")).toContain("low");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
   it("keeps the fullscreen editor/status dock free of empty separator rows", async () => {
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
@@ -152,6 +213,50 @@ describe("public layout and lifecycle contract", () => {
     expect(fullscreen.requestRender).toHaveBeenCalled();
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("lets working heartbeat renders carry rain frames without extra rain requests", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const tui = { requestRender: vi.fn() };
+    const rain = fixture.widgets.get("tokyo-rain")(tui);
+    rain.render(40);
+    tui.requestRender.mockClear();
+
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+    tui.requestRender.mockClear();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(tui.requestRender).toHaveBeenCalledTimes(4);
+
+    await fixture.emit("agent_end", { type: "agent_end" }, fixture.ctx);
+    expect(tui.requestRender).toHaveBeenCalledTimes(5);
+    await vi.advanceTimersByTimeAsync(130);
+    expect(tui.requestRender).toHaveBeenCalledTimes(6);
+
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("keeps rain refreshes alive when working UI updates fail", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const tui = { requestRender: vi.fn() };
+    fixture.widgets.get("tokyo-rain")(tui).render(40);
+    fixture.ui.setWorkingIndicator.mockImplementation(() => {
+      throw new Error("This extension instance is stale");
+    });
+    fixture.ui.setWorkingMessage.mockImplementation(() => {
+      throw new Error("This extension ctx is stale");
+    });
+    tui.requestRender.mockClear();
+
+    await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
+    expect(tui.requestRender).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(tui.requestRender).toHaveBeenCalledTimes(2);
+
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
   it("does not patch setWidget and lets another extension register agents", async () => {

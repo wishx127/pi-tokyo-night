@@ -2,6 +2,16 @@ import type { TUI } from "@earendil-works/pi-tui";
 
 export type HostRenderTarget = Pick<TUI, "requestRender">;
 
+/** Structural compatibility shape for Pi versions that expose a custom working indicator. */
+interface WorkingIndicatorOptionsCompat {
+  frames?: string[];
+  intervalMs?: number;
+}
+
+type WorkingIndicatorSetter = (
+  options?: WorkingIndicatorOptionsCompat,
+) => void;
+
 /** Optional fullscreen capability exposed by newer Pi TUI implementations. */
 export type TuiModeProbe = {
   readonly mode?: string;
@@ -40,6 +50,28 @@ export function evaluatePiCompatibility(version: string): PiCompatibility {
 
 export function isFullscreenTui(target: TUI | TuiModeProbe): boolean {
   return "mode" in target && target.mode === "fullscreen";
+}
+
+export function resolveWorkingIndicatorSetter(
+  target: unknown,
+): WorkingIndicatorSetter | undefined {
+  if (
+    target === null ||
+    (typeof target !== "object" && typeof target !== "function")
+  ) {
+    return undefined;
+  }
+  let setter: unknown;
+  try {
+    setter = Reflect.get(target, "setWorkingIndicator");
+  } catch {
+    return undefined;
+  }
+  if (typeof setter !== "function") return undefined;
+
+  return (options?: WorkingIndicatorOptionsCompat): void => {
+    Reflect.apply(setter, target, options === undefined ? [] : [options]);
+  };
 }
 
 export function requestHostRender(

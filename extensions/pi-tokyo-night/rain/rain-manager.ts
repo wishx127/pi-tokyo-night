@@ -52,6 +52,7 @@ export class RainAnimationManager {
   private lastWidth = 80;
   private stars: Array<{ col: number; row: number }> = [];
   private consecutiveRenderFailures = 0;
+  private revision = 0;
 
   constructor(
     config: TokyoConfigManager,
@@ -81,6 +82,7 @@ export class RainAnimationManager {
     this.lastWidth = 80;
     this.stars = INITIAL_STARS.map((s) => ({ ...s }));
     this.consecutiveRenderFailures = 0;
+    this.revision += 1;
 
     // Start the interval using the current config value.
     this.interval = setInterval(() => this.tick(), this.config.get().rainTickMs);
@@ -97,11 +99,17 @@ export class RainAnimationManager {
     }
     this.drops = [];
     this.consecutiveRenderFailures = 0;
+    this.revision += 1;
   }
 
   /** True iff a timer is currently active. */
   get isRunning(): boolean {
     return this.interval !== undefined;
+  }
+
+  /** Monotonic identity of the current animation frame. */
+  get frameRevision(): number {
+    return this.revision;
   }
 
   /**
@@ -162,6 +170,8 @@ export class RainAnimationManager {
         });
       }
     }
+
+    this.revision += 1;
 
     // Notify the renderer. Stale-context errors are expected during shutdown
     // and silently discarded; all other errors are logged with the extension prefix.

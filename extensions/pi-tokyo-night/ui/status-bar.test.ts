@@ -296,13 +296,13 @@ describe("buildStatusLine", () => {
       expect(getContextUsage).toHaveBeenCalledTimes(1);
 
       tokens = 200;
-      vi.setSystemTime(249);
+      vi.setSystemTime(999);
       expect(buildStatusLine(500, theme, ctx, "", "high", config)).toContain(
         "10%/1.0k",
       );
       expect(getContextUsage).toHaveBeenCalledTimes(1);
 
-      vi.setSystemTime(250);
+      vi.setSystemTime(1000);
       const refreshed = buildStatusLine(500, theme, ctx, "", "high", config);
       expect(getContextUsage).toHaveBeenCalledTimes(2);
       expect(refreshed).toContain("20%/1.0k");

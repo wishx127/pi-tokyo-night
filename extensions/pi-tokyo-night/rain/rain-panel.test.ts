@@ -32,15 +32,12 @@ describe("RainPanelComponent", () => {
       setRenderWidth: vi.fn(),
     };
     const tui = { requestRender: vi.fn() };
-    const renderedAt = vi.fn();
     const panel = new RainPanelComponent(tui as any, {
       config: config as any,
       rain: rain as any,
-      onRendered: renderedAt,
     });
 
     expect(panel.render(40)).toEqual([]);
-    expect(renderedAt).not.toHaveBeenCalled();
 
     config.get.mockReturnValue({
       ...config.get.mock.results[0]!.value,
@@ -51,7 +48,6 @@ describe("RainPanelComponent", () => {
     expect(lines.join("\n")).toContain("🌙");
     expect(visibleWidth(lines[0])).toBe(40);
     expect(rain.setRenderWidth).toHaveBeenCalledWith(38);
-    expect(renderedAt).toHaveBeenCalledOnce();
   });
 
   it("does not add box chrome when editorFrame is disabled", () => {
@@ -62,5 +58,34 @@ describe("RainPanelComponent", () => {
       snapshot,
     });
     expect(lines.slice(1).join("\n")).not.toMatch(/[╭╮╰╯│─]/);
+  });
+
+  it("reuses rendered lines until the rain frame revision changes", () => {
+    const config = makeConfig(true);
+    let frameRevision = 1;
+    const rain = {
+      get frameRevision() { return frameRevision; },
+      getSnapshot: vi.fn(() => snapshot),
+      setRenderWidth: vi.fn(),
+    };
+    const panel = new RainPanelComponent({ requestRender: vi.fn() } as any, {
+      config: config as any,
+      rain: rain as any,
+    });
+
+    const first = panel.render(40);
+    const cached = panel.render(40);
+
+    expect(cached).toBe(first);
+    expect(rain.getSnapshot).toHaveBeenCalledOnce();
+
+    frameRevision += 1;
+    const changed = panel.render(40);
+    expect(changed).not.toBe(first);
+    expect(rain.getSnapshot).toHaveBeenCalledTimes(2);
+
+    panel.invalidate();
+    expect(panel.render(40)).not.toBe(changed);
+    expect(rain.getSnapshot).toHaveBeenCalledTimes(3);
   });
 });

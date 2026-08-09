@@ -7,13 +7,20 @@ import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { TokyoConfigManager } from "./core/config";
 import { installConsoleLogBridge } from "./core/console-bridge";
 import { EXT_PREFIX, handleExtensionError, isStaleExtensionContextError } from "./core/errors";
-import { evaluatePiCompatibility, isFullscreenTui, MINIMUM_PI_VERSION, requestHostRender } from "./core/pi-compat";
+import {
+  evaluatePiCompatibility,
+  isFullscreenTui,
+  MINIMUM_PI_VERSION,
+  requestHostRender,
+  resolveWorkingIndicatorSetter,
+} from "./core/pi-compat";
 import { RainAnimationManager } from "./rain/rain-manager";
 import { RainPanelComponent } from "./rain/rain-panel";
 import { BorderlessEditor, type BorderlessEditorDependencies } from "./ui/borderless-editor";
 import { SettingsUIController } from "./ui/settings-controller";
 import { buildStatusLines } from "./ui/status-bar";
-import { BOX, FRAME_RGB, RESET, fgRgb } from "./ui/ui-primitives";
+import { StatusRenderCache } from "./ui/status-render-cache";
+import { BOX, CYAN, FRAME_RGB, PURPLE, RESET, fgRgb } from "./ui/ui-primitives";
 import { createCodexUsageStore, createKimiUsageStore, fetchKimiUsage, isCodexModel, isKimiModel, resolveKimiApiKey, type KimiUsageStore } from "./usage";
 
 export type TokyoNightMode = "tui" | "rpc" | "json" | "print";
@@ -34,6 +41,8 @@ type NativeWorkingState = {
   phaseStartedAt: number | undefined;
   activeTools: Map<string, WorkingTool>;
   timer: ReturnType<typeof setInterval> | undefined;
+  frameIndex: number;
+  setIndicator: ReturnType<typeof resolveWorkingIndicatorSetter>;
 };
 
 type SessionUIResources = {
@@ -60,14 +69,19 @@ type SessionState = {
   statusRenderDebounceTimeout: ReturnType<typeof setTimeout> | undefined;
   codexCountdownRefreshTimeout: ReturnType<typeof setTimeout> | undefined;
   working: NativeWorkingState;
-  lastRenderedAt: number;
-  lastRequestedAt: number;
   kimiUsageStore: KimiUsageStore;
+  statusRenderCache: StatusRenderCache;
   context: ExtensionContext;
   requestStatusRender: (() => void) | undefined;
 };
 
-const RAIN_BUSY_RENDER_INTERVAL_MS = 500;
+const WORKING_HEARTBEAT_INTERVAL_MS = 250;
+const TOKYO_WORKING_FRAMES = Object.freeze([
+  `${CYAN}⠋${RESET}`,
+  `${PURPLE}⠙${RESET}`,
+  `${CYAN}⠹${RESET}`,
+  `${PURPLE}⠸${RESET}`,
+]);
 const CODEX_COUNTDOWN_REFRESH_MS = 30_000;
 const KIMI_POLL_INTERVAL_MS = 60_000;
 
@@ -169,11 +183,7 @@ export function registerTokyoNightExtension(
 
   const requestRainRender = (session: SessionState): void => {
     if (!isCurrent(session) || !session.resources.rainManager || !configManager.get().panel) return;
-    const now = Date.now();
-    const working = session.working.phaseStartedAt !== undefined;
-    const recent = (value: number) => now >= value && now - value < RAIN_BUSY_RENDER_INTERVAL_MS;
-    if (working && (recent(session.lastRenderedAt) || recent(session.lastRequestedAt))) return;
-    session.lastRequestedAt = now;
+    if (session.working.timer !== undefined) return;
     session.resources.rainPanel?.requestRender();
   };
 
@@ -186,6 +196,7 @@ export function registerTokyoNightExtension(
     session.working.phase = "waiting";
     session.working.phaseStartedAt = undefined;
     session.working.activeTools.clear();
+    session.working.frameIndex = 0;
   };
   const formatDuration = (milliseconds: number): string => {
     const seconds = Math.max(0, milliseconds) / 1000;
@@ -203,18 +214,40 @@ export function registerTokyoNightExtension(
     const elapsed = working.phaseStartedAt === undefined ? "0.0s" : formatDuration(Date.now() - working.phaseStartedAt);
     return `${label} ${elapsed}`;
   };
-  const updateWorking = (session: SessionState): void => {
+  const updateWorking = (
+    session: SessionState,
+    advanceIndicator = false,
+  ): void => {
     if (!isCurrent(session) || session.mode !== "tui" || !session.hasUI) return;
+    if (advanceIndicator && session.working.setIndicator) {
+      const frame = TOKYO_WORKING_FRAMES[
+        session.working.frameIndex % TOKYO_WORKING_FRAMES.length
+      ];
+      session.working.frameIndex += 1;
+      try { session.working.setIndicator({ frames: [frame] }); }
+      catch (error) { if (!isStaleExtensionContextError(error)) handleExtensionError(error, "working indicator update"); }
+    }
     try { session.ui.setWorkingMessage(workingMessage(session.working)); }
     catch (error) { if (!isStaleExtensionContextError(error)) handleExtensionError(error, "working message update"); }
+    try {
+      if (configManager.get().panel) session.resources.rainPanel?.requestRender();
+    } catch (error) {
+      if (!isStaleExtensionContextError(error)) handleExtensionError(error, "working rain render");
+    }
+  };
+  const restoreWorkingUi = (session: SessionState): void => {
+    try { session.working.setIndicator?.(); }
+    catch (error) { if (!isStaleExtensionContextError(error)) handleExtensionError(error, "working indicator restore"); }
+    try { session.ui.setWorkingMessage(); }
+    catch (error) { if (!isStaleExtensionContextError(error)) handleExtensionError(error, "working message restore"); }
   };
   const startWorking = (session: SessionState): void => {
     stopWorking(session);
-    updateWorking(session);
+    updateWorking(session, true);
     session.working.timer = setInterval(() => {
       if (!isCurrent(session)) { stopWorking(session); return; }
-      updateWorking(session);
-    }, 250);
+      updateWorking(session, true);
+    }, WORKING_HEARTBEAT_INTERVAL_MS);
     session.working.timer.unref?.();
   };
   const setWorkingPhase = (session: SessionState, phase: WorkingPhase, restart = false): boolean => {
@@ -390,8 +423,8 @@ export function registerTokyoNightExtension(
     } catch (error) {
       if (!isStaleExtensionContextError(error)) handleExtensionError(error, "editor teardown");
     }
+    restoreWorkingUi(session);
     try {
-      session.ui.setWorkingMessage();
       session.ui.setWorkingVisible(true);
     } catch (error) {
       if (!isStaleExtensionContextError(error)) handleExtensionError(error, "working teardown");
@@ -419,19 +452,39 @@ export function registerTokyoNightExtension(
     };
     const renderStatusLines = (width: number, theme: Theme): string[] => {
       if (!isCurrent(session)) return [];
-      void updateBranch(session);
       const outputWidth = safeTerminalWidth(width);
-      const lines = buildStatusLines(
-        outputWidth,
-        theme,
-        session.context,
-        session.branch.cachedBranch,
-        pi.getThinkingLevel(),
-        configManager,
-        codexUsageStore,
-        session.kimiUsageStore,
-      );
-      return buildStatusWidgetLines(outputWidth, false, lines, configManager.get().editorFrame);
+      const config = configManager.get();
+      const thinkingLevel = pi.getThinkingLevel();
+      let leafId: string | null | undefined;
+      try { leafId = session.context.sessionManager.getLeafId(); }
+      catch { leafId = undefined; }
+      const codexUsage = codexUsageStore.getSnapshot();
+      const kimiUsage = session.kimiUsageStore.getSnapshot();
+
+      return session.statusRenderCache.render({
+        width: outputWidth,
+        theme: theme as object,
+        config: config as object,
+        branch: session.branch.cachedBranch,
+        thinkingLevel,
+        model: session.context.model,
+        leafId,
+        codexUsage,
+        kimiUsage,
+      }, () => {
+        void updateBranch(session);
+        const lines = buildStatusLines(
+          outputWidth,
+          theme,
+          session.context,
+          session.branch.cachedBranch,
+          thinkingLevel,
+          configManager,
+          codexUsageStore,
+          session.kimiUsageStore,
+        );
+        return buildStatusWidgetLines(outputWidth, false, lines, config.editorFrame);
+      });
     };
     const editorFactory = (tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, options?: EditorOptions): BorderlessEditor => {
       const editor = new BorderlessEditor(
@@ -457,7 +510,6 @@ export function registerTokyoNightExtension(
       const panel = new RainPanelComponent(tui, {
         config: configManager,
         rain: session.resources.rainManager!,
-        onRendered: (renderedAt) => { if (isCurrent(session)) session.lastRenderedAt = renderedAt; },
       });
       if (isCurrent(session)) session.resources.rainPanel = panel;
       return panel;
@@ -465,7 +517,10 @@ export function registerTokyoNightExtension(
     const statusFactory = (tui: TUI, theme: Theme) => {
       session.resources.statusTui = tui;
       return {
-        invalidate: () => session.requestStatusRender?.(),
+        invalidate: () => {
+          session.statusRenderCache.invalidate();
+          session.requestStatusRender?.();
+        },
         render: (width: number): string[] => {
           // Fullscreen composes status inside BorderlessEditor so the host's
           // fixed editor height cannot insert a separator row before it.
@@ -527,12 +582,14 @@ export function registerTokyoNightExtension(
     const session = sessionsByIdentity.get(identityOf(ctx));
     if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI) return;
     stopWorking(session);
+    try { requestRainRender(session); }
+    catch (error) { if (!isStaleExtensionContextError(error)) handleExtensionError(error, "agent end rain render"); }
   });
   pi.on("agent_settled", async (_event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
     if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI || !ctx.isIdle()) return;
     resetWorking(session);
-    session.ui.setWorkingMessage();
+    restoreWorkingUi(session);
   });
   pi.on("message_update", async (event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
@@ -565,10 +622,18 @@ export function registerTokyoNightExtension(
   pi.on("model_select", async (event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
     if (!session || !isCurrent(session)) return;
+    session.context = ctx;
     activeModel = event.model;
     codexUsageStore.clearSnapshot();
     scheduleCodexRefresh(session);
     refreshKimi();
+    requestStatusRenderFor(session);
+  });
+  pi.on("thinking_level_select", async (_event, ctx) => {
+    const session = sessionsByIdentity.get(identityOf(ctx));
+    if (!session || !isCurrent(session)) return;
+    session.context = ctx;
+    requestStatusRenderFor(session);
   });
 
   pi.on("session_start", async (_event, ctx) => {
@@ -599,10 +664,16 @@ export function registerTokyoNightExtension(
       resources: { editorFactory: null, editor: null, rainPanel: null, rainManager: null, statusTui: null, footerOwned: false, footerSubscription: null },
       statusRenderDebounceTimeout: undefined,
       codexCountdownRefreshTimeout: undefined,
-      working: { phase: "waiting", phaseStartedAt: undefined, activeTools: new Map(), timer: undefined },
-      lastRenderedAt: Date.now(),
-      lastRequestedAt: Date.now(),
+      working: {
+        phase: "waiting",
+        phaseStartedAt: undefined,
+        activeTools: new Map(),
+        timer: undefined,
+        frameIndex: 0,
+        setIndicator: resolveWorkingIndicatorSetter(ctx.ui),
+      },
       kimiUsageStore: createKimiUsageStore(),
+      statusRenderCache: new StatusRenderCache(),
       context: ctx,
       requestStatusRender: undefined,
     };
@@ -618,6 +689,7 @@ export function registerTokyoNightExtension(
       createSessionResources(session);
       session.requestStatusRender = () => {
         if (!isCurrent(session)) return;
+        session.statusRenderCache.invalidate();
         if (session.statusRenderDebounceTimeout !== undefined) clearTimeout(session.statusRenderDebounceTimeout);
         session.statusRenderDebounceTimeout = setTimeout(() => {
           session.statusRenderDebounceTimeout = undefined;
