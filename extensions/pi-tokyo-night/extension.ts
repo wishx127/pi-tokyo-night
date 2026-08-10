@@ -75,7 +75,7 @@ type SessionState = {
   requestStatusRender: (() => void) | undefined;
 };
 
-const WORKING_HEARTBEAT_INTERVAL_MS = 250;
+const WORKING_HEARTBEAT_INTERVAL_MS = 100;
 const TOKYO_WORKING_FRAMES = Object.freeze([
   `${CYAN}⠋${RESET}`,
   `${PURPLE}⠙${RESET}`,

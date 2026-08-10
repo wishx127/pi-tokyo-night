@@ -227,12 +227,12 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
     tui.requestRender.mockClear();
     await vi.advanceTimersByTimeAsync(1000);
-    expect(tui.requestRender).toHaveBeenCalledTimes(4);
+    expect(tui.requestRender).toHaveBeenCalledTimes(10);
 
     await fixture.emit("agent_end", { type: "agent_end" }, fixture.ctx);
-    expect(tui.requestRender).toHaveBeenCalledTimes(5);
+    expect(tui.requestRender).toHaveBeenCalledTimes(11);
     await vi.advanceTimersByTimeAsync(130);
-    expect(tui.requestRender).toHaveBeenCalledTimes(6);
+    expect(tui.requestRender).toHaveBeenCalledTimes(12);
 
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
@@ -253,7 +253,7 @@ describe("public layout and lifecycle contract", () => {
 
     await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
     expect(tui.requestRender).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(250);
+    await vi.advanceTimersByTimeAsync(100);
     expect(tui.requestRender).toHaveBeenCalledTimes(2);
 
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);

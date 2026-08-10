@@ -95,7 +95,7 @@ describe("working indicator compatibility regression", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
-  it("updates the Tokyo spinner and elapsed together every 250ms", async () => {
+  it("updates the Tokyo spinner and elapsed together every 100ms", async () => {
     vi.useFakeTimers();
     const fixture = makeFixture();
     await fixture.emit("session_start", {}, fixture.ctx);
@@ -105,13 +105,37 @@ describe("working indicator compatibility regression", () => {
 
     await vi.advanceTimersByTimeAsync(1000);
 
-    expect(fixture.ui.setWorkingIndicator).toHaveBeenCalledTimes(4);
-    expect(fixture.ui.setWorkingMessage).toHaveBeenCalledTimes(4);
+    expect(fixture.ui.setWorkingIndicator).toHaveBeenCalledTimes(10);
+    expect(fixture.ui.setWorkingMessage).toHaveBeenCalledTimes(10);
+    expect(
+      fixture.ui.setWorkingMessage.mock.calls.map(
+        ([message]: [string]) => message,
+      ),
+    ).toEqual([
+      "Waiting 0.1s",
+      "Waiting 0.2s",
+      "Waiting 0.3s",
+      "Waiting 0.4s",
+      "Waiting 0.5s",
+      "Waiting 0.6s",
+      "Waiting 0.7s",
+      "Waiting 0.8s",
+      "Waiting 0.9s",
+      "Waiting 1.0s",
+    ]);
     const frames = fixture.ui.setWorkingIndicator.mock.calls.map(
       ([options]: [{ frames: string[] }]) => options.frames,
     );
     expect(frames.every((value: string[]) => value.length === 1)).toBe(true);
-    expect(new Set(frames.map((value: string[]) => value[0])).size).toBe(4);
+    expect(
+      frames.map((value: string[]) =>
+        value[0].replace(/\u001b\[[0-9;]*m/g, ""),
+      ),
+    ).toEqual([
+      "⠙", "⠹", "⠸", "⠋",
+      "⠙", "⠹", "⠸", "⠋",
+      "⠙", "⠹",
+    ]);
     expect(frames.every((value: string[]) => visibleWidth(value[0]) === 1)).toBe(true);
     expect(
       fixture.ui.setWorkingIndicator.mock.calls.every(
@@ -122,7 +146,7 @@ describe("working indicator compatibility regression", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
-  it("keeps the 250ms elapsed fallback when the host lacks indicator customization", async () => {
+  it("keeps the 100ms elapsed fallback when the host lacks indicator customization", async () => {
     vi.useFakeTimers();
     const fixture = makeFixture();
     delete fixture.ui.setWorkingIndicator;
@@ -132,7 +156,7 @@ describe("working indicator compatibility regression", () => {
 
     await vi.advanceTimersByTimeAsync(500);
 
-    expect(fixture.ui.setWorkingMessage).toHaveBeenCalledTimes(2);
+    expect(fixture.ui.setWorkingMessage).toHaveBeenCalledTimes(5);
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 });
