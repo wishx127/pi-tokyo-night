@@ -7,8 +7,8 @@ export const RESET = "\x1b[0m";
 export const RESET_BG = "\x1b[49m";
 export const RESET_FG = "\x1b[39m";
 
-// Rounded box-drawing characters used to wrap editor + status bar
-// into a single cohesive card.
+// Rounded box-drawing characters used by the shared frame composer to wrap
+// Rain, the active main surface, and Status into one cohesive card.
 export const BOX = {
   tl: "╭", // top-left
   tr: "╮", // top-right

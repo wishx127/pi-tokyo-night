@@ -2,7 +2,6 @@
 
 import { VERSION, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext, type KeybindingsManager, type ReadonlyFooterDataProvider, type Theme } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { TokyoConfigManager } from "./core/config";
 import { installConsoleLogBridge } from "./core/console-bridge";
@@ -17,10 +16,17 @@ import {
 import { RainAnimationManager } from "./rain/rain-manager";
 import { RainPanelComponent } from "./rain/rain-panel";
 import { BorderlessEditor, type BorderlessEditorDependencies } from "./ui/borderless-editor";
-import { SettingsUIController } from "./ui/settings-controller";
+import { NeonStudioComponent } from "./ui/neon-studio";
+import {
+  NeonStudioController,
+  type NeonStudioConfigChange,
+  type NeonStudioThemeChoice,
+  type NeonStudioThemeResult,
+} from "./ui/neon-studio-controller";
 import { buildStatusLines } from "./ui/status-bar";
 import { StatusRenderCache } from "./ui/status-render-cache";
-import { BOX, CYAN, FRAME_RGB, PURPLE, RESET, fgRgb } from "./ui/ui-primitives";
+import { renderFrameSegment } from "./ui/frame-layout";
+import { CYAN, PURPLE, RESET } from "./ui/ui-primitives";
 import { createCodexUsageStore, createKimiUsageStore, fetchKimiUsage, isCodexModel, isKimiModel, resolveKimiApiKey, type KimiUsageStore } from "./usage";
 
 export type TokyoNightMode = "tui" | "rpc" | "json" | "print";
@@ -51,6 +57,7 @@ type SessionUIResources = {
   rainPanel: RainPanelComponent | null;
   rainManager: RainAnimationManager | null;
   statusTui: TUI | null;
+  renderFullscreenStatus: ((width: number) => string[]) | null;
   footerOwned: boolean;
   footerSubscription: { dispose(): void } | null;
 };
@@ -100,40 +107,16 @@ function isAbortError(error: unknown): boolean {
 /** Render status content with stable frame ownership below the editor. */
 export function buildStatusWidgetLines(
   width: number,
-  _hideSideBorders: boolean,
   statusContent: string | string[],
   frameEnabled = true,
 ): string[] {
-  const outputWidth = safeTerminalWidth(width);
-  const rows = (Array.isArray(statusContent) ? statusContent : [statusContent]);
-  if (!frameEnabled) {
-    return rows.map((row) => {
-      const content = truncateToWidth(row, outputWidth);
-      return content + " ".repeat(Math.max(0, outputWidth - visibleWidth(content)));
-    });
-  }
-
-  const frameHasSideBorders = outputWidth >= 2;
-  const innerWidth = frameHasSideBorders ? outputWidth - 2 : outputWidth;
-  const frameFg = (value: string) => `${fgRgb(FRAME_RGB)}${value}${RESET}`;
-  const padded = rows.map((row) => {
-    const content = truncateToWidth(row, innerWidth);
-    return content + " ".repeat(Math.max(0, innerWidth - visibleWidth(content)));
+  return renderFrameSegment({
+    width: safeTerminalWidth(width),
+    lines: Array.isArray(statusContent) ? statusContent : [statusContent],
+    frameEnabled,
+    role: "bottom",
+    padUnframed: true,
   });
-  const bottom = outputWidth >= 2
-    ? frameFg(`${BOX.bl}${BOX.h.repeat(outputWidth - 2)}${BOX.br}`)
-    : frameFg(outputWidth === 1 ? BOX.bl : "");
-  if (!frameHasSideBorders) return [...padded, bottom];
-  return [...padded.map((row) => frameFg(BOX.v) + row + frameFg(BOX.v)), bottom];
-}
-
-/** Retained as a small ordering helper for consumers of the previous API. */
-export function coordinateSelectorTransition(
-  sync: () => void,
-  requestRender: () => void,
-): void {
-  sync();
-  requestRender();
 }
 
 export function registerTokyoNightExtension(
@@ -145,10 +128,13 @@ export function registerTokyoNightExtension(
   const consoleLogBridge = (dependencies.installConsoleLogBridge ?? installConsoleLogBridge)();
   const sessionsByIdentity = new Map<string, SessionState>();
   let activeSession: SessionState | null = null;
+  let activeNeonStudio: {
+    session: SessionState;
+    controller: NeonStudioController;
+  } | null = null;
   let generation = 0;
   let activeModel: Model<any> | undefined;
   let modelRegistry: { getApiKeyForProvider(provider: string): Promise<string | undefined> } | null = null;
-  let requestStatusRenderCallback: (() => void) | null = null;
   let kimiPollTimer: ReturnType<typeof setInterval> | undefined;
   let kimiPollController: AbortController | undefined;
   let kimiPollGeneration = 0;
@@ -376,15 +362,6 @@ export function registerTokyoNightExtension(
     session.resources.rainPanel?.requestRender(true);
   };
 
-  const requestEditorRender = (): void => activeSession?.resources.editor?.requestRender();
-  const settingsController = new SettingsUIController(configManager, {
-    requestEditorRender,
-    applyPanelState: () => { if (activeSession) applyPanelState(activeSession); },
-    onCodexQuotaConfigChange: () => { if (activeSession) scheduleCodexRefresh(activeSession); requestStatusRenderCallback?.(); },
-    onKimiQuotaConfigChange: refreshKimi,
-    onIconModeConfigChange: () => requestStatusRenderCallback?.(),
-  });
-
   const clearSessionTimers = (session: SessionState): void => {
     resetWorking(session);
     abortBranch(session.branch);
@@ -404,6 +381,7 @@ export function registerTokyoNightExtension(
     resources.rainPanel = null;
     resources.rainManager = null;
     resources.statusTui = null;
+    resources.renderFullscreenStatus = null;
     if (resources.footerOwned) {
       try { session.ui.setFooter(undefined); }
       catch (error) { if (!isStaleExtensionContextError(error)) handleExtensionError(error, "footer teardown"); }
@@ -437,9 +415,18 @@ export function registerTokyoNightExtension(
     clearSessionTimers(session);
     if (activeSession === session) {
       activeSession = null;
-      requestStatusRenderCallback = null;
       stopKimiPolling();
-      settingsController.reset();
+    }
+    if (activeNeonStudio?.session === session) {
+      const studio = activeNeonStudio;
+      activeNeonStudio = null;
+      try {
+        studio.controller.saveAndClose(true);
+      } catch (error) {
+        if (!isStaleExtensionContextError(error)) {
+          handleExtensionError(error, "Neon Studio teardown");
+        }
+      }
     }
     if (clearUI && session.mode === "tui" && session.hasUI) teardownSessionUI(session);
     if (sessionsByIdentity.get(session.identityKey) === session) sessionsByIdentity.delete(session.identityKey);
@@ -448,7 +435,6 @@ export function registerTokyoNightExtension(
   const createSessionResources = (session: SessionState): void => {
     const borderlessDependencies: BorderlessEditorDependencies = {
       config: configManager,
-      settingsController,
     };
     const renderStatusLines = (width: number, theme: Theme): string[] => {
       if (!isCurrent(session)) return [];
@@ -483,18 +469,20 @@ export function registerTokyoNightExtension(
           codexUsageStore,
           session.kimiUsageStore,
         );
-        return buildStatusWidgetLines(outputWidth, false, lines, config.editorFrame);
+        return buildStatusWidgetLines(outputWidth, lines, config.editorFrame);
       });
     };
+    session.resources.renderFullscreenStatus = (width) =>
+      renderStatusLines(width, session.ui.theme);
     const editorFactory = (tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, options?: EditorOptions): BorderlessEditor => {
       const editor = new BorderlessEditor(
         tui,
         theme,
         keybindings,
-        session.ui,
         {
           ...borderlessDependencies,
-          renderFullscreenStatus: (width) => renderStatusLines(width, session.ui.theme),
+          renderFullscreenStatus: (width) =>
+            session.resources.renderFullscreenStatus?.(width) ?? [],
         },
         options,
       );
@@ -661,7 +649,7 @@ export function registerTokyoNightExtension(
       disposed: false,
       footerData: null,
       branch: { cachedBranch: "", cacheTime: 0, pending: false, requestToken: 0, requestController: undefined, cwd: undefined },
-      resources: { editorFactory: null, editor: null, rainPanel: null, rainManager: null, statusTui: null, footerOwned: false, footerSubscription: null },
+      resources: { editorFactory: null, editor: null, rainPanel: null, rainManager: null, statusTui: null, renderFullscreenStatus: null, footerOwned: false, footerSubscription: null },
       statusRenderDebounceTimeout: undefined,
       codexCountdownRefreshTimeout: undefined,
       working: {
@@ -696,7 +684,6 @@ export function registerTokyoNightExtension(
           if (isCurrent(session)) requestHostRender(session.resources.statusTui);
         }, 33);
       };
-      requestStatusRenderCallback = session.requestStatusRender;
       applyPanelState(session);
       refreshKimi();
     } catch (error) {
@@ -705,7 +692,7 @@ export function registerTokyoNightExtension(
   });
 
   pi.registerCommand("tokyo-night", {
-    description: "Open the Tokyo Night settings panel. Usage: /tokyo-night [on|off]",
+    description: "Open Neon Studio. Usage: /tokyo-night [on|off]",
     handler: async (args: string, ctx: ExtensionContext) => {
       const arg = args.trim().toLowerCase();
       if (arg === "on" || arg === "off") {
@@ -718,17 +705,91 @@ export function registerTokyoNightExtension(
       }
       if (!isInteractive(ctx)) {
         if (ctx.hasUI) {
-          ctx.ui.notify("Tokyo Night settings panel is only available in TUI mode.", "info");
+          ctx.ui.notify("Neon Studio is only available in TUI mode.", "info");
         }
         return;
       }
-      if (settingsController.isActive) {
-        settingsController.exit();
-        if (activeSession) applyPanelState(activeSession);
-      } else {
-        settingsController.enter();
+      const studioSession = sessionsByIdentity.get(identityOf(ctx));
+      if (!studioSession || !isCurrent(studioSession)) return;
+      if (activeNeonStudio?.session === studioSession) {
+        ctx.ui.notify("Neon Studio is already open.", "info");
+        return;
       }
-      requestEditorRender();
+      const themeNameFor = (
+        choice: Exclude<NeonStudioThemeChoice, "current">,
+      ): string => choice === "dark"
+        ? "tokyo-night-dark"
+        : "tokyo-night-light";
+      const previewThemes = {
+        dark: ctx.ui.getTheme(themeNameFor("dark")),
+        light: ctx.ui.getTheme(themeNameFor("light")),
+      };
+      const previewTheme = (
+        choice: NeonStudioThemeChoice,
+      ): NeonStudioThemeResult => {
+        if (choice === "current") return { success: true };
+        return previewThemes[choice]
+          ? { success: true }
+          : {
+              success: false,
+              error: `Theme ${themeNameFor(choice)} is not available.`,
+            };
+      };
+      const saveTheme = (
+        choice: NeonStudioThemeChoice,
+      ): NeonStudioThemeResult => choice === "current"
+        ? { success: true }
+        : ctx.ui.setTheme(themeNameFor(choice));
+
+      let studioController: NeonStudioController | null = null;
+      try {
+        await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+          studioController = new NeonStudioController({
+            config: configManager,
+            notify: (message, level) => ctx.ui.notify(message, level),
+            onConfigChange: (change: NeonStudioConfigChange) => {
+              if (!isCurrent(studioSession)) return;
+              if (
+                change.kind === "config" &&
+                (change.key === "panel" || change.key === "rainTickMs")
+              ) {
+                applyPanelState(studioSession);
+              }
+              if (change.kind === "config" && change.key === "codexQuota") {
+                scheduleCodexRefresh(studioSession);
+              }
+              if (change.kind === "config" && change.key === "kimiQuota") {
+                refreshKimi();
+              }
+              requestStatusRenderFor(studioSession);
+            },
+            previewTheme,
+            saveTheme,
+            done: () => done(undefined),
+          });
+          activeNeonStudio = {
+            session: studioSession,
+            controller: studioController,
+          };
+          return new NeonStudioComponent(tui, theme, studioController, {
+            renderFullscreenStatus:
+              studioSession.resources.renderFullscreenStatus ?? undefined,
+            previewThemes,
+          });
+        });
+      } finally {
+        if (activeNeonStudio?.controller === studioController) {
+          const studio = activeNeonStudio;
+          activeNeonStudio = null;
+          try {
+            studio.controller.saveAndClose(true);
+          } catch (error) {
+            if (!isStaleExtensionContextError(error)) {
+              handleExtensionError(error, "Neon Studio close");
+            }
+          }
+        }
+      }
     },
   });
 

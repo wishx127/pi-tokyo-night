@@ -163,7 +163,20 @@ describe("TokyoConfigManager validation", () => {
     expect(reader.get().iconMode).toBe("nerd");
   });
 
-  it("does not expose status module visibility as panel settings", () => {
+  it("updates status module visibility through immutable snapshots", () => {
+    const manager = new TokyoConfigManager();
+    const previous = manager.get();
+
+    manager.setStatusModule("model", false);
+
+    expect(manager.get()).not.toBe(previous);
+    expect(manager.get().statusModules).not.toBe(previous.statusModules);
+    expect(manager.get().statusModules.model).toBe(false);
+    expect(Object.isFrozen(manager.get().statusModules)).toBe(true);
+    expect(previous.statusModules.model).toBe(true);
+  });
+
+  it("does not expose the nested statusModules object as a scalar setting", () => {
     expect(SETTINGS.some((setting) => setting.id === "statusModules")).toBe(false);
   });
 
@@ -293,6 +306,22 @@ describe("TokyoConfigManager persistence", () => {
       panel: false,
     });
     expect(fs.existsSync(path.join(agentDir, "settings.json"))).toBe(false);
+  });
+
+  it("round-trips status module changes made by Neon Studio", () => {
+    const writer = new TokyoConfigManager();
+    writer.setStatusModule("model", false);
+    writer.setStatusModule("cost", false);
+    expect(writer.write()).toBe(true);
+
+    const reader = new TokyoConfigManager();
+    reader.read();
+
+    expect(reader.get().statusModules).toEqual({
+      ...DEFAULT_CONFIG.statusModules,
+      model: false,
+      cost: false,
+    });
   });
 
   it("round-trips the kimiQuota toggle through write/read", () => {

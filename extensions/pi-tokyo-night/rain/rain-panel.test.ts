@@ -50,6 +50,20 @@ describe("RainPanelComponent", () => {
     expect(rain.setRenderWidth).toHaveBeenCalledWith(38);
   });
 
+  it("owns the shared frame top edge without closing the bottom", () => {
+    const lines = renderRainPanelLines({
+      width: 20,
+      frameEnabled: true,
+      rainRows: 2,
+      snapshot,
+    });
+    const output = lines.join("\n");
+
+    expect(output).toContain("╭");
+    expect(output).not.toContain("╰");
+    expect(lines.every((line) => visibleWidth(line) === 20)).toBe(true);
+  });
+
   it("does not add box chrome when editorFrame is disabled", () => {
     const lines = renderRainPanelLines({
       width: 20,
@@ -57,7 +71,8 @@ describe("RainPanelComponent", () => {
       rainRows: 2,
       snapshot,
     });
-    expect(lines.slice(1).join("\n")).not.toMatch(/[╭╮╰╯│─]/);
+    expect(lines).toHaveLength(2);
+    expect(lines.join("\n")).not.toMatch(/[╭╮╰╯│─]/);
   });
 
   it("reuses rendered lines until the rain frame revision changes", () => {

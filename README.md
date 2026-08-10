@@ -16,7 +16,7 @@ A [pi](https://github.com/earendil-works/pi) theme + extension that brings the t
 
 **Borderless editor** — Editor renders inside an optional rounded card frame with a glowing purple prompt chevron.
 
-**Settings UI** — Interactive settings panel to tweak rain animation (rows, speed, drop count) without editing config files.
+**Neon Studio** — Grouped, non-overlay settings center with local theme preview and live frame, rain, quota, icon, and status-module updates.
 
 ## 📦 Install
 
@@ -31,7 +31,9 @@ Restart pi to activate.
 Activates automatically on install. Use `/tokyo-night` to control the extension:
 
 ```
-/tokyo-night          # toggle settings panel
+/tokyo-night          # open Neon Studio
+/tokyo-night on       # enable the rain panel
+/tokyo-night off      # disable the rain panel
 ```
 
 Codex usage is shown in the status bar only when `codexQuota` is enabled and the session is using a Codex-compatible model over `transport=sse`.
@@ -54,29 +56,23 @@ Kimi Code usage (5-hour rolling window + weekly quota) is shown in the status ba
 | Right    | Progress    | Context window usage bar with percentage                                          |
 
 
-### Settings panel
+### Neon Studio
 
-Open with `/tokyo-night`, then navigate with ↑/↓ and press Enter to toggle or edit values. Press Esc to save and close.
+Open with `/tokyo-night`. Neon Studio uses Pi's standard custom UI area—not an overlay—so the Rain and Status widgets remain visible while settings are previewed. Rain, Neon Studio, and Status share one continuous outer frame instead of stacking nested cards.
 
+| Section    | Settings                                                                 |
+| ---------- | ------------------------------------------------------------------------ |
+| Appearance | Theme preview, Top Panel, Interface Frame, Status Icons                 |
+| Status     | Model, Thinking, Path, Git Branch, Provider Limit, Tokens, Cost, Context |
+| Usage      | Codex Limit, Kimi Limit                                                 |
+| Rain       | Rain Rows, Rain Tick, Max Rain Drops                                    |
 
-| Setting        | Default | Description                                                         |
-| -------------- | ------- | ------------------------------------------------------------------- |
-| Top Panel      | On      | Show rain/moon/stars above editor                                   |
-| Input Frame    | On      | Show the rounded frame around the input editor                      |
-| Codex Limit    | Off     | Show Codex quota in the status bar (requires Pi transport=sse)      |
-| Kimi Limit     | On      | Show Kimi Code 5h/weekly quota in the status bar (polls usages API) |
-| Status Icons   | Nerd    | Use Nerd Font or ASCII icons in the status bar                     |
-| Rain Rows      | 3       | Height of rain panel (1–10)                                         |
-| Rain Tick (ms) | 130     | Animation speed (50–1000)                                           |
-| Max Rain Drops | 25      | Simultaneous drops (5–100)                                          |
-
-
-Settings are persisted in an extension-owned file:
+Extension settings are persisted in an extension-owned file:
 
 - **Windows:** `%USERPROFILE%\.pi\agent\extensions\pi-tokyo-night.json`
 - **macOS / Linux:** `~/.pi/agent/extensions/pi-tokyo-night.json`
 
-Existing settings are copied here automatically on first run. Configure status modules in this file; unspecified modules remain enabled, and changes apply after restarting Pi:
+Existing settings are copied here automatically on first run. Neon Studio applies changes live; the file remains available for manual editing, with unspecified status modules enabled by default. Manually edited values are loaded on the next Pi start:
 
 ```json
 {

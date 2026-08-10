@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import extension, { buildStatusWidgetLines, shouldRunRainAnimation } from "./extension";
 import { TokyoConfigManager } from "./core/config";
 
-const theme = { fg: (_color: string, text: string) => text } as any;
+const theme = { name: "existing-theme", fg: (_color: string, text: string) => text } as any;
+const tokyoDarkTheme = { name: "tokyo-night-dark", fg: theme.fg } as any;
+const tokyoLightTheme = { name: "tokyo-night-light", fg: theme.fg } as any;
 
 type Mode = "tui" | "rpc" | "json" | "print";
 
@@ -11,6 +13,8 @@ function makeFixture(mode: Mode = "tui", sessionId = "session-1") {
   const widgets = new Map<string, any>();
   let editorFactory: any;
   let footerFactory: any;
+  let customComponent: any;
+  let customTuiMode: "regular" | "fullscreen" = "regular";
   const ui = {
     setWidget: vi.fn((key: string, content: unknown) => {
       if (content === undefined) widgets.delete(key);
@@ -30,6 +34,29 @@ function makeFixture(mode: Mode = "tui", sessionId = "session-1") {
     setStatus: vi.fn(),
     setWorkingIndicator: vi.fn(),
     setHiddenThinkingLabel: vi.fn(),
+    getTheme: vi.fn((name: string) =>
+      name === "tokyo-night-dark"
+        ? tokyoDarkTheme
+        : name === "tokyo-night-light"
+          ? tokyoLightTheme
+          : name === "existing-theme"
+            ? theme
+            : undefined),
+    setTheme: vi.fn(() => ({ success: true })),
+    custom: vi.fn((factory: (...args: any[]) => unknown) =>
+      new Promise((resolve, reject) => {
+        const done = (value: unknown) => resolve(value);
+        Promise.resolve(
+          factory(
+            { requestRender: vi.fn(), mode: customTuiMode },
+            theme,
+            {},
+            done,
+          ),
+        ).then((component) => {
+          customComponent = component;
+        }, reject);
+      })),
   } as any;
   const ctx = {
     ui,
@@ -63,6 +90,8 @@ function makeFixture(mode: Mode = "tui", sessionId = "session-1") {
     ui, ctx, pi, widgets,
     get editorFactory() { return editorFactory; },
     get footerFactory() { return footerFactory; },
+    get customComponent() { return customComponent; },
+    setCustomTuiMode(mode: "regular" | "fullscreen") { customTuiMode = mode; },
     command,
     async emit(event: string, ...args: any[]) {
       for (const handler of handlers.get(event) ?? []) await handler(...args);
@@ -83,8 +112,17 @@ beforeEach(() => {
 describe("public layout and lifecycle contract", () => {
   it("keeps narrow status output bounded without selector-specific state", () => {
     for (const width of [0, 1, 2, 9]) {
-      expect(() => buildStatusWidgetLines(width, false, "status")).not.toThrow();
+      expect(() => buildStatusWidgetLines(width, "status")).not.toThrow();
     }
+  });
+
+  it("renders Status as the shared frame bottom segment", () => {
+    const lines = buildStatusWidgetLines(20, "status", true);
+    const output = lines.join("\n");
+
+    expect(output).not.toContain("╭");
+    expect(output).toContain("╰");
+    expect(lines.at(-1)).toContain("╯");
   });
 
   it("registers rain permanently above the editor and keeps it through selector replacement", async () => {
@@ -112,6 +150,30 @@ describe("public layout and lifecycle contract", () => {
     expect(status.render(40)).toEqual([]);
     tui.mode = "regular";
     expect(status.render(40).length).toBeGreaterThan(0);
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("composes Rain, Neon Studio, and Status into one regular-mode frame", async () => {
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const rain = fixture.widgets.get("tokyo-rain")({ requestRender: vi.fn() });
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      theme,
+    );
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+
+    const layout = [
+      ...rain.render(40),
+      ...fixture.customComponent.render(40),
+      ...status.render(40),
+    ].join("\n");
+
+    expect(layout.match(/╭/g)).toHaveLength(1);
+    expect(layout.match(/╰/g)).toHaveLength(1);
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
@@ -173,6 +235,55 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("thinking_level_select", { level: "low" }, fixture.ctx);
 
     expect(status.render(500).join("\n")).toContain("low");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("keeps status visible while Neon Studio replaces the fullscreen editor", async () => {
+    const fixture = makeFixture();
+    fixture.setCustomTuiMode("fullscreen");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await Promise.resolve();
+    const rain = fixture.widgets.get("tokyo-rain")({ requestRender: vi.fn() });
+    const lines = [
+      ...rain.render(80),
+      ...fixture.customComponent.render(80),
+    ];
+    const output = lines.join("\n");
+
+    expect(output).toContain("pi-agent");
+    expect(output.match(/╭/g)).toHaveLength(1);
+    expect(output.match(/╰/g)).toHaveLength(1);
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("keeps fullscreen local Theme switches off the Status and Git hot path", async () => {
+    const fixture = makeFixture();
+    fixture.setCustomTuiMode("fullscreen");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+    fixture.customComponent.render(80);
+    await Promise.resolve();
+    await Promise.resolve();
+    fixture.customComponent.render(80);
+    await Promise.resolve();
+    fixture.pi.exec.mockClear();
+    fixture.ui.setTheme.mockClear();
+    fixture.ctx.cwd = "/workspace/changed";
+
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.render(80);
+    await Promise.resolve();
+
+    expect(fixture.ui.setTheme).not.toHaveBeenCalled();
+    expect(fixture.pi.exec).not.toHaveBeenCalled();
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
@@ -305,6 +416,230 @@ describe("public layout and lifecycle contract", () => {
     expect(fixture.ui.setFooter).not.toHaveBeenCalledWith(undefined);
   });
 
+  it("does not open a second Studio while the first one is active", async () => {
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const firstStudio = fixture.command.handler("", fixture.ctx);
+    await Promise.resolve();
+    const firstComponent = fixture.customComponent;
+    const secondStudio = fixture.command.handler("", fixture.ctx);
+    await Promise.resolve();
+
+    expect(fixture.ui.custom).toHaveBeenCalledOnce();
+    expect(fixture.ui.notify).toHaveBeenCalledWith(
+      "Neon Studio is already open.",
+      "info",
+    );
+    firstComponent.handleInput("\x1b");
+    await firstStudio;
+    await secondStudio;
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("saves and closes an open Studio during session shutdown", async () => {
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const write = vi.mocked(TokyoConfigManager.prototype.write);
+    write.mockClear();
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await Promise.resolve();
+    expect(fixture.customComponent).toBeDefined();
+
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+
+    expect(write).toHaveBeenCalledOnce();
+    await studio;
+  });
+
+  it("stops Kimi polling when Studio previews Kimi Limit off", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    fixture.ctx.model = {
+      id: "kimi-for-coding",
+      provider: "kimi-coding",
+      api: "anthropic-messages",
+      contextWindow: 128000,
+    };
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await Promise.resolve();
+    expect(vi.getTimerCount()).toBe(2);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await Promise.resolve();
+    fixture.customComponent.handleInput("\t");
+    fixture.customComponent.handleInput("\t");
+    fixture.customComponent.handleInput("\x1b[B");
+    fixture.customComponent.handleInput("\r");
+    await vi.advanceTimersByTimeAsync(33);
+
+    expect(vi.getTimerCount()).toBe(1);
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("restarts the rain animation with the previewed tick interval", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const rainTui = { requestRender: vi.fn() };
+    fixture.widgets.get("tokyo-rain")(rainTui).render(80);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await Promise.resolve();
+    fixture.customComponent.handleInput("\t");
+    fixture.customComponent.handleInput("\t");
+    fixture.customComponent.handleInput("\t");
+    fixture.customComponent.handleInput("\x1b[B");
+    fixture.customComponent.handleInput("\x1b[C");
+    rainTui.requestRender.mockClear();
+
+    await vi.advanceTimersByTimeAsync(130);
+    expect(rainTui.requestRender).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(rainTui.requestRender).toHaveBeenCalledOnce();
+
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops the rain animation when Studio previews Top Panel off", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    expect(vi.getTimerCount()).toBe(1);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await Promise.resolve();
+    fixture.customComponent.handleInput("\x1b[B");
+    fixture.customComponent.handleInput("\r");
+    await vi.advanceTimersByTimeAsync(33);
+
+    expect(vi.getTimerCount()).toBe(0);
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("redraws the status widget when Studio previews a module change", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const statusTui = { requestRender: vi.fn(), mode: "regular" as const };
+    const status = fixture.widgets.get("tokyo-status")(statusTui, theme);
+    expect(status.render(500).join("\n")).toContain("pi-agent");
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await Promise.resolve();
+    expect(fixture.customComponent).toBeDefined();
+    statusTui.requestRender.mockClear();
+
+    fixture.customComponent.handleInput("\t");
+    fixture.customComponent.handleInput("\r");
+    await vi.advanceTimersByTimeAsync(33);
+
+    expect(statusTui.requestRender).toHaveBeenCalledOnce();
+    expect(status.render(500).join("\n")).not.toContain("pi-agent");
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("cycles cached local Themes without touching the global Pi Theme", async () => {
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+    expect(fixture.ui.getTheme).toHaveBeenCalledWith("tokyo-night-dark");
+    expect(fixture.ui.getTheme).toHaveBeenCalledWith("tokyo-night-light");
+    fixture.ui.getTheme.mockClear();
+
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\r");
+
+    expect(fixture.ui.getTheme).not.toHaveBeenCalled();
+    expect(fixture.ui.setTheme).not.toHaveBeenCalled();
+    expect(fixture.customComponent.render(80).join("\n")).toContain(
+      "Theme: Keep current",
+    );
+
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+    expect(fixture.ui.setTheme).not.toHaveBeenCalled();
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("supports local preview when the current Pi Theme is anonymous", async () => {
+    const fixture = makeFixture();
+    fixture.ui.theme = { fg: theme.fg };
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+    fixture.customComponent.handleInput("\r");
+
+    expect(fixture.ui.setTheme).not.toHaveBeenCalled();
+    expect(fixture.ui.notify).not.toHaveBeenCalledWith(
+      expect.stringContaining("cannot be safely restored"),
+      "error",
+    );
+    expect(fixture.customComponent.render(80).join("\n")).toContain(
+      "Theme: Tokyo Night Dark",
+    );
+
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+    expect(fixture.ui.setTheme).toHaveBeenCalledOnce();
+    expect(fixture.ui.setTheme).toHaveBeenCalledWith("tokyo-night-dark");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("persists the locally previewed Theme only when Studio closes", async () => {
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+    fixture.customComponent.handleInput("\r");
+
+    expect(fixture.ui.getTheme).toHaveBeenCalledWith("tokyo-night-dark");
+    expect(fixture.ui.setTheme).not.toHaveBeenCalled();
+    expect(fixture.customComponent.render(80).join("\n")).toContain(
+      "Theme: Tokyo Night Dark",
+    );
+
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+
+    expect(fixture.ui.setTheme).toHaveBeenCalledOnce();
+    expect(fixture.ui.setTheme).toHaveBeenCalledWith("tokyo-night-dark");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("opens Neon Studio without an overlay and saves it with Escape", async () => {
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+
+    expect(fixture.ui.custom).toHaveBeenCalledOnce();
+    expect(fixture.ui.custom.mock.calls[0]).toHaveLength(1);
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+
+    expect(vi.mocked(TokyoConfigManager.prototype.write)).toHaveBeenCalledOnce();
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
   it("does not write protocol-breaking text outside TUI mode", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
 
@@ -313,7 +648,7 @@ describe("public layout and lifecycle contract", () => {
       await fixture.command.handler("", fixture.ctx);
       if (mode === "rpc") {
         expect(fixture.ui.notify).toHaveBeenCalledWith(
-          "Tokyo Night settings panel is only available in TUI mode.",
+          "Neon Studio is only available in TUI mode.",
           "info",
         );
       } else {

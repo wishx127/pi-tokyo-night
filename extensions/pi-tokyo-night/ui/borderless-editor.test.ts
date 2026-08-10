@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CustomEditor, type ExtensionUIContext, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
-import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
-import { BorderlessEditor, shouldRenderEditorTopBorder } from "./borderless-editor";
+import { CustomEditor, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
+import { visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
+import { buildStatusWidgetLines } from "../extension";
+import { renderRainPanelLines } from "../rain/rain-panel";
+import { BorderlessEditor } from "./borderless-editor";
+import { FRAME_RGB, fgRgb } from "./ui-primitives";
 
 const EditorProto = Object.getPrototypeOf(CustomEditor.prototype) as {
   render(width: number): string[];
@@ -25,20 +28,14 @@ function makeEditor(
   tui: { requestRender: (...args: any[]) => void; mode?: "regular" | "fullscreen" } = { requestRender: vi.fn() },
   renderFullscreenStatus?: (width: number) => string[],
 ) {
-  const settings = {
-    isActive: false,
-    handleInput: vi.fn(),
-    buildLines: vi.fn(() => ["settings"]),
-  };
   const config = { get: vi.fn(() => configShape(panel, editorFrame)) };
   const editor = new BorderlessEditor(
     tui as unknown as TUI,
     {} as EditorTheme,
     {} as KeybindingsManager,
-    {} as ExtensionUIContext,
-    { config: config as any, settingsController: settings as any, renderFullscreenStatus } as any,
+    { config: config as any, renderFullscreenStatus },
   );
-  return { editor, config, settings, tui };
+  return { editor, config, tui };
 }
 
 describe("BorderlessEditor public composition", () => {
@@ -52,12 +49,6 @@ describe("BorderlessEditor public composition", () => {
 
   afterEach(() => vi.restoreAllMocks());
 
-  it("uses the approved top-border rule", () => {
-    expect(shouldRenderEditorTopBorder({ panel: false, editorFrame: true })).toBe(true);
-    expect(shouldRenderEditorTopBorder({ panel: true, editorFrame: true })).toBe(false);
-    expect(shouldRenderEditorTopBorder({ panel: false, editorFrame: false })).toBe(false);
-  });
-
   it("leaves the host TUI methods untouched while rendering through the public editor API", () => {
     const requestRender = vi.fn();
     const host = new Proxy({ requestRender }, {
@@ -69,6 +60,34 @@ describe("BorderlessEditor public composition", () => {
     editor.requestRender();
     expect(requestRender).toHaveBeenCalledOnce();
     expect(() => host.requestRender()).not.toThrow();
+  });
+
+  it("composes Rain, Editor, and Status as one bounded, uniformly colored frame", () => {
+    const { editor } = makeEditor(true, true);
+    const lines = [
+      ...renderRainPanelLines({
+        width: 40,
+        frameEnabled: true,
+        rainRows: 1,
+        snapshot: { drops: [], stars: [] },
+      }),
+      ...editor.render(40),
+      ...buildStatusWidgetLines(40, "status", true),
+    ];
+    const output = lines.join("\n");
+    const plain = lines.map((line) =>
+      line.replace(/\x1b\[[0-9;]*m/g, "")
+    );
+
+    expect(output.match(/╭/g)).toHaveLength(1);
+    expect(output.match(/╰/g)).toHaveLength(1);
+    expect(lines.every((line) => visibleWidth(line) === 40)).toBe(true);
+    expect(lines.every((line) => line.startsWith(fgRgb(FRAME_RGB)))).toBe(true);
+    expect(
+      plain.slice(1, -1).every((line) =>
+        line.startsWith("│") && line.endsWith("│")
+      ),
+    ).toBe(true);
   });
 
   it("does not render an editor top border when the permanent rain panel is on", () => {
@@ -107,6 +126,22 @@ describe("BorderlessEditor public composition", () => {
 
     expect(renderFullscreenStatus).not.toHaveBeenCalled();
     expect(lines).toHaveLength(1);
+  });
+
+  it("keeps the shared top and side edges through the narrow regular fallback", () => {
+    const { editor } = makeEditor(
+      false,
+      true,
+      { requestRender: vi.fn(), mode: "regular" },
+    );
+
+    const lines = editor.render(8);
+    const output = lines.join("\n");
+
+    expect(output).toContain("╭");
+    expect(output).toContain("╮");
+    expect(output).toContain("│");
+    expect(output).not.toContain("╰");
   });
 
   it("keeps fullscreen status visible through the narrow editor fallback", () => {
@@ -151,26 +186,11 @@ describe("BorderlessEditor public composition", () => {
 
     const lines = editor.render(40);
 
-    expect(lines).toHaveLength(3);
+    expect(lines).toHaveLength(4);
     expect(lines).not.toContain("");
-    expect(lines.every((line) => line.includes("│"))).toBe(true);
-  });
-
-  it("keeps fullscreen status attached while settings mode is active", () => {
-    const renderFullscreenStatus = vi.fn(() => ["status row", "status bottom"]);
-    const { editor, settings } = makeEditor(
-      true,
-      true,
-      { requestRender: vi.fn(), mode: "fullscreen" },
-      renderFullscreenStatus,
-    );
-    settings.isActive = true;
-
-    const lines = editor.render(40);
-
-    expect(lines).toHaveLength(3);
-    expect(lines).not.toContain("");
-    expect(lines.slice(-2)).toEqual(["status row", "status bottom"]);
+    expect(lines.slice(0, -1).every((line) => line.includes("│"))).toBe(true);
+    expect(lines.at(-1)).toContain("╰");
+    expect(lines.at(-1)).toContain("╯");
   });
 
   it("keeps plain mode free of box chrome", () => {
@@ -180,14 +200,14 @@ describe("BorderlessEditor public composition", () => {
     expect(lines).not.toMatch(/[╭╮╰╯│─]/);
   });
 
-  it("routes input to settings only while settings mode is active", () => {
+  it("always delegates editor input to the public CustomEditor behavior", () => {
     const superInput = vi.spyOn(CustomEditor.prototype, "handleInput").mockImplementation(() => {});
-    const { editor, settings } = makeEditor();
+    const { editor } = makeEditor();
+
     editor.handleInput("x");
-    expect(settings.handleInput).not.toHaveBeenCalled();
-    settings.isActive = true;
     editor.handleInput("down");
-    expect(settings.handleInput).toHaveBeenCalledWith("down");
-    expect(superInput).toHaveBeenCalledWith("x");
+
+    expect(superInput).toHaveBeenNthCalledWith(1, "x");
+    expect(superInput).toHaveBeenNthCalledWith(2, "down");
   });
 });

@@ -31,7 +31,7 @@ function keysEqual(
     left.kimiUsage === right.kimiUsage;
 }
 
-/** Single-entry cache for the fully framed status output of one live session. */
+/** Single-entry cache for the fully rendered status frame segment of one live session. */
 export class StatusRenderCache {
   private entry: StatusRenderCacheEntry | undefined;
 

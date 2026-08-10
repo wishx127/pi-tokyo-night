@@ -14,7 +14,7 @@ function getTokyoConfigPath(): string {
 // ── Tokyo Night User Config ────────────────────────────────────────────────
 // Persisted user personalization for the Tokyo Night extension. The panel
 // toggle and rain animation parameters can be changed at runtime through the
-// /tokyo-night settings overlay.
+// /tokyo-night Neon Studio surface.
 export interface StatusModulesConfig {
   model: boolean;
   thinking: boolean;
@@ -29,7 +29,7 @@ export interface StatusModulesConfig {
 export interface TokyoConfig {
   /** Show the top rain/moon/stars panel. */
   panel: boolean;
-  /** Show the rounded frame around the input editor. */
+  /** Show one continuous frame around the Tokyo Night interface surfaces. */
   editorFrame: boolean;
   /** Show Codex limit in the status bar (requires Pi transport=sse). */
   codexQuota: boolean;
@@ -70,7 +70,7 @@ export const DEFAULT_CONFIG: Readonly<TokyoConfig> = Object.freeze({
   maxRainDrops: 25,
 });
 
-// ── Settings Panel Types ───────────────────────────────────────────────────
+// ── Config Setting Schema ──────────────────────────────────────────────────
 
 export type SettingKind = "toggle" | "number" | "choice";
 
@@ -99,8 +99,8 @@ export const SETTINGS: SettingDescriptor[] = [
   },
   {
     id: "editorFrame",
-    label: "Input Frame",
-    description: "Show the rounded frame around the input editor",
+    label: "Interface Frame",
+    description: "Frame Rain, the active surface, and Status as one card",
     kind: "toggle",
   },
   {
@@ -289,6 +289,20 @@ export class TokyoConfigManager {
     this.config = freezeConfig({
       ...this.config,
       [key]: safeValue,
+    });
+  }
+
+  /** Update one status module while preserving an immutable config snapshot. */
+  setStatusModule(key: keyof StatusModulesConfig, value: boolean): void {
+    if (!Object.hasOwn(DEFAULT_STATUS_MODULES, key) || typeof value !== "boolean") {
+      return;
+    }
+    this.config = freezeConfig({
+      ...this.config,
+      statusModules: Object.freeze({
+        ...this.config.statusModules,
+        [key]: value,
+      }),
     });
   }
 

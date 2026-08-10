@@ -1,9 +1,13 @@
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { TokyoConfigManager } from "../core/config";
 import { handleExtensionError } from "../core/errors";
 import { requestHostRender } from "../core/pi-compat";
-import { BOX, CYAN, FRAME_RGB, PURPLE, RESET, fgRgb } from "../ui/ui-primitives";
+import {
+  getFrameContentWidth,
+  renderFrameSegment,
+} from "../ui/frame-layout";
+import { CYAN, PURPLE, RESET } from "../ui/ui-primitives";
 import type { RainAnimationManager, RainFrameSnapshot } from "./rain-manager";
 
 export const MOON = "🌙";
@@ -25,18 +29,8 @@ export function renderRainPanelLines(
 ): string[] {
   const outputWidth = Math.max(0, Math.floor(options.width));
   const bodyRows = Math.max(0, Math.floor(options.rainRows));
-  const frameHasSideBorders = options.frameEnabled && outputWidth >= 2;
-  const innerWidth = frameHasSideBorders ? outputWidth - 2 : outputWidth;
-  const frameFg = (s: string) => `${fgRgb(FRAME_RGB)}${s}${RESET}`;
+  const innerWidth = getFrameContentWidth(outputWidth, options.frameEnabled);
   const lines: string[] = [];
-
-  if (options.frameEnabled && outputWidth >= 2) {
-    lines.push(frameFg(`${BOX.tl}${BOX.h.repeat(outputWidth - 2)}${BOX.tr}`));
-  } else if (options.frameEnabled && outputWidth === 1) {
-    lines.push(frameFg(BOX.tl));
-  } else {
-    lines.push(frameFg(BOX.h.repeat(outputWidth)));
-  }
 
   const dropSet = new Set<number>();
   for (const drop of options.snapshot.drops) {
@@ -67,7 +61,7 @@ export function renderRainPanelLines(
 
   const moonWidth = visibleWidth(MOON);
   for (let rowIndex = 0; rowIndex < bodyRows; rowIndex++) {
-    let row = frameHasSideBorders ? frameFg(BOX.v) : "";
+    let row = "";
     let column = 0;
     while (column < innerWidth) {
       const position = rowIndex * innerWidth + column;
@@ -89,10 +83,14 @@ export function renderRainPanelLines(
         column += 1;
       }
     }
-    if (frameHasSideBorders) row += frameFg(BOX.v);
-    lines.push(truncateToWidth(row, outputWidth));
+    lines.push(row);
   }
-  return lines;
+  return renderFrameSegment({
+    width: outputWidth,
+    lines,
+    frameEnabled: options.frameEnabled,
+    role: "top",
+  });
 }
 
 export interface RainPanelDependencies {
@@ -131,8 +129,9 @@ export class RainPanelComponent implements Component {
       if (!config.panel) return [];
 
       const outputWidth = Math.max(0, Math.floor(width));
-      const frameWidth = config.editorFrame ? Math.max(0, outputWidth - 2) : outputWidth;
-      this.dependencies.rain.setRenderWidth(frameWidth);
+      this.dependencies.rain.setRenderWidth(
+        getFrameContentWidth(outputWidth, config.editorFrame),
+      );
       const revision = this.dependencies.rain.frameRevision;
       const cached = this.cache;
       if (
@@ -152,7 +151,7 @@ export class RainPanelComponent implements Component {
         rainRows: config.rainRows,
         snapshot: this.dependencies.rain.getSnapshot(),
       });
-      const lines = config.editorFrame ? rendered : rendered.slice(1);
+      const lines = rendered;
       this.cache = {
         revision,
         width: outputWidth,
