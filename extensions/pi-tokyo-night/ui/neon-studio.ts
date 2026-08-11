@@ -25,9 +25,7 @@ type StudioRow = {
 
 export interface NeonStudioComponentOptions {
   renderFullscreenStatus?: (width: number) => string[];
-  previewThemes?: Partial<
-    Record<Exclude<NeonStudioThemeChoice, "current">, Theme>
-  >;
+  previewThemes?: Partial<Record<NeonStudioThemeChoice, Theme>>;
 }
 
 const SECTIONS: ReadonlyArray<{
@@ -144,7 +142,7 @@ export class NeonStudioComponent implements Component {
 
   private getRenderTheme(): Theme {
     const choice = this.controller.themeChoice;
-    return choice === "current"
+    return choice === "automatic"
       ? this.theme
       : this.options.previewThemes?.[choice] ?? this.theme;
   }
@@ -152,8 +150,8 @@ export class NeonStudioComponent implements Component {
   private getRows(section: NeonStudioSection): StudioRow[] {
     const config = this.controller.config.get();
     if (section === "appearance") {
-      const themeLabel = this.controller.themeChoice === "current"
-        ? "Keep current"
+      const themeLabel = this.controller.themeChoice === "automatic"
+        ? "Automatic"
         : this.controller.themeChoice === "dark"
           ? "Tokyo Night Dark"
           : "Tokyo Night Light";
@@ -161,7 +159,9 @@ export class NeonStudioComponent implements Component {
         {
           label: "Theme",
           value: themeLabel,
-          description: "Preview locally; Esc applies the selected theme",
+          description: this.controller.themeChoice === "automatic"
+            ? "Save the light/dark pair; restart Pi to apply"
+            : "Preview locally; Esc applies the selected theme",
         },
         {
           label: "Top Panel",

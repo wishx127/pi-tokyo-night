@@ -16,7 +16,7 @@ A [pi](https://github.com/earendil-works/pi) theme + extension that brings the t
 
 **Borderless editor** — Editor renders inside an optional rounded card frame with a glowing purple prompt chevron.
 
-**Neon Studio** — Grouped, non-overlay settings center with local theme preview and live frame, rain, quota, icon, and status-module updates.
+**Neon Studio** — Grouped, non-overlay settings center with theme selection plus live frame, rain, quota, icon, and status-module updates.
 
 ## 📦 Install
 
@@ -62,7 +62,7 @@ Open with `/tokyo-night`. Neon Studio uses Pi's standard custom UI area—not an
 
 | Section    | Settings                                                                 |
 | ---------- | ------------------------------------------------------------------------ |
-| Appearance | Theme preview, Top Panel, Interface Frame, Status Icons                 |
+| Appearance | Automatic/Dark/Light Theme, Top Panel, Interface Frame, Status Icons    |
 | Status     | Model, Thinking, Path, Git Branch, Provider Limit, Tokens, Cost, Context |
 | Usage      | Codex Limit, Kimi Limit                                                 |
 | Rain       | Rain Rows, Rain Tick, Max Rain Drops                                    |
@@ -72,7 +72,7 @@ Extension settings are persisted in an extension-owned file:
 - **Windows:** `%USERPROFILE%\.pi\agent\extensions\pi-tokyo-night.json`
 - **macOS / Linux:** `~/.pi/agent/extensions/pi-tokyo-night.json`
 
-Existing settings are copied here automatically on first run. Neon Studio applies changes live; the file remains available for manual editing, with unspecified status modules enabled by default. Manually edited values are loaded on the next Pi start:
+Existing settings are copied here automatically on first run. Neon Studio applies extension settings and pinned Dark/Light themes live; Automatic applies after restarting Pi. The file remains available for manual editing, with unspecified status modules enabled by default. Manually edited values are loaded on the next Pi start:
 
 ```json
 {
@@ -101,7 +101,7 @@ Existing settings are copied here automatically on first run. Neon Studio applie
 
 The package ships two themes: `tokyo-night-dark` and `tokyo-night-light`.
 
-All supported Pi versions can automatically switch between separate light and dark themes. Configure both variants through Pi's `/settings` screen. For manual configuration, set Pi's own `theme` setting—not the Tokyo Night extension config—in `~/.pi/agent/settings.json` using `<light-theme>/<dark-theme>` order:
+You can also configure both variants through Pi's `/settings` screen. For manual configuration, set Pi's own `theme` setting—not the Tokyo Night extension config—in `~/.pi/agent/settings.json` using `<light-theme>/<dark-theme>` order:
 
 ```json
 {
@@ -109,7 +109,7 @@ All supported Pi versions can automatically switch between separate light and da
 }
 ```
 
-The first name is used for light terminals and the second for dark terminals. Pi detects the terminal background on startup and switches when the terminal color scheme changes. Select either theme by itself in `/settings` if you prefer to pin one variant.
+The first name is used for light terminals and the second for dark terminals. Pi detects the terminal background on startup. Select either theme by itself in `/settings` if you prefer to pin one variant.
 
 ### Customizing colors
 

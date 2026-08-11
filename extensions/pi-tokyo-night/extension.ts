@@ -1,7 +1,9 @@
 /** Tokyo Night Extension composition root. */
 
-import { VERSION, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext, type KeybindingsManager, type ReadonlyFooterDataProvider, type Theme } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, VERSION, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext, type KeybindingsManager, type ReadonlyFooterDataProvider, type Theme } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
+import fs from "node:fs";
+import path from "node:path";
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { TokyoConfigManager } from "./core/config";
 import { installConsoleLogBridge } from "./core/console-bridge";
@@ -98,6 +100,76 @@ const TOKYO_WORKING_FRAMES = Object.freeze([
 const CODEX_COUNTDOWN_REFRESH_MS = 30_000;
 const KIMI_POLL_INTERVAL_MS = 60_000;
 
+export const TOKYO_NIGHT_AUTOMATIC_THEME_SETTING =
+  "tokyo-night-light/tokyo-night-dark";
+
+export interface PiThemeSettingResult {
+  success: boolean;
+  error?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function readPiThemeSetting(agentDir = getAgentDir()): string | undefined {
+  try {
+    const parsed: unknown = JSON.parse(
+      fs.readFileSync(path.join(agentDir, "settings.json"), "utf-8"),
+    );
+    return isRecord(parsed) && typeof parsed.theme === "string"
+      ? parsed.theme
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function writePiThemeSetting(
+  themeSetting: string,
+  agentDir = getAgentDir(),
+): PiThemeSettingResult {
+  const settingsPath = path.join(agentDir, "settings.json");
+  let temporaryPath: string | undefined;
+  try {
+    let settings: Record<string, unknown> = {};
+    try {
+      const parsed: unknown = JSON.parse(
+        fs.readFileSync(settingsPath, "utf-8"),
+      );
+      if (!isRecord(parsed)) {
+        throw new Error("settings.json must contain an object");
+      }
+      settings = parsed;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+
+    fs.mkdirSync(agentDir, { recursive: true });
+    temporaryPath = `${settingsPath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(
+      temporaryPath,
+      JSON.stringify({ ...settings, theme: themeSetting }, null, 2),
+      "utf-8",
+    );
+    fs.renameSync(temporaryPath, settingsPath);
+    temporaryPath = undefined;
+    return { success: true };
+  } catch (error) {
+    if (temporaryPath) {
+      try {
+        fs.unlinkSync(temporaryPath);
+      } catch {
+        // Best-effort cleanup.
+      }
+    }
+    return {
+      success: false,
+      error: `Could not update ${settingsPath}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
 export function shouldRunRainAnimation(mode: TokyoNightMode, panelEnabled: boolean): boolean {
   return mode === "tui" && panelEnabled;
 }
@@ -127,7 +199,11 @@ export function buildStatusWidgetLines(
 
 export function registerTokyoNightExtension(
   pi: ExtensionAPI,
-  dependencies: { installConsoleLogBridge?: typeof installConsoleLogBridge } = {},
+  dependencies: {
+    installConsoleLogBridge?: typeof installConsoleLogBridge;
+    readPiThemeSetting?: typeof readPiThemeSetting;
+    writePiThemeSetting?: typeof writePiThemeSetting;
+  } = {},
 ): void {
   const configManager = new TokyoConfigManager();
   const codexUsageStore = createCodexUsageStore();
@@ -146,6 +222,8 @@ export function registerTokyoNightExtension(
   let kimiPollGeneration = 0;
   let kimiPollSession: SessionState | null = null;
   let kimiPollModel: Model<any> | undefined;
+  const loadPiThemeSetting = dependencies.readPiThemeSetting ?? readPiThemeSetting;
+  const savePiThemeSetting = dependencies.writePiThemeSetting ?? writePiThemeSetting;
   const compatibility = evaluatePiCompatibility(VERSION);
   let compatibilityWarningShown = false;
 
@@ -716,11 +794,19 @@ export function registerTokyoNightExtension(
         ctx.ui.notify("Neon Studio is already open.", "info");
         return;
       }
-      const themeNameFor = (
-        choice: Exclude<NeonStudioThemeChoice, "current">,
-      ): string => choice === "dark"
-        ? "tokyo-night-dark"
-        : "tokyo-night-light";
+      const themeNameFor = (choice: "dark" | "light"): string =>
+        choice === "dark" ? "tokyo-night-dark" : "tokyo-night-light";
+      const configuredTheme = loadPiThemeSetting();
+      const initialThemeChoice: NeonStudioThemeChoice =
+        configuredTheme === "tokyo-night-dark"
+          ? "dark"
+          : configuredTheme === "tokyo-night-light"
+            ? "light"
+            : "automatic";
+      const initialThemeNeedsSave = configuredTheme !==
+        TOKYO_NIGHT_AUTOMATIC_THEME_SETTING &&
+        configuredTheme !== "tokyo-night-dark" &&
+        configuredTheme !== "tokyo-night-light";
       const previewThemes = {
         dark: ctx.ui.getTheme(themeNameFor("dark")),
         light: ctx.ui.getTheme(themeNameFor("light")),
@@ -728,7 +814,7 @@ export function registerTokyoNightExtension(
       const previewTheme = (
         choice: NeonStudioThemeChoice,
       ): NeonStudioThemeResult => {
-        if (choice === "current") return { success: true };
+        if (choice === "automatic") return { success: true };
         return previewThemes[choice]
           ? { success: true }
           : {
@@ -738,9 +824,27 @@ export function registerTokyoNightExtension(
       };
       const saveTheme = (
         choice: NeonStudioThemeChoice,
-      ): NeonStudioThemeResult => choice === "current"
-        ? { success: true }
-        : ctx.ui.setTheme(themeNameFor(choice));
+      ): NeonStudioThemeResult => {
+        if (choice !== "automatic") {
+          return ctx.ui.setTheme(themeNameFor(choice));
+        }
+        const result = savePiThemeSetting(
+          TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
+        );
+        if (result.success) {
+          try {
+            ctx.ui.notify(
+              "Automatic Tokyo Night saved. Restart Pi to apply the terminal theme.",
+              "info",
+            );
+          } catch (error) {
+            if (!isStaleExtensionContextError(error)) {
+              handleExtensionError(error, "Automatic theme notification");
+            }
+          }
+        }
+        return result;
+      };
 
       let studioController: NeonStudioController | null = null;
       try {
@@ -766,6 +870,8 @@ export function registerTokyoNightExtension(
             },
             previewTheme,
             saveTheme,
+            initialThemeChoice,
+            initialThemeNeedsSave,
             done: () => done(undefined),
           });
           activeNeonStudio = {

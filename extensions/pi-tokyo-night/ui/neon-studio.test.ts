@@ -20,6 +20,7 @@ function makeStudio(options: {
   mode?: "regular" | "fullscreen";
   renderFullscreenStatus?: (width: number) => string[];
   previewThemes?: Partial<Record<"dark" | "light", Theme>>;
+  initialThemeChoice?: NeonStudioThemeChoice;
 } = {}) {
   const config = new TokyoConfigManager();
   const write = vi.spyOn(config, "write").mockReturnValue(true);
@@ -41,6 +42,7 @@ function makeStudio(options: {
     onConfigChange,
     previewTheme,
     saveTheme,
+    initialThemeChoice: options.initialThemeChoice,
   });
   const studio = new NeonStudioComponent(tui, theme, controller, {
     renderFullscreenStatus: options.renderFullscreenStatus,
@@ -62,14 +64,19 @@ function makeStudio(options: {
 
 describe("NeonStudioComponent", () => {
   it("force-closes during shutdown even when persistence and notification fail", () => {
-    const { controller, done, notify, write } = makeStudio();
+    const { controller, done, notify, saveTheme, studio, write } = makeStudio();
+    studio.handleInput("\r");
     write.mockReturnValue(false);
+    saveTheme.mockImplementation(() => {
+      throw new Error("theme save failed");
+    });
     notify.mockImplementation(() => {
       throw new Error("stale notify");
     });
 
     expect(() => controller.saveAndClose(true)).not.toThrow();
 
+    expect(saveTheme).toHaveBeenCalledWith("dark");
     expect(done).toHaveBeenCalledOnce();
   });
 
@@ -164,21 +171,74 @@ describe("NeonStudioComponent", () => {
     expect(output).toContain("Top Panel");
     expect(output).toContain("Interface Frame");
     expect(output).toContain("Status Icons");
-    expect(output).toContain("Preview locally; Esc applies the selected theme");
+    expect(output).toContain(
+      "Save the light/dark pair; restart Pi to apply",
+    );
     expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
   });
 
-  it("returns to the current local Theme without a restart requirement", () => {
+  it("starts from the configured pinned theme", () => {
+    const { studio } = makeStudio({ initialThemeChoice: "light" });
+
+    expect(studio.render(80).join("\n")).toContain("Theme: Tokyo Night Light");
+  });
+
+  it("cycles exactly Automatic, Dark, and Light", () => {
+    const { previewTheme, studio } = makeStudio();
+
+    expect(studio.render(80).join("\n")).toContain("Theme: Automatic");
+    studio.handleInput("\r");
+    expect(studio.render(80).join("\n")).toContain("Theme: Tokyo Night Dark");
+    studio.handleInput("\r");
+    expect(studio.render(80).join("\n")).toContain("Theme: Tokyo Night Light");
+    studio.handleInput("\r");
+    expect(studio.render(80).join("\n")).toContain("Theme: Automatic");
+
+    expect(previewTheme.mock.calls.map(([choice]) => choice)).toEqual([
+      "dark",
+      "light",
+      "automatic",
+    ]);
+    expect(studio.render(80).join("\n")).not.toContain("Keep current");
+  });
+
+  it("cycles Automatic and pinned themes in reverse with Left", () => {
+    const { previewTheme, studio } = makeStudio();
+
+    studio.handleInput("\x1b[D");
+    expect(studio.render(80).join("\n")).toContain("Theme: Tokyo Night Light");
+    studio.handleInput("\x1b[D");
+    expect(studio.render(80).join("\n")).toContain("Theme: Tokyo Night Dark");
+    studio.handleInput("\x1b[D");
+    expect(studio.render(80).join("\n")).toContain("Theme: Automatic");
+
+    expect(previewTheme.mock.calls.map(([choice]) => choice)).toEqual([
+      "light",
+      "dark",
+      "automatic",
+    ]);
+  });
+
+  it("skips an unavailable pinned theme while cycling in reverse", () => {
+    const { previewTheme, studio } = makeStudio();
+    previewTheme.mockImplementation((choice) => choice === "light"
+      ? { success: false, error: "light unavailable" }
+      : { success: true });
+
+    studio.handleInput("\x1b[D");
+
+    expect(previewTheme).toHaveBeenNthCalledWith(1, "light");
+    expect(previewTheme).toHaveBeenNthCalledWith(2, "dark");
+    expect(studio.render(80).join("\n")).toContain("Theme: Tokyo Night Dark");
+  });
+
+  it("explains that Automatic applies after restarting Pi", () => {
     const { studio } = makeStudio();
 
-    studio.handleInput("\r");
-    studio.handleInput("\r");
-    studio.handleInput("\r");
-
     const output = studio.render(80).join("\n");
-    expect(output).toContain("Theme: Keep current");
-    expect(output).toContain("Preview locally; Esc applies the selected theme");
-    expect(output).not.toContain("restarting Pi");
+    expect(output).toContain("Theme: Automatic");
+    expect(output).toContain("restart Pi");
+    expect(output).not.toContain("Keep current");
   });
 
   it("keeps the current selection when theme preview throws", () => {
@@ -189,8 +249,17 @@ describe("NeonStudioComponent", () => {
 
     expect(() => studio.handleInput("\r")).not.toThrow();
 
-    expect(studio.render(80).join("\n")).toContain("Theme: Keep current");
+    expect(studio.render(80).join("\n")).toContain("Theme: Automatic");
     expect(notify).toHaveBeenCalledWith("preview failed", "error");
+  });
+
+  it("does not save a theme when the selection was not changed", () => {
+    const { done, saveTheme, studio } = makeStudio();
+
+    studio.handleInput("\x1b");
+
+    expect(saveTheme).not.toHaveBeenCalled();
+    expect(done).toHaveBeenCalledOnce();
   });
 
   it("keeps the selected theme open when its close-time save fails", () => {
@@ -216,7 +285,7 @@ describe("NeonStudioComponent", () => {
 
     studio.handleInput("\r");
 
-    expect(previewTheme).toHaveBeenCalledWith("dark");
+    expect(previewTheme).toHaveBeenLastCalledWith("dark");
     expect(studio.render(80).join("\n")).toContain("dark: Neon Studio");
     expect(studio.render(80).join("\n")).toContain("Tokyo Night Dark");
     expect(write).not.toHaveBeenCalled();

@@ -5,7 +5,7 @@ import type {
 } from "../core/config";
 
 export type NeonStudioSection = "appearance" | "status" | "usage" | "rain";
-export type NeonStudioThemeChoice = "current" | "dark" | "light";
+export type NeonStudioThemeChoice = "automatic" | "dark" | "light";
 
 export interface NeonStudioThemeResult {
   success: boolean;
@@ -42,17 +42,27 @@ export interface NeonStudioControllerDependencies {
   onConfigChange(change: NeonStudioConfigChange): void;
   previewTheme(choice: NeonStudioThemeChoice): NeonStudioThemeResult;
   saveTheme(choice: NeonStudioThemeChoice): NeonStudioThemeResult;
+  initialThemeChoice?: NeonStudioThemeChoice;
+  initialThemeNeedsSave?: boolean;
   done(): void;
 }
 
 /** Owns Neon Studio's live configuration and close-time persistence contract. */
 export class NeonStudioController {
   private closing = false;
-  private selectedTheme: NeonStudioThemeChoice = "current";
+  private readonly initialTheme: NeonStudioThemeChoice;
+  private readonly initialThemeNeedsSave: boolean;
+  private selectedTheme: NeonStudioThemeChoice;
+  private themeChanged: boolean;
 
   constructor(
     private readonly dependencies: NeonStudioControllerDependencies,
-  ) {}
+  ) {
+    this.initialTheme = dependencies.initialThemeChoice ?? "automatic";
+    this.initialThemeNeedsSave = dependencies.initialThemeNeedsSave ?? false;
+    this.selectedTheme = this.initialTheme;
+    this.themeChanged = this.initialThemeNeedsSave;
+  }
 
   get config(): TokyoConfigManager {
     return this.dependencies.config;
@@ -122,14 +132,16 @@ export class NeonStudioController {
       }
     }
 
-    let themeResult: NeonStudioThemeResult;
-    try {
-      themeResult = this.dependencies.saveTheme(this.selectedTheme);
-    } catch (error) {
-      themeResult = {
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      };
+    let themeResult: NeonStudioThemeResult = { success: true };
+    if (this.themeChanged) {
+      try {
+        themeResult = this.dependencies.saveTheme(this.selectedTheme);
+      } catch (error) {
+        themeResult = {
+          success: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
     }
     if (!themeResult.success) {
       this.safeNotify(
@@ -163,7 +175,11 @@ export class NeonStudioController {
 
   private changeAppearance(selectedIndex: number, direction: number): boolean {
     if (selectedIndex === 0) {
-      const choices: NeonStudioThemeChoice[] = ["current", "dark", "light"];
+      const choices: NeonStudioThemeChoice[] = [
+        "automatic",
+        "dark",
+        "light",
+      ];
       const currentIndex = choices.indexOf(this.selectedTheme);
       const step = direction < 0 ? -1 : 1;
       let lastError: string | undefined;
@@ -182,6 +198,8 @@ export class NeonStudioController {
         }
         if (result.success) {
           this.selectedTheme = next;
+          this.themeChanged = this.initialThemeNeedsSave ||
+            this.selectedTheme !== this.initialTheme;
           return true;
         }
         lastError = result.error;
