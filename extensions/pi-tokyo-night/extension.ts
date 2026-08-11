@@ -47,7 +47,6 @@ type NativeWorkingState = {
   phaseStartedAt: number | undefined;
   activeTools: Map<string, WorkingTool>;
   timer: ReturnType<typeof setInterval> | undefined;
-  frameIndex: number;
   setIndicator: ReturnType<typeof resolveWorkingIndicatorSetter>;
 };
 
@@ -82,12 +81,19 @@ type SessionState = {
   requestStatusRender: (() => void) | undefined;
 };
 
-const WORKING_HEARTBEAT_INTERVAL_MS = 100;
+const WORKING_MESSAGE_INTERVAL_MS = 100;
+const WORKING_INDICATOR_INTERVAL_MS = 80;
 const TOKYO_WORKING_FRAMES = Object.freeze([
   `${CYAN}⠋${RESET}`,
   `${PURPLE}⠙${RESET}`,
   `${CYAN}⠹${RESET}`,
   `${PURPLE}⠸${RESET}`,
+  `${CYAN}⠼${RESET}`,
+  `${PURPLE}⠴${RESET}`,
+  `${CYAN}⠦${RESET}`,
+  `${PURPLE}⠧${RESET}`,
+  `${CYAN}⠇${RESET}`,
+  `${PURPLE}⠏${RESET}`,
 ]);
 const CODEX_COUNTDOWN_REFRESH_MS = 30_000;
 const KIMI_POLL_INTERVAL_MS = 60_000;
@@ -182,7 +188,6 @@ export function registerTokyoNightExtension(
     session.working.phase = "waiting";
     session.working.phaseStartedAt = undefined;
     session.working.activeTools.clear();
-    session.working.frameIndex = 0;
   };
   const formatDuration = (milliseconds: number): string => {
     const seconds = Math.max(0, milliseconds) / 1000;
@@ -200,19 +205,8 @@ export function registerTokyoNightExtension(
     const elapsed = working.phaseStartedAt === undefined ? "0.0s" : formatDuration(Date.now() - working.phaseStartedAt);
     return `${label} ${elapsed}`;
   };
-  const updateWorking = (
-    session: SessionState,
-    advanceIndicator = false,
-  ): void => {
+  const updateWorking = (session: SessionState): void => {
     if (!isCurrent(session) || session.mode !== "tui" || !session.hasUI) return;
-    if (advanceIndicator && session.working.setIndicator) {
-      const frame = TOKYO_WORKING_FRAMES[
-        session.working.frameIndex % TOKYO_WORKING_FRAMES.length
-      ];
-      session.working.frameIndex += 1;
-      try { session.working.setIndicator({ frames: [frame] }); }
-      catch (error) { if (!isStaleExtensionContextError(error)) handleExtensionError(error, "working indicator update"); }
-    }
     try { session.ui.setWorkingMessage(workingMessage(session.working)); }
     catch (error) { if (!isStaleExtensionContextError(error)) handleExtensionError(error, "working message update"); }
     try {
@@ -229,11 +223,19 @@ export function registerTokyoNightExtension(
   };
   const startWorking = (session: SessionState): void => {
     stopWorking(session);
-    updateWorking(session, true);
+    try {
+      session.working.setIndicator?.({
+        frames: [...TOKYO_WORKING_FRAMES],
+        intervalMs: WORKING_INDICATOR_INTERVAL_MS,
+      });
+    } catch (error) {
+      if (!isStaleExtensionContextError(error)) handleExtensionError(error, "working indicator update");
+    }
+    updateWorking(session);
     session.working.timer = setInterval(() => {
       if (!isCurrent(session)) { stopWorking(session); return; }
-      updateWorking(session, true);
-    }, WORKING_HEARTBEAT_INTERVAL_MS);
+      updateWorking(session);
+    }, WORKING_MESSAGE_INTERVAL_MS);
     session.working.timer.unref?.();
   };
   const setWorkingPhase = (session: SessionState, phase: WorkingPhase, restart = false): boolean => {
@@ -518,7 +520,7 @@ export function registerTokyoNightExtension(
         dispose: () => { if (session.resources.statusTui === tui) session.resources.statusTui = null; },
       };
     };
-    const footerFactory = (tui: TUI, _theme: Theme, footerData: ReadonlyFooterDataProvider) => {
+    const footerFactory = (_tui: TUI, _theme: Theme, footerData: ReadonlyFooterDataProvider) => {
       session.footerData = footerData;
       session.resources.footerOwned = true;
       syncFooterBranch(session, footerData);
@@ -657,7 +659,6 @@ export function registerTokyoNightExtension(
         phaseStartedAt: undefined,
         activeTools: new Map(),
         timer: undefined,
-        frameIndex: 0,
         setIndicator: resolveWorkingIndicatorSetter(ctx.ui),
       },
       kimiUsageStore: createKimiUsageStore(),
@@ -793,7 +794,7 @@ export function registerTokyoNightExtension(
     },
   });
 
-  pi.on("session_shutdown", async (event, ctx) => {
+  pi.on("session_shutdown", async (_event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
     if (!session) return;
     const wasActive = activeSession === session;

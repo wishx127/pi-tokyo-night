@@ -101,6 +101,7 @@ function makeFixture(mode: Mode = "tui", sessionId = "session-1") {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
@@ -455,6 +456,8 @@ describe("public layout and lifecycle contract", () => {
 
   it("stops Kimi polling when Studio previews Kimi Limit off", async () => {
     vi.useFakeTimers();
+    vi.stubEnv("PI_CODING_AGENT_DIR", "/nonexistent/pi-tokyo-night-test");
+    vi.stubEnv("HOME", "/nonexistent/pi-tokyo-night-test");
     const fixture = makeFixture();
     fixture.ctx.model = {
       id: "kimi-for-coding",

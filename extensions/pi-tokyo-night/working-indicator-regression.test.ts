@@ -95,17 +95,30 @@ describe("working indicator compatibility regression", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
-  it("updates the Tokyo spinner and elapsed together every 100ms", async () => {
+  it("lets Pi animate the full Tokyo spinner every 80ms while elapsed refreshes every 100ms", async () => {
     vi.useFakeTimers();
     const fixture = makeFixture();
     await fixture.emit("session_start", {}, fixture.ctx);
     await fixture.emit("agent_start", {}, fixture.ctx);
+
+    expect(fixture.ui.setWorkingIndicator).toHaveBeenCalledOnce();
+    const options = fixture.ui.setWorkingIndicator.mock.calls[0][0] as {
+      frames: string[];
+      intervalMs: number;
+    };
+    expect(options.intervalMs).toBe(80);
+    expect(
+      options.frames.map((frame) =>
+        frame.replace(/\u001b\[[0-9;]*m/g, ""),
+      ),
+    ).toEqual(["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]);
+    expect(options.frames.every((frame) => visibleWidth(frame) === 1)).toBe(true);
+
     fixture.ui.setWorkingIndicator.mockClear();
     fixture.ui.setWorkingMessage.mockClear();
-
     await vi.advanceTimersByTimeAsync(1000);
 
-    expect(fixture.ui.setWorkingIndicator).toHaveBeenCalledTimes(10);
+    expect(fixture.ui.setWorkingIndicator).not.toHaveBeenCalled();
     expect(fixture.ui.setWorkingMessage).toHaveBeenCalledTimes(10);
     expect(
       fixture.ui.setWorkingMessage.mock.calls.map(
@@ -123,25 +136,6 @@ describe("working indicator compatibility regression", () => {
       "Waiting 0.9s",
       "Waiting 1.0s",
     ]);
-    const frames = fixture.ui.setWorkingIndicator.mock.calls.map(
-      ([options]: [{ frames: string[] }]) => options.frames,
-    );
-    expect(frames.every((value: string[]) => value.length === 1)).toBe(true);
-    expect(
-      frames.map((value: string[]) =>
-        value[0].replace(/\u001b\[[0-9;]*m/g, ""),
-      ),
-    ).toEqual([
-      "⠙", "⠹", "⠸", "⠋",
-      "⠙", "⠹", "⠸", "⠋",
-      "⠙", "⠹",
-    ]);
-    expect(frames.every((value: string[]) => visibleWidth(value[0]) === 1)).toBe(true);
-    expect(
-      fixture.ui.setWorkingIndicator.mock.calls.every(
-        ([options]: [{ intervalMs?: number }]) => options.intervalMs === undefined,
-      ),
-    ).toBe(true);
 
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
