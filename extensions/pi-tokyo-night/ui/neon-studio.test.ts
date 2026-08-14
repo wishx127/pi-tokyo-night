@@ -377,12 +377,32 @@ describe("NeonStudioComponent", () => {
     expect(tui.requestRender).toHaveBeenCalledTimes(2);
   });
 
-  it("adjusts Max Rain Drops in steps of five", () => {
+  it("switches Rain Mode between Auto and Manual", () => {
     const { config, onConfigChange, studio } = makeStudio();
 
     studio.handleInput("\t");
     studio.handleInput("\t");
     studio.handleInput("\t");
+    expect(studio.render(80).join("\n")).toContain("Rain Mode: Auto");
+
+    studio.handleInput("\r");
+
+    expect(config.get().rainMode).toBe("manual");
+    expect(studio.render(80).join("\n")).toContain("Rain Mode: Manual");
+    expect(onConfigChange).toHaveBeenCalledWith({
+      kind: "config",
+      key: "rainMode",
+    });
+  });
+
+  it("adjusts Max Rain Drops in steps of five", () => {
+    const { config, onConfigChange, studio } = makeStudio();
+    config.set("rainMode", "manual");
+
+    studio.handleInput("\t");
+    studio.handleInput("\t");
+    studio.handleInput("\t");
+    studio.handleInput("\x1b[B");
     studio.handleInput("\x1b[B");
     studio.handleInput("\x1b[B");
     studio.handleInput("\x1b[C");
@@ -397,10 +417,12 @@ describe("NeonStudioComponent", () => {
 
   it("adjusts Rain Tick in 10ms steps", () => {
     const { config, onConfigChange, studio } = makeStudio();
+    config.set("rainMode", "manual");
 
     studio.handleInput("\t");
     studio.handleInput("\t");
     studio.handleInput("\t");
+    studio.handleInput("\x1b[B");
     studio.handleInput("\x1b[B");
     studio.handleInput("\x1b[C");
 
@@ -418,6 +440,7 @@ describe("NeonStudioComponent", () => {
     studio.handleInput("\t");
     studio.handleInput("\t");
     studio.handleInput("\t");
+    studio.handleInput("\x1b[B");
     studio.handleInput("\x1b[C");
 
     expect(config.get().rainRows).toBe(4);

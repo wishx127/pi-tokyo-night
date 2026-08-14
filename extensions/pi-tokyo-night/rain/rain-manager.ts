@@ -3,6 +3,7 @@ import {
   isStaleExtensionContextError,
 } from "../core/errors";
 import { TokyoConfigManager } from "../core/config";
+import type { RainRuntimeProfile } from "./rain-profile";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -52,6 +53,9 @@ export class RainAnimationManager {
   private lastWidth = 80;
   private stars: Array<{ col: number; row: number }> = [];
   private consecutiveRenderFailures = 0;
+  private profile: RainRuntimeProfile | undefined;
+  private scheduledTickMs: number | undefined;
+  private pendingTickMs: number | undefined;
   private revision = 0;
 
   constructor(
@@ -70,22 +74,35 @@ export class RainAnimationManager {
    * Idempotent: clears any existing interval first so repeated calls never
    * create multiple timers. Reads rainTickMs at call time.
    */
-  start(): void {
+  start(profile?: RainRuntimeProfile): void {
     // Clear any previously running timer first (idempotency).
     if (this.interval !== undefined) {
       clearInterval(this.interval);
       this.interval = undefined;
     }
 
-    // Reset animation state.
+    // Reset animation state only for a new animation lifecycle.
     this.drops = [];
     this.lastWidth = 80;
     this.stars = INITIAL_STARS.map((s) => ({ ...s }));
     this.consecutiveRenderFailures = 0;
+    const config = this.config.get();
+    this.profile = profile;
     this.revision += 1;
+    this.schedule(profile?.tickMs ?? config.rainTickMs);
+  }
 
-    // Start the interval using the current config value.
-    this.interval = setInterval(() => this.tick(), this.config.get().rainTickMs);
+  /** Apply speed and density without resetting the visible rain frame. */
+  applyProfile(profile: RainRuntimeProfile): void {
+    this.profile = profile;
+    if (this.interval === undefined) return;
+    if (this.scheduledTickMs === profile.tickMs) {
+      this.pendingTickMs = undefined;
+      return;
+    }
+    // Keep the current interval until its next tick. Replacing it here can
+    // indefinitely postpone animation when tool events arrive quickly.
+    this.pendingTickMs = profile.tickMs;
   }
 
   /**
@@ -99,6 +116,9 @@ export class RainAnimationManager {
     }
     this.drops = [];
     this.consecutiveRenderFailures = 0;
+    this.profile = undefined;
+    this.scheduledTickMs = undefined;
+    this.pendingTickMs = undefined;
     this.revision += 1;
   }
 
@@ -135,9 +155,25 @@ export class RainAnimationManager {
 
   // ── Private tick ─────────────────────────────────────────────────────────
 
+  private schedule(tickMs: number): void {
+    this.scheduledTickMs = tickMs;
+    this.pendingTickMs = undefined;
+    this.interval = setInterval(() => this.tick(), tickMs);
+    this.interval.unref?.();
+  }
+
+  private applyPendingCadence(): void {
+    const pending = this.pendingTickMs;
+    if (pending === undefined || pending === this.scheduledTickMs) return;
+    if (this.interval !== undefined) clearInterval(this.interval);
+    this.interval = undefined;
+    this.schedule(pending);
+  }
+
   /** Animation tick: advance drops, spawn new ones, then notify the renderer. */
   private tick(): void {
     const cfg = this.config.get();
+    const maxDrops = this.profile?.maxDrops ?? cfg.maxRainDrops;
 
     // Advance existing drops.
     for (const drop of this.drops) {
@@ -153,15 +189,15 @@ export class RainAnimationManager {
     );
 
     // Spawn new drops if below the desired density.
-    if (this.drops.length < cfg.maxRainDrops) {
+    if (this.drops.length < maxDrops) {
       // Scale spawn rate with desired density. The default (maxRainDrops=25)
       // spawns 2-3 per tick; higher values spawn proportionally more so the
       // steady-state visible count scales with the setting.
-      const densityRatio = cfg.maxRainDrops / 25;
+      const densityRatio = maxDrops / 25;
       const baseSpawn = Math.random() < 0.5 ? 3 : 2;
       const spawnCount = Math.min(
         Math.ceil(baseSpawn * densityRatio),
-        cfg.maxRainDrops - this.drops.length,
+        maxDrops - this.drops.length,
       );
       for (let i = 0; i < spawnCount; i++) {
         this.drops.push({
@@ -190,7 +226,9 @@ export class RainAnimationManager {
       console.error(`${EXT_PREFIX} rain animation render request failed:`, err);
       if (this.consecutiveRenderFailures >= MAX_RENDER_FAILURES) {
         this.stop();
+        return;
       }
     }
+    this.applyPendingCadence();
   }
 }

@@ -26,6 +26,8 @@ export interface StatusModulesConfig {
   context: boolean;
 }
 
+export type RainMode = "auto" | "manual";
+
 export interface TokyoConfig {
   /** Show the top rain/moon/stars panel. */
   panel: boolean;
@@ -39,6 +41,8 @@ export interface TokyoConfig {
   iconMode: IconMode;
   /** Visibility of status bar modules, configured in pi-tokyo-night.json. */
   statusModules: Readonly<StatusModulesConfig>;
+  /** Select Pi-driven automatic rain or the saved manual values. */
+  rainMode: RainMode;
   /** Height of the rain panel in rows. */
   rainRows: number;
   /** Milliseconds between rain animation frames. */
@@ -65,6 +69,7 @@ export const DEFAULT_CONFIG: Readonly<TokyoConfig> = Object.freeze({
   kimiQuota: true,
   iconMode: DEFAULT_ICON_MODE,
   statusModules: DEFAULT_STATUS_MODULES,
+  rainMode: "auto",
   rainRows: 3,
   rainTickMs: 130,
   maxRainDrops: 25,
@@ -123,6 +128,16 @@ export const SETTINGS: SettingDescriptor[] = [
     options: [
       { value: "nerd", label: "Nerd" },
       { value: "ascii", label: "ASCII" },
+    ],
+  },
+  {
+    id: "rainMode",
+    label: "Rain Mode",
+    description: "Follow Pi activity automatically or use manual rain values",
+    kind: "choice",
+    options: [
+      { value: "auto", label: "Auto" },
+      { value: "manual", label: "Manual" },
     ],
   },
   {
@@ -260,6 +275,9 @@ function buildConfig(saved: Record<string, unknown>): Readonly<TokyoConfig> {
   nextConfig.kimiQuota = validatedValue("kimiQuota", saved.kimiQuota);
   nextConfig.iconMode = validatedValue("iconMode", saved.iconMode);
   nextConfig.statusModules = readStatusModules(saved.statusModules);
+  nextConfig.rainMode = Object.hasOwn(saved, "rainMode")
+    ? validatedValue("rainMode", saved.rainMode)
+    : "manual";
   nextConfig.rainRows = validatedValue("rainRows", saved.rainRows);
   nextConfig.rainTickMs = validatedValue("rainTickMs", saved.rainTickMs);
   nextConfig.maxRainDrops = validatedValue("maxRainDrops", saved.maxRainDrops);

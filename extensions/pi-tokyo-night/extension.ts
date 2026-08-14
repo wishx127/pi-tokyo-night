@@ -17,6 +17,10 @@ import {
 } from "./core/pi-compat";
 import { RainAnimationManager } from "./rain/rain-manager";
 import { RainPanelComponent } from "./rain/rain-panel";
+import {
+  resolveRainRuntimeProfile,
+  type RainActivity,
+} from "./rain/rain-profile";
 import { BorderlessEditor, type BorderlessEditorDependencies } from "./ui/borderless-editor";
 import { NeonStudioComponent } from "./ui/neon-studio";
 import {
@@ -77,6 +81,7 @@ type SessionState = {
   statusRenderDebounceTimeout: ReturnType<typeof setTimeout> | undefined;
   codexCountdownRefreshTimeout: ReturnType<typeof setTimeout> | undefined;
   working: NativeWorkingState;
+  rainActivity: RainActivity;
   kimiUsageStore: KimiUsageStore;
   statusRenderCache: StatusRenderCache;
   context: ExtensionContext;
@@ -433,11 +438,29 @@ export function registerTokyoNightExtension(
     kimiPollTimer.unref?.();
   };
 
+  const applyRainProfile = (
+    session: SessionState,
+    activity: RainActivity,
+  ): void => {
+    session.rainActivity = activity;
+    const manager = session.resources.rainManager;
+    if (!manager || !manager.isRunning) return;
+    manager.applyProfile(resolveRainRuntimeProfile(configManager.get(), activity));
+  };
+
   const applyPanelState = (session: SessionState): void => {
     const manager = session.resources.rainManager;
     if (!manager) return;
-    if (shouldRunRainAnimation(session.mode, configManager.get().panel)) manager.start();
-    else manager.stop();
+    if (shouldRunRainAnimation(session.mode, configManager.get().panel)) {
+      const profile = resolveRainRuntimeProfile(
+        configManager.get(),
+        session.rainActivity,
+      );
+      if (manager.isRunning) manager.applyProfile(profile);
+      else manager.start(profile);
+    } else {
+      manager.stop();
+    }
     session.resources.rainPanel?.invalidate();
     session.resources.rainPanel?.requestRender(true);
   };
@@ -635,6 +658,7 @@ export function registerTokyoNightExtension(
   pi.on("agent_start", async (_event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
     if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI) return;
+    applyRainProfile(session, "active");
     setWorkingPhase(session, "waiting", true);
     session.working.activeTools.clear();
     session.ui.setWorkingVisible(true);
@@ -656,6 +680,7 @@ export function registerTokyoNightExtension(
   pi.on("agent_settled", async (_event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
     if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI || !ctx.isIdle()) return;
+    applyRainProfile(session, "idle");
     resetWorking(session);
     restoreWorkingUi(session);
   });
@@ -669,6 +694,7 @@ export function registerTokyoNightExtension(
   pi.on("tool_execution_start", async (event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
     if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI || session.working.phaseStartedAt === undefined) return;
+    applyRainProfile(session, "tools");
     session.working.activeTools.set(event.toolCallId, { name: event.toolName, startedAt: Date.now() });
     updateWorking(session);
   });
@@ -676,7 +702,10 @@ export function registerTokyoNightExtension(
     const session = sessionsByIdentity.get(identityOf(ctx));
     if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI || session.working.phaseStartedAt === undefined) return;
     session.working.activeTools.delete(event.toolCallId);
-    if (session.working.activeTools.size === 0) setWorkingPhase(session, "waiting");
+    if (session.working.activeTools.size === 0) {
+      applyRainProfile(session, "active");
+      setWorkingPhase(session, "waiting");
+    }
     updateWorking(session);
   });
   pi.on("after_provider_response", async (event, ctx) => {
@@ -739,6 +768,7 @@ export function registerTokyoNightExtension(
         timer: undefined,
         setIndicator: resolveWorkingIndicatorSetter(ctx.ui),
       },
+      rainActivity: "idle",
       kimiUsageStore: createKimiUsageStore(),
       statusRenderCache: new StatusRenderCache(),
       context: ctx,
@@ -856,7 +886,12 @@ export function registerTokyoNightExtension(
               if (!isCurrent(studioSession)) return;
               if (
                 change.kind === "config" &&
-                (change.key === "panel" || change.key === "rainTickMs")
+                (
+                  change.key === "panel" ||
+                  change.key === "rainMode" ||
+                  change.key === "rainTickMs" ||
+                  change.key === "maxRainDrops"
+                )
               ) {
                 applyPanelState(studioSession);
               }

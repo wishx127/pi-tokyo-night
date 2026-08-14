@@ -73,6 +73,87 @@ describe("RainAnimationManager", () => {
     mgr.stop();
   });
 
+  it("applies a new runtime profile without clearing or stalling the visible rain", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.4);
+    const config = makeConfig({ rainTickMs: 100, rainRows: 10 });
+    const requestRender = vi.fn();
+    const mgr = new RainAnimationManager(config, { requestRender });
+
+    mgr.start({ tickMs: 100, maxDrops: 25 });
+    vi.advanceTimersByTime(100);
+    const before = mgr.getSnapshot();
+    expect(before.drops.length).toBeGreaterThan(0);
+
+    mgr.applyProfile({ tickMs: 200, maxDrops: 10 });
+
+    expect(mgr.getSnapshot()).toEqual(before);
+    requestRender.mockClear();
+    // The already scheduled tick is allowed to complete, so changing speed
+    // cannot postpone animation indefinitely.
+    vi.advanceTimersByTime(100);
+    expect(requestRender).toHaveBeenCalledOnce();
+    requestRender.mockClear();
+    vi.advanceTimersByTime(199);
+    expect(requestRender).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(requestRender).toHaveBeenCalledOnce();
+    mgr.stop();
+  });
+
+  it("cancels a pending cadence when the latest profile returns to the scheduled speed", () => {
+    const config = makeConfig({ rainRows: 10 });
+    const requestRender = vi.fn();
+    const mgr = new RainAnimationManager(config, { requestRender });
+
+    mgr.start({ tickMs: 130, maxDrops: 25 });
+    mgr.applyProfile({ tickMs: 110, maxDrops: 35 });
+    mgr.applyProfile({ tickMs: 130, maxDrops: 25 });
+    vi.advanceTimersByTime(130);
+    requestRender.mockClear();
+
+    vi.advanceTimersByTime(129);
+    expect(requestRender).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(requestRender).toHaveBeenCalledOnce();
+    mgr.stop();
+  });
+
+  it("keeps advancing when profiles toggle faster than either cadence", () => {
+    const config = makeConfig({ rainRows: 10 });
+    const requestRender = vi.fn();
+    const mgr = new RainAnimationManager(config, { requestRender });
+
+    mgr.start({ tickMs: 130, maxDrops: 25 });
+    for (let elapsed = 0; elapsed < 1_000; elapsed += 100) {
+      vi.advanceTimersByTime(100);
+      mgr.applyProfile(elapsed % 200 === 0
+        ? { tickMs: 110, maxDrops: 35 }
+        : { tickMs: 130, maxDrops: 25 });
+    }
+
+    expect(requestRender.mock.calls.length).toBeGreaterThanOrEqual(7);
+    expect(vi.getTimerCount()).toBe(1);
+    mgr.stop();
+  });
+
+  it("does not replace the timer when only density changes", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.4);
+    const config = makeConfig({ rainRows: 20 });
+    const requestRender = vi.fn();
+    const mgr = new RainAnimationManager(config, { requestRender });
+
+    mgr.start({ tickMs: 100, maxDrops: 25 });
+    vi.advanceTimersByTime(100);
+    const before = mgr.getSnapshot();
+    mgr.applyProfile({ tickMs: 100, maxDrops: 10 });
+
+    expect(mgr.getSnapshot()).toEqual(before);
+    requestRender.mockClear();
+    vi.advanceTimersByTime(100);
+    expect(requestRender).toHaveBeenCalledOnce();
+    mgr.stop();
+  });
+
   // ── 3. stop() prevents further callback invocations ───────────────────────
 
   it("stop() halts the timer — subsequent advances do not call requestRender", () => {

@@ -235,13 +235,21 @@ export class NeonStudioController {
 
   private changeRain(selectedIndex: number, direction: number): boolean {
     if (selectedIndex === 0) {
+      this.config.set(
+        "rainMode",
+        this.config.get().rainMode === "auto" ? "manual" : "auto",
+      );
+      this.dependencies.onConfigChange({ kind: "config", key: "rainMode" });
+      return true;
+    }
+    if (selectedIndex === 1) {
       const previous = this.config.get().rainRows;
       this.config.set("rainRows", Math.max(1, Math.min(10, previous + direction)));
       if (this.config.get().rainRows === previous) return false;
       this.dependencies.onConfigChange({ kind: "config", key: "rainRows" });
       return true;
     }
-    if (selectedIndex === 1) {
+    if (selectedIndex === 2) {
       const previous = this.config.get().rainTickMs;
       this.config.set(
         "rainTickMs",
@@ -251,7 +259,7 @@ export class NeonStudioController {
       this.dependencies.onConfigChange({ kind: "config", key: "rainTickMs" });
       return true;
     }
-    if (selectedIndex === 2) {
+    if (selectedIndex === 3) {
       const previous = this.config.get().maxRainDrops;
       this.config.set(
         "maxRainDrops",

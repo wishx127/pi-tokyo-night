@@ -414,6 +414,41 @@ describe("public layout and lifecycle contract", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("auto rain follows Pi activity without clearing the visible frame", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    vi.spyOn(Math, "random").mockReturnValue(0.4);
+    const rainTui = { requestRender: vi.fn() };
+    const rain = fixture.widgets.get("tokyo-rain")(rainTui);
+    rain.render(80);
+
+    await vi.advanceTimersByTimeAsync(160);
+    const idleFrame = rain.render(80).join("\n");
+    expect(idleFrame).toContain("`");
+
+    await fixture.emit("agent_start", {}, fixture.ctx);
+    const activeFrame = rain.render(80).join("\n");
+    expect(activeFrame).toBe(idleFrame);
+    await vi.advanceTimersByTimeAsync(159);
+    expect(rain.render(80).join("\n")).toBe(activeFrame);
+    await vi.advanceTimersByTimeAsync(1);
+    const activeTickFrame = rain.render(80).join("\n");
+    expect(activeTickFrame).not.toBe(activeFrame);
+
+    await fixture.emit(
+      "tool_execution_start",
+      { toolCallId: "tool", toolName: "read", args: {} },
+      fixture.ctx,
+    );
+    await vi.advanceTimersByTimeAsync(129);
+    expect(rain.render(80).join("\n")).toBe(activeTickFrame);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(rain.render(80).join("\n")).not.toBe(activeTickFrame);
+
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
   it("lets working heartbeat renders carry rain frames without extra rain requests", async () => {
     vi.useFakeTimers();
     const fixture = makeFixture();
@@ -583,13 +618,18 @@ describe("public layout and lifecycle contract", () => {
     fixture.customComponent.handleInput("\t");
     fixture.customComponent.handleInput("\t");
     fixture.customComponent.handleInput("\t");
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\x1b[B");
     fixture.customComponent.handleInput("\x1b[B");
     fixture.customComponent.handleInput("\x1b[C");
     rainTui.requestRender.mockClear();
 
-    await vi.advanceTimersByTimeAsync(130);
+    await vi.advanceTimersByTimeAsync(160);
+    expect(rainTui.requestRender).toHaveBeenCalledOnce();
+    rainTui.requestRender.mockClear();
+    await vi.advanceTimersByTimeAsync(139);
     expect(rainTui.requestRender).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(10);
+    await vi.advanceTimersByTimeAsync(1);
     expect(rainTui.requestRender).toHaveBeenCalledOnce();
 
     fixture.customComponent.handleInput("\x1b");

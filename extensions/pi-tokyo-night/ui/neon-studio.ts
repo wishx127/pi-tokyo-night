@@ -201,22 +201,34 @@ export class NeonStudioComponent implements Component {
         },
       ];
     }
-    return [
+    const rainRows: StudioRow[] = [
+      {
+        label: "Rain Mode",
+        value: config.rainMode === "auto" ? "Auto" : "Manual",
+        description: config.rainMode === "auto"
+          ? "Follow Pi activity with automatic rain speed and density"
+          : "Use the saved Rain Tick and Max Rain Drops values",
+      },
       {
         label: "Rain Rows",
         value: String(config.rainRows),
         description: "Set the visible height of the rain panel",
       },
-      {
-        label: "Rain Tick (ms)",
-        value: String(config.rainTickMs),
-        description: "Set the interval between rain animation frames",
-      },
-      {
-        label: "Max Rain Drops",
-        value: String(config.maxRainDrops),
-        description: "Limit the number of simultaneous rain drops",
-      },
     ];
+    if (config.rainMode === "manual") {
+      rainRows.push(
+        {
+          label: "Rain Tick (ms)",
+          value: String(config.rainTickMs),
+          description: "Set the interval between rain animation frames",
+        },
+        {
+          label: "Max Rain Drops",
+          value: String(config.maxRainDrops),
+          description: "Limit the number of simultaneous rain drops",
+        },
+      );
+    }
+    return rainRows;
   }
 }

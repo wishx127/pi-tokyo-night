@@ -43,6 +43,7 @@ describe("TokyoConfigManager validation", () => {
       path.join(tempDir, "settings.json"),
       JSON.stringify({
         "pi-tokyo-night": {
+          rainMode: "auto",
           panel: "yes",
           codexQuota: 1,
           kimiQuota: "yes",
@@ -129,6 +130,16 @@ describe("TokyoConfigManager validation", () => {
       snapshot.rainRows = Infinity;
     }).toThrow();
     expect(manager.get()).toEqual(DEFAULT_CONFIG);
+  });
+
+  it("defaults new installs to auto rain mode and validates mode changes", () => {
+    const manager = new TokyoConfigManager();
+
+    expect(manager.get().rainMode).toBe("auto");
+    manager.set("rainMode", "manual");
+    expect(manager.get().rainMode).toBe("manual");
+    manager.set("rainMode", "adaptive" as unknown as "auto");
+    expect(manager.get().rainMode).toBe("auto");
   });
 
   it("keeps valid values through set()", () => {
@@ -228,6 +239,7 @@ describe("TokyoConfigManager persistence", () => {
 
     const expectedConfig = {
       ...DEFAULT_CONFIG,
+      rainMode: "manual",
       panel: false,
       iconMode: "ascii",
       statusModules: {
@@ -264,7 +276,11 @@ describe("TokyoConfigManager persistence", () => {
     manager.read();
 
     const configDirectory = path.join(tempDir, "extensions");
-    expect(manager.get()).toEqual({ ...DEFAULT_CONFIG, panel: false });
+    expect(manager.get()).toEqual({
+      ...DEFAULT_CONFIG,
+      rainMode: "manual",
+      panel: false,
+    });
     expect(
       fs.existsSync(path.join(configDirectory, "pi-tokyo-night.json")),
     ).toBe(false);
@@ -336,6 +352,39 @@ describe("TokyoConfigManager persistence", () => {
     expect(reader.get()).toEqual({ ...DEFAULT_CONFIG, kimiQuota: false });
   });
 
+  it("migrates existing dedicated configs without rainMode to manual", () => {
+    const configPath = path.join(
+      tempDir,
+      "extensions",
+      "pi-tokyo-night.json",
+    );
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({
+      panel: true,
+      rainTickMs: 240,
+      maxRainDrops: 40,
+    }));
+
+    const manager = new TokyoConfigManager();
+    manager.read();
+
+    expect(manager.get()).toMatchObject({
+      rainMode: "manual",
+      rainTickMs: 240,
+      maxRainDrops: 40,
+    });
+  });
+
+  it("persists explicit auto rain mode", () => {
+    const writer = new TokyoConfigManager();
+    writer.set("rainMode", "auto");
+    expect(writer.write()).toBe(true);
+
+    const reader = new TokyoConfigManager();
+    reader.read();
+    expect(reader.get().rainMode).toBe("auto");
+  });
+
   it("prefers the dedicated config over stale legacy settings", () => {
     const configPath = path.join(
       tempDir,
@@ -352,7 +401,11 @@ describe("TokyoConfigManager persistence", () => {
     const manager = new TokyoConfigManager();
     manager.read();
 
-    expect(manager.get()).toEqual({ ...DEFAULT_CONFIG, panel: false });
+    expect(manager.get()).toEqual({
+      ...DEFAULT_CONFIG,
+      rainMode: "manual",
+      panel: false,
+    });
   });
 
   it("loads partial status module visibility from the dedicated config", () => {
