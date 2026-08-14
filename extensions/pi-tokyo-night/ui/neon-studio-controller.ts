@@ -43,25 +43,22 @@ export interface NeonStudioControllerDependencies {
   previewTheme(choice: NeonStudioThemeChoice): NeonStudioThemeResult;
   saveTheme(choice: NeonStudioThemeChoice): NeonStudioThemeResult;
   initialThemeChoice?: NeonStudioThemeChoice;
-  initialThemeNeedsSave?: boolean;
+  persistedThemeChoice?: NeonStudioThemeChoice;
   done(): void;
 }
 
 /** Owns Neon Studio's live configuration and close-time persistence contract. */
 export class NeonStudioController {
   private closing = false;
-  private readonly initialTheme: NeonStudioThemeChoice;
-  private readonly initialThemeNeedsSave: boolean;
+  private readonly persistedTheme: NeonStudioThemeChoice | undefined;
   private selectedTheme: NeonStudioThemeChoice;
-  private themeChanged: boolean;
+  private themeChanged = false;
 
   constructor(
     private readonly dependencies: NeonStudioControllerDependencies,
   ) {
-    this.initialTheme = dependencies.initialThemeChoice ?? "automatic";
-    this.initialThemeNeedsSave = dependencies.initialThemeNeedsSave ?? false;
-    this.selectedTheme = this.initialTheme;
-    this.themeChanged = this.initialThemeNeedsSave;
+    this.persistedTheme = dependencies.persistedThemeChoice;
+    this.selectedTheme = dependencies.initialThemeChoice ?? "automatic";
   }
 
   get config(): TokyoConfigManager {
@@ -198,8 +195,7 @@ export class NeonStudioController {
         }
         if (result.success) {
           this.selectedTheme = next;
-          this.themeChanged = this.initialThemeNeedsSave ||
-            this.selectedTheme !== this.initialTheme;
+          this.themeChanged = this.selectedTheme !== this.persistedTheme;
           return true;
         }
         lastError = result.error;

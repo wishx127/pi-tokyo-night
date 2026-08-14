@@ -738,6 +738,68 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
+  it("shows a temporary active theme without persisting it on close", async () => {
+    const fixture = makeFixture("tui", "session-1", "tokyo-night-dark");
+    fixture.ui.theme = tokyoLightTheme;
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+
+    expect(fixture.customComponent.render(80).join("\n")).toContain(
+      "Theme: Tokyo Night Light",
+    );
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+
+    expect(fixture.writePiThemeSetting).not.toHaveBeenCalled();
+    expect(fixture.ui.setTheme).not.toHaveBeenCalled();
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("persists a temporary active theme after the user explicitly selects it", async () => {
+    const fixture = makeFixture("tui", "session-1", "tokyo-night-dark");
+    fixture.ui.theme = tokyoLightTheme;
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+
+    expect(fixture.ui.setTheme).toHaveBeenCalledOnce();
+    expect(fixture.ui.setTheme).toHaveBeenCalledWith("tokyo-night-light");
+    expect(fixture.writePiThemeSetting).not.toHaveBeenCalled();
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("shows Automatic when the saved theme is the Tokyo Night pair", async () => {
+    const fixture = makeFixture(
+      "tui",
+      "session-1",
+      TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
+    );
+    fixture.ui.theme = tokyoLightTheme;
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+
+    expect(fixture.customComponent.render(80).join("\n")).toContain(
+      "Theme: Automatic",
+    );
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+
+    expect(fixture.writePiThemeSetting).not.toHaveBeenCalled();
+    expect(fixture.ui.setTheme).not.toHaveBeenCalled();
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
   it("opens on the saved three-state theme without rewriting it", async () => {
     const fixture = makeFixture("tui", "session-1", "tokyo-night-light");
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
@@ -757,7 +819,7 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
-  it("persists the Automatic fallback when the saved theme is unrelated", async () => {
+  it("does not persist a fallback when the saved theme is unrelated", async () => {
     const fixture = makeFixture("tui", "session-1", "other-theme");
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
 
@@ -770,9 +832,7 @@ describe("public layout and lifecycle contract", () => {
     fixture.customComponent.handleInput("\x1b");
     await studio;
 
-    expect(fixture.writePiThemeSetting).toHaveBeenCalledWith(
-      TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
-    );
+    expect(fixture.writePiThemeSetting).not.toHaveBeenCalled();
     expect(fixture.ui.setTheme).not.toHaveBeenCalled();
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });

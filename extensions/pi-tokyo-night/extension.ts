@@ -827,16 +827,24 @@ export function registerTokyoNightExtension(
       const themeNameFor = (choice: "dark" | "light"): string =>
         choice === "dark" ? "tokyo-night-dark" : "tokyo-night-light";
       const configuredTheme = loadPiThemeSetting();
-      const initialThemeChoice: NeonStudioThemeChoice =
-        configuredTheme === "tokyo-night-dark"
+      const activeThemeChoice: NeonStudioThemeChoice | undefined =
+        ctx.ui.theme.name === "tokyo-night-dark"
           ? "dark"
-          : configuredTheme === "tokyo-night-light"
+          : ctx.ui.theme.name === "tokyo-night-light"
             ? "light"
-            : "automatic";
-      const initialThemeNeedsSave = configuredTheme !==
-        TOKYO_NIGHT_AUTOMATIC_THEME_SETTING &&
-        configuredTheme !== "tokyo-night-dark" &&
-        configuredTheme !== "tokyo-night-light";
+            : undefined;
+      const persistedThemeChoice: NeonStudioThemeChoice | undefined =
+        configuredTheme === TOKYO_NIGHT_AUTOMATIC_THEME_SETTING
+          ? "automatic"
+          : configuredTheme === "tokyo-night-dark"
+            ? "dark"
+            : configuredTheme === "tokyo-night-light"
+              ? "light"
+              : undefined;
+      const initialThemeChoice: NeonStudioThemeChoice =
+        persistedThemeChoice === "automatic"
+          ? "automatic"
+          : activeThemeChoice ?? persistedThemeChoice ?? "automatic";
       const previewThemes = {
         dark: ctx.ui.getTheme(themeNameFor("dark")),
         light: ctx.ui.getTheme(themeNameFor("light")),
@@ -906,7 +914,7 @@ export function registerTokyoNightExtension(
             previewTheme,
             saveTheme,
             initialThemeChoice,
-            initialThemeNeedsSave,
+            persistedThemeChoice,
             done: () => done(undefined),
           });
           activeNeonStudio = {
