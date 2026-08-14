@@ -87,6 +87,7 @@ function makeFixture(
     },
     getContextUsage: () => undefined,
     isIdle: vi.fn(() => true),
+    reload: vi.fn(async () => {}),
   } as any;
   let command: any;
   const pi = {
@@ -576,6 +577,24 @@ describe("public layout and lifecycle contract", () => {
     await studio;
   });
 
+  it("does not reload a stale session when shutdown saves Automatic", async () => {
+    const fixture = makeFixture("tui", "session-1", "tokyo-night-dark");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\r");
+
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+    await studio;
+
+    expect(fixture.writePiThemeSetting).toHaveBeenCalledWith(
+      TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
+    );
+    expect(fixture.ctx.reload).not.toHaveBeenCalled();
+  });
+
   it("stops Kimi polling when Studio previews Kimi Limit off", async () => {
     vi.useFakeTimers();
     vi.stubEnv("PI_CODING_AGENT_DIR", "/nonexistent/pi-tokyo-night-test");
@@ -754,6 +773,7 @@ describe("public layout and lifecycle contract", () => {
 
     expect(fixture.writePiThemeSetting).not.toHaveBeenCalled();
     expect(fixture.ui.setTheme).not.toHaveBeenCalled();
+    expect(fixture.ctx.reload).not.toHaveBeenCalled();
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
@@ -774,6 +794,7 @@ describe("public layout and lifecycle contract", () => {
     expect(fixture.ui.setTheme).toHaveBeenCalledOnce();
     expect(fixture.ui.setTheme).toHaveBeenCalledWith("tokyo-night-light");
     expect(fixture.writePiThemeSetting).not.toHaveBeenCalled();
+    expect(fixture.ctx.reload).not.toHaveBeenCalled();
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
@@ -837,7 +858,7 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
-  it("persists Automatic through the project-owned settings writer", async () => {
+  it("persists Automatic and reloads Pi settings", async () => {
     const fixture = makeFixture("tui", "session-1", "tokyo-night-dark");
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
 
@@ -856,9 +877,29 @@ describe("public layout and lifecycle contract", () => {
       TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
     );
     expect(fixture.ui.setTheme).not.toHaveBeenCalled();
+    expect(fixture.ctx.reload).toHaveBeenCalledOnce();
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("falls back to a restart notice when Automatic settings cannot reload", async () => {
+    const fixture = makeFixture("tui", "session-1", "tokyo-night-dark");
+    fixture.ctx.reload.mockRejectedValueOnce(new Error("reload failed"));
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+
+    expect(fixture.writePiThemeSetting).toHaveBeenCalledWith(
+      TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
+    );
+    expect(fixture.ctx.reload).toHaveBeenCalledOnce();
     expect(fixture.ui.notify).toHaveBeenCalledWith(
-      expect.stringContaining("Restart Pi"),
-      "info",
+      "Automatic Tokyo Night was saved, but Pi could not reload it. Restart Pi to apply it.",
+      "warning",
     );
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
@@ -882,9 +923,11 @@ describe("public layout and lifecycle contract", () => {
       "settings write failed",
       "error",
     );
+    expect(fixture.ctx.reload).not.toHaveBeenCalled();
 
     fixture.customComponent.handleInput("\x1b");
     await studio;
+    expect(fixture.ctx.reload).toHaveBeenCalledOnce();
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 

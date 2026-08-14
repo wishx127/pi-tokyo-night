@@ -1,6 +1,6 @@
 /** Tokyo Night Extension composition root. */
 
-import { getAgentDir, VERSION, type ExtensionAPI, type ExtensionContext, type ExtensionUIContext, type KeybindingsManager, type ReadonlyFooterDataProvider, type Theme } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, VERSION, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext, type ExtensionUIContext, type KeybindingsManager, type ReadonlyFooterDataProvider, type Theme } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import fs from "node:fs";
 import path from "node:path";
@@ -802,7 +802,7 @@ export function registerTokyoNightExtension(
 
   pi.registerCommand("tokyo-night", {
     description: "Open Neon Studio. Usage: /tokyo-night [on|off]",
-    handler: async (args: string, ctx: ExtensionContext) => {
+    handler: async (args: string, ctx: ExtensionCommandContext) => {
       const arg = args.trim().toLowerCase();
       if (arg === "on" || arg === "off") {
         configManager.set("panel", arg === "on");
@@ -860,6 +860,7 @@ export function registerTokyoNightExtension(
               error: `Theme ${themeNameFor(choice)} is not available.`,
             };
       };
+      let reloadThemeSettings = false;
       const saveTheme = (
         choice: NeonStudioThemeChoice,
       ): NeonStudioThemeResult => {
@@ -870,9 +871,10 @@ export function registerTokyoNightExtension(
           TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
         );
         if (result.success) {
+          reloadThemeSettings = true;
           try {
             ctx.ui.notify(
-              "Automatic Tokyo Night saved. Restart Pi to apply the terminal theme.",
+              "Automatic Tokyo Night saved. Reloading Pi settings.",
               "info",
             );
           } catch (error) {
@@ -939,6 +941,29 @@ export function registerTokyoNightExtension(
             }
           }
         }
+      }
+      if (reloadThemeSettings && isCurrent(studioSession)) {
+        try {
+          await ctx.reload();
+        } catch (error) {
+          if (!isStaleExtensionContextError(error)) {
+            handleExtensionError(error, "Automatic theme settings reload");
+            try {
+              ctx.ui.notify(
+                "Automatic Tokyo Night was saved, but Pi could not reload it. Restart Pi to apply it.",
+                "warning",
+              );
+            } catch (notifyError) {
+              if (!isStaleExtensionContextError(notifyError)) {
+                handleExtensionError(
+                  notifyError,
+                  "Automatic theme reload notification",
+                );
+              }
+            }
+          }
+        }
+        return;
       }
     },
   });
