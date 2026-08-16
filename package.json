@@ -38,6 +38,7 @@
     "!extensions/**/*.test.ts",
     "!extensions/**/*.spec.ts",
     "README.md",
+    "README.zh-CN.md",
     "assets/screenshot.png"
   ],
   "scripts": {

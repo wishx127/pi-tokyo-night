@@ -2,6 +2,12 @@
 
 A [pi](https://github.com/earendil-works/pi) theme + extension that brings the tokyo-night color scheme to your terminal, with a Powerline-style status bar and animated rain panel.
 
+[![npm version](https://img.shields.io/npm/v/%40wishx127%2Fpi-tokyo-night?logo=npm)](https://www.npmjs.com/package/@wishx127/pi-tokyo-night)
+[![npm downloads](https://img.shields.io/npm/dm/%40wishx127%2Fpi-tokyo-night?logo=npm)](https://www.npmjs.com/package/@wishx127/pi-tokyo-night)
+[![License](https://img.shields.io/npm/l/%40wishx127%2Fpi-tokyo-night)](LICENSE)
+
+[简体中文](README.zh-CN.md) · [npm](https://www.npmjs.com/package/@wishx127/pi-tokyo-night)
+
 <p>
   <img src="assets/screenshot.png" alt="pi-tokyo-night" width="1100">
 </p>
