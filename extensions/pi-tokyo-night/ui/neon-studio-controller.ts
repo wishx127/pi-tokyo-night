@@ -1,8 +1,11 @@
-import type {
-  StatusModulesConfig,
-  TokyoConfig,
-  TokyoConfigManager,
+import {
+  DEFAULT_CONFIG,
+  DEFAULT_STATUS_MODULES,
+  type StatusModulesConfig,
+  type TokyoConfig,
+  type TokyoConfigManager,
 } from "../core/config";
+import type { ExtensionErrorSink } from "../core/errors";
 
 export type NeonStudioSection = "appearance" | "status" | "usage" | "rain";
 export type NeonStudioThemeChoice = "automatic" | "dark" | "light";
@@ -36,8 +39,17 @@ export const NEON_STUDIO_STATUS_SETTINGS: ReadonlyArray<{
   { key: "context", label: "Context" },
 ];
 
+const CONFIG_SNAPSHOT_KEYS = Object.keys(DEFAULT_CONFIG).filter(
+  (key) => key !== "statusModules",
+) as Array<Exclude<keyof TokyoConfig, "statusModules">>;
+
+const STATUS_MODULE_KEYS = Object.keys(
+  DEFAULT_STATUS_MODULES,
+) as Array<keyof StatusModulesConfig>;
+
 export interface NeonStudioControllerDependencies {
   config: TokyoConfigManager;
+  errorSink: ExtensionErrorSink;
   notify(message: string, level: "info" | "warning" | "error"): void;
   onConfigChange(change: NeonStudioConfigChange): void;
   previewTheme(choice: NeonStudioThemeChoice): NeonStudioThemeResult;
@@ -50,6 +62,7 @@ export interface NeonStudioControllerDependencies {
 /** Owns Neon Studio's live configuration and close-time persistence contract. */
 export class NeonStudioController {
   private closing = false;
+  private readonly openingConfig: Readonly<TokyoConfig>;
   private readonly persistedTheme: NeonStudioThemeChoice | undefined;
   private selectedTheme: NeonStudioThemeChoice;
   private themeChanged = false;
@@ -57,6 +70,7 @@ export class NeonStudioController {
   constructor(
     private readonly dependencies: NeonStudioControllerDependencies,
   ) {
+    this.openingConfig = dependencies.config.get();
     this.persistedTheme = dependencies.persistedThemeChoice;
     this.selectedTheme = dependencies.initialThemeChoice ?? "automatic";
   }
@@ -107,13 +121,21 @@ export class NeonStudioController {
     return false;
   }
 
-  saveAndClose(force = false): boolean {
+  saveAndClose(): boolean {
+    return this.close(false);
+  }
+
+  forceClose(): void {
+    this.close(true);
+  }
+
+  private close(force: boolean): boolean {
     if (this.closing) return false;
 
     this.closing = true;
     let configSaved = false;
     try {
-      configSaved = this.config.write();
+      configSaved = this.config.write(this.dependencies.errorSink);
     } catch {
       configSaved = false;
     }
@@ -127,10 +149,11 @@ export class NeonStudioController {
         this.closing = false;
         return false;
       }
+      this.restoreOpeningConfig();
     }
 
     let themeResult: NeonStudioThemeResult = { success: true };
-    if (this.themeChanged) {
+    if (configSaved && this.themeChanged) {
       try {
         themeResult = this.dependencies.saveTheme(this.selectedTheme);
       } catch (error) {
@@ -160,6 +183,31 @@ export class NeonStudioController {
       return false;
     }
     return configSaved && themeResult.success;
+  }
+
+  private restoreOpeningConfig(): void {
+    const currentConfig = this.config.get();
+    const changedConfigKeys = CONFIG_SNAPSHOT_KEYS.filter(
+      (key) => currentConfig[key] !== this.openingConfig[key],
+    );
+    const changedStatusKeys = STATUS_MODULE_KEYS.filter(
+      (key) =>
+        currentConfig.statusModules[key] !== this.openingConfig.statusModules[key],
+    );
+
+    for (const key of CONFIG_SNAPSHOT_KEYS) {
+      this.config.set(key, this.openingConfig[key]);
+    }
+    for (const key of STATUS_MODULE_KEYS) {
+      this.config.setStatusModule(key, this.openingConfig.statusModules[key]);
+    }
+
+    for (const key of changedConfigKeys) {
+      this.dependencies.onConfigChange({ kind: "config", key });
+    }
+    for (const key of changedStatusKeys) {
+      this.dependencies.onConfigChange({ kind: "status", key });
+    }
   }
 
   private safeNotify(message: string): void {

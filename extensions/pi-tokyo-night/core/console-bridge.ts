@@ -2,6 +2,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
 import path from "node:path";
 import { format as formatConsoleArguments } from "node:util";
+import { EXT_PREFIX, type ExtensionErrorSink } from "./errors";
 
 export const TOKYO_NIGHT_LOG_FILE = "pi-tokyo-night.log";
 
@@ -24,6 +25,12 @@ type AppendLogLine = (filePath: string, line: string) => void;
 
 export interface ConsoleLogBridgeOptions {
   console?: ConsoleTarget;
+  logFilePath?: string;
+  appendLine?: AppendLogLine;
+  now?: () => Date;
+}
+
+export interface TokyoNightErrorSinkOptions {
   logFilePath?: string;
   appendLine?: AppendLogLine;
   now?: () => Date;
@@ -76,6 +83,25 @@ function appendLogLine(filePath: string, line: string): void {
 
 export async function flushConsoleLogWrites(): Promise<void> {
   await fileWriteTail;
+}
+
+export function createTokyoNightErrorSink(
+  options: TokyoNightErrorSinkOptions = {},
+): ExtensionErrorSink {
+  const writeLine = options.appendLine ?? appendLogLine;
+  const logFilePath = options.logFilePath ?? resolveLogFilePath();
+  const now = options.now ?? (() => new Date());
+
+  return (err, context): void => {
+    try {
+      writeLine(
+        logFilePath,
+        formatLogLine("ERROR", [`${EXT_PREFIX} ${context}:`, err], now),
+      );
+    } catch {
+      // Error reporting must never reintroduce terminal output or break the TUI.
+    }
+  };
 }
 
 function formatLogLine(

@@ -1,7 +1,7 @@
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import fs from "node:fs";
 import path from "node:path";
-import { handleExtensionError } from "./errors";
+import { handleExtensionError, type ExtensionErrorSink } from "./errors";
 import { DEFAULT_ICON_MODE, type IconMode } from "../ui/icons";
 
 const TOKYO_CONFIG_DIRECTORY = "extensions";
@@ -325,7 +325,7 @@ export class TokyoConfigManager {
   }
 
   /** Read the extension-owned config file. Falls back to defaults on error. */
-  read(): void {
+  read(errorSink: ExtensionErrorSink = handleExtensionError): void {
     try {
       const content = fs.readFileSync(getTokyoConfigPath(), "utf-8");
       const saved: unknown = JSON.parse(content);
@@ -335,15 +335,15 @@ export class TokyoConfigManager {
       this.config = buildConfig(saved);
     } catch (err) {
       if (isMissingFileError(err)) {
-        this.readLegacyAndMigrate();
+        this.readLegacyAndMigrate(errorSink);
         return;
       }
-      handleExtensionError(err, "readTokyoConfig");
+      errorSink(err, "readTokyoConfig");
       this.config = freezeConfig({ ...DEFAULT_CONFIG });
     }
   }
 
-  private readLegacyAndMigrate(): void {
+  private readLegacyAndMigrate(errorSink: ExtensionErrorSink): void {
     try {
       const settingsPath = path.join(getAgentDir(), "settings.json");
       const content = fs.readFileSync(settingsPath, "utf-8");
@@ -359,17 +359,26 @@ export class TokyoConfigManager {
       }
 
       this.config = buildConfig(saved);
-      this.write();
+      if (
+        !this.writeWithErrorContext("migrateLegacyTokyoConfig", errorSink)
+      ) return;
     } catch (err) {
       if (!isMissingFileError(err)) {
-        handleExtensionError(err, "migrateLegacyTokyoConfig");
+        errorSink(err, "migrateLegacyTokyoConfig");
       }
       this.config = freezeConfig({ ...DEFAULT_CONFIG });
     }
   }
 
   /** Persist current config to the extension-owned config file. */
-  write(): boolean {
+  write(errorSink: ExtensionErrorSink = handleExtensionError): boolean {
+    return this.writeWithErrorContext("writeTokyoConfig", errorSink);
+  }
+
+  private writeWithErrorContext(
+    errorContext: string,
+    errorSink: ExtensionErrorSink,
+  ): boolean {
     let temporaryPath: string | undefined;
     try {
       const configPath = getTokyoConfigPath();
@@ -394,7 +403,7 @@ export class TokyoConfigManager {
           // Best-effort cleanup must not mask the persistence error.
         }
       }
-      handleExtensionError(err, "writeTokyoConfig");
+      errorSink(err, errorContext);
       return false;
     }
   }

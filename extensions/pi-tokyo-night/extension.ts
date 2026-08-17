@@ -6,8 +6,16 @@ import fs from "node:fs";
 import path from "node:path";
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { TokyoConfigManager } from "./core/config";
-import { installConsoleLogBridge } from "./core/console-bridge";
-import { EXT_PREFIX, handleExtensionError, isStaleExtensionContextError } from "./core/errors";
+import {
+  createTokyoNightErrorSink,
+  installConsoleLogBridge,
+} from "./core/console-bridge";
+import {
+  EXT_PREFIX,
+  handleExtensionError,
+  isStaleExtensionContextError,
+  type ExtensionErrorSink,
+} from "./core/errors";
 import {
   evaluatePiCompatibility,
   isFullscreenTui,
@@ -208,11 +216,13 @@ export function registerTokyoNightExtension(
     installConsoleLogBridge?: typeof installConsoleLogBridge;
     readPiThemeSetting?: typeof readPiThemeSetting;
     writePiThemeSetting?: typeof writePiThemeSetting;
+    errorSink?: ExtensionErrorSink;
   } = {},
 ): void {
   const configManager = new TokyoConfigManager();
   const codexUsageStore = createCodexUsageStore();
   const consoleLogBridge = (dependencies.installConsoleLogBridge ?? installConsoleLogBridge)();
+  const errorSink = dependencies.errorSink ?? createTokyoNightErrorSink();
   const sessionsByIdentity = new Map<string, SessionState>();
   let activeSession: SessionState | null = null;
   let activeNeonStudio: {
@@ -524,7 +534,7 @@ export function registerTokyoNightExtension(
       const studio = activeNeonStudio;
       activeNeonStudio = null;
       try {
-        studio.controller.saveAndClose(true);
+        studio.controller.forceClose();
       } catch (error) {
         if (!isStaleExtensionContextError(error)) {
           handleExtensionError(error, "Neon Studio teardown");
@@ -776,7 +786,7 @@ export function registerTokyoNightExtension(
     };
     activeSession = session;
     sessionsByIdentity.set(identityKey, session);
-    configManager.read();
+    configManager.read(errorSink);
     activeModel = ctx.model;
     modelRegistry = ctx.modelRegistry;
     codexUsageStore.clearSnapshot();
@@ -805,8 +815,15 @@ export function registerTokyoNightExtension(
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const arg = args.trim().toLowerCase();
       if (arg === "on" || arg === "off") {
+        const previousPanel = configManager.get().panel;
         configManager.set("panel", arg === "on");
-        configManager.write();
+        if (!configManager.write(errorSink)) {
+          configManager.set("panel", previousPanel);
+          if (ctx.hasUI) {
+            ctx.ui.notify("Could not save Tokyo Night panel settings.", "error");
+          }
+          return;
+        }
         if (!isInteractive(ctx) || !activeSession) return;
         applyPanelState(activeSession);
         ctx.ui.notify(`Tokyo Night panel ${arg}`, "info");
@@ -889,6 +906,7 @@ export function registerTokyoNightExtension(
         await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
           studioController = new NeonStudioController({
             config: configManager,
+            errorSink,
             notify: (message, level) => ctx.ui.notify(message, level),
             onConfigChange: (change: NeonStudioConfigChange) => {
               if (!isCurrent(studioSession)) return;
@@ -932,7 +950,7 @@ export function registerTokyoNightExtension(
           const studio = activeNeonStudio;
           activeNeonStudio = null;
           try {
-            studio.controller.saveAndClose(true);
+            studio.controller.forceClose();
           } catch (error) {
             if (!isStaleExtensionContextError(error)) {
               handleExtensionError(error, "Neon Studio close");

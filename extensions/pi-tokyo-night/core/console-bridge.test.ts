@@ -13,6 +13,7 @@ import * as PiTui from "@earendil-works/pi-tui";
 import type { TUI } from "@earendil-works/pi-tui";
 import {
   createConsoleLogBridge,
+  createTokyoNightErrorSink,
   flushConsoleLogWrites,
   getTokyoNightLogPath,
   installConsoleLogBridge,
@@ -82,6 +83,29 @@ describe("Tokyo Night TUI console bridge", () => {
     expect(getTokyoNightLogPath("/home/test/.pi/agent")).toBe(
       path.join("/home/test/.pi/agent", "pi-tokyo-night.log"),
     );
+  });
+
+  it("writes injected errors directly to the Tokyo Night log without using console", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "pi-tokyo-night-error-sink-"));
+    const logPath = path.join(tempRoot, "agent", "pi-tokyo-night.log");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const sink = createTokyoNightErrorSink({
+      logFilePath: logPath,
+      now: () => new Date("2026-04-01T12:34:56.000Z"),
+    });
+
+    try {
+      sink(new Error("rename failed"), "migrateLegacyTokyoConfig");
+      await flushConsoleLogWrites();
+
+      const content = await readFile(logPath, "utf8");
+      expect(content).toContain(
+        "[2026-04-01T12:34:56.000Z] ERROR [pi-tokyo-night] migrateLegacyTokyoConfig: Error: rename failed",
+      );
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("captures warnings and errors in interactive mode without forwarding them", () => {

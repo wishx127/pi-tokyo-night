@@ -1,6 +1,8 @@
 /** Unified log prefix for all extension error messages. */
 export const EXT_PREFIX = "[pi-tokyo-night]";
 
+export type ExtensionErrorSink = (err: unknown, context: string) => void;
+
 /** Check whether an error is caused by a stale extension context.
  *  Pi marks contexts as stale after session switch/reload; calling methods on
  *  a stale context throws. We detect this and degrade gracefully. */

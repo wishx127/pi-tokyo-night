@@ -30,6 +30,7 @@ function makeStudio(options: {
   } as unknown as TUI;
   const done = vi.fn();
   const notify = vi.fn();
+  const errorSink = vi.fn();
   const onConfigChange = vi.fn();
   const previewTheme = vi.fn(
     (_choice: NeonStudioThemeChoice): NeonStudioThemeResult => ({ success: true }),
@@ -38,6 +39,7 @@ function makeStudio(options: {
   const controller = new NeonStudioController({
     config,
     notify,
+    errorSink,
     done,
     onConfigChange,
     previewTheme,
@@ -53,6 +55,7 @@ function makeStudio(options: {
     write,
     done,
     notify,
+    errorSink,
     onConfigChange,
     previewTheme,
     saveTheme,
@@ -63,7 +66,40 @@ function makeStudio(options: {
 }
 
 describe("NeonStudioComponent", () => {
-  it("force-closes during shutdown even when persistence and notification fail", () => {
+  it("force-closes after a failed save and reapplies changed runtime settings from the opening snapshot", () => {
+    const { config, controller, done, onConfigChange, write } = makeStudio();
+    const openingConfig = config.get();
+    const restoredEvents: Array<{ change: unknown; snapshot: unknown }> = [];
+    onConfigChange.mockImplementation((change) => {
+      restoredEvents.push({ change, snapshot: config.get() });
+    });
+
+    controller.changeSetting("appearance", 1);
+    controller.changeSetting("status", 0);
+    controller.changeSetting("rain", 0);
+    controller.changeSetting("rain", 1);
+    expect(config.get()).not.toEqual(openingConfig);
+    onConfigChange.mockClear();
+    restoredEvents.length = 0;
+
+    write.mockReturnValue(false);
+
+    controller.forceClose();
+
+    expect(done).toHaveBeenCalledOnce();
+    expect(config.get()).toEqual(openingConfig);
+    expect(restoredEvents.map(({ change }) => change)).toEqual([
+      { kind: "config", key: "panel" },
+      { kind: "config", key: "rainMode" },
+      { kind: "config", key: "rainRows" },
+      { kind: "status", key: "model" },
+    ]);
+    for (const { snapshot } of restoredEvents) {
+      expect(snapshot).toEqual(openingConfig);
+    }
+  });
+
+  it("force-closes during shutdown without saving the theme when config persistence fails", () => {
     const { controller, done, notify, saveTheme, studio, write } = makeStudio();
     studio.handleInput("\r");
     write.mockReturnValue(false);
@@ -74,18 +110,23 @@ describe("NeonStudioComponent", () => {
       throw new Error("stale notify");
     });
 
-    expect(() => controller.saveAndClose(true)).not.toThrow();
+    expect(() => controller.forceClose()).not.toThrow();
 
-    expect(saveTheme).toHaveBeenCalledWith("dark");
+    expect(saveTheme).not.toHaveBeenCalled();
     expect(done).toHaveBeenCalledOnce();
   });
 
   it("stays open when Escape cannot persist the configuration", () => {
-    const { done, notify, studio, tui, write } = makeStudio();
-    write.mockReturnValue(false);
+    const { done, errorSink, notify, studio, tui, write } = makeStudio();
+    write.mockImplementationOnce((sink) => {
+      expect(sink).toBe(errorSink);
+      sink!(new Error("rename failed"), "writeTokyoConfig");
+      return false;
+    });
 
     studio.handleInput("\x1b");
 
+    expect(errorSink).toHaveBeenCalledOnce();
     expect(done).not.toHaveBeenCalled();
     expect(notify).toHaveBeenCalledWith(
       "Could not save Tokyo Night settings. Neon Studio remains open.",

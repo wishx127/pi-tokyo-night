@@ -290,7 +290,34 @@ describe("TokyoConfigManager persistence", () => {
     expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toEqual(
       legacySettings,
     );
-    expect(error).toHaveBeenCalled();
+    expect(error).toHaveBeenCalledOnce();
+    expect(error).toHaveBeenCalledWith(
+      "[pi-tokyo-night] migrateLegacyTokyoConfig:",
+      expect.objectContaining({ message: "rename failed" }),
+    );
+  });
+
+  it("reports migration persistence failures through an injected sink exactly once", () => {
+    const settingsPath = path.join(tempDir, "settings.json");
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({ "pi-tokyo-night": { panel: false } }),
+    );
+    vi.spyOn(fs, "renameSync").mockImplementation(() => {
+      throw new Error("rename failed");
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const sink = vi.fn();
+
+    const manager = new TokyoConfigManager();
+    manager.read(sink);
+
+    expect(sink).toHaveBeenCalledOnce();
+    expect(sink).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "rename failed" }),
+      "migrateLegacyTokyoConfig",
+    );
+    expect(consoleError).not.toHaveBeenCalled();
   });
 
   it("silently falls back to defaults when both config sources are missing", () => {
@@ -535,6 +562,24 @@ describe("TokyoConfigManager persistence", () => {
         value: originalPlatform,
       });
     }
+  });
+
+  it("reports write failures through an injected sink without using console", () => {
+    const manager = new TokyoConfigManager();
+    manager.set("panel", false);
+    vi.spyOn(fs, "renameSync").mockImplementation(() => {
+      throw new Error("rename failed");
+    });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const sink = vi.fn();
+
+    expect(manager.write(sink)).toBe(false);
+    expect(sink).toHaveBeenCalledOnce();
+    expect(sink).toHaveBeenCalledWith(
+      expect.objectContaining({ message: "rename failed" }),
+      "writeTokyoConfig",
+    );
+    expect(consoleError).not.toHaveBeenCalled();
   });
 
   it("returns false and preserves the original file when atomic rename fails", () => {

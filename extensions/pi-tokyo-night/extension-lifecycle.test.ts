@@ -108,12 +108,14 @@ function makeFixture(
       return { success: true };
     },
   );
+  const errorSink = vi.fn();
   extension(pi, {
     readPiThemeSetting,
     writePiThemeSetting,
+    errorSink,
   });
   return {
-    ui, ctx, pi, widgets, readPiThemeSetting, writePiThemeSetting,
+    ui, ctx, pi, widgets, readPiThemeSetting, writePiThemeSetting, errorSink,
     get editorFactory() { return editorFactory; },
     get footerFactory() { return footerFactory; },
     get customComponent() { return customComponent; },
@@ -950,6 +952,80 @@ describe("public layout and lifecycle contract", () => {
     expect(vi.mocked(TokyoConfigManager.prototype.write)).toHaveBeenCalledOnce();
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
+
+  it("keeps the panel running when /tokyo-night off cannot be persisted", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const rainTui = { requestRender: vi.fn() };
+    const rain = fixture.widgets.get("tokyo-rain")(rainTui);
+    expect(rain.render(40).length).toBeGreaterThan(0);
+    rainTui.requestRender.mockClear();
+
+    vi.mocked(TokyoConfigManager.prototype.write).mockReturnValue(false);
+    await fixture.command.handler("off", fixture.ctx);
+    await vi.advanceTimersByTimeAsync(160);
+
+    expect(rain.render(40).length).toBeGreaterThan(0);
+    expect(rainTui.requestRender).toHaveBeenCalled();
+    expect(fixture.ui.notify).toHaveBeenCalledWith(
+      "Could not save Tokyo Night panel settings.",
+      "error",
+    );
+    expect(fixture.ui.notify).not.toHaveBeenCalledWith(
+      "Tokyo Night panel off",
+      "info",
+    );
+
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("reports a panel persistence failure through Pi UI in RPC mode", async () => {
+    const fixture = makeFixture("rpc");
+    vi.mocked(TokyoConfigManager.prototype.write).mockImplementationOnce(
+      (errorSink) => {
+        expect(errorSink).toBe(fixture.errorSink);
+        errorSink!(new Error("rename failed"), "writeTokyoConfig");
+        return false;
+      },
+    );
+
+    await fixture.command.handler("off", fixture.ctx);
+
+    expect(fixture.errorSink).toHaveBeenCalledOnce();
+    expect(fixture.ui.notify).toHaveBeenCalledWith(
+      "Could not save Tokyo Night panel settings.",
+      "error",
+    );
+  });
+
+  it.each(["json", "print"] as const)(
+    "keeps a panel persistence failure silent in %s mode",
+    async (mode) => {
+      const fixture = makeFixture(mode);
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      vi.mocked(TokyoConfigManager.prototype.write).mockImplementationOnce(
+        (errorSink) => {
+          expect(errorSink).toBe(fixture.errorSink);
+          errorSink!(new Error("rename failed"), "writeTokyoConfig");
+          return false;
+        },
+      );
+
+      await expect(
+        fixture.command.handler("off", fixture.ctx),
+      ).resolves.toBeUndefined();
+
+      expect(fixture.errorSink).toHaveBeenCalledOnce();
+      expect(fixture.ui.notify).not.toHaveBeenCalled();
+      expect(log).not.toHaveBeenCalled();
+      expect(error).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    },
+  );
 
   it("does not write protocol-breaking text outside TUI mode", async () => {
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
