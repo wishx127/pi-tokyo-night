@@ -858,7 +858,7 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
-  it("persists Automatic and reloads Pi settings", async () => {
+  it("persists Automatic without reloading Pi settings", async () => {
     const fixture = makeFixture("tui", "session-1", "tokyo-night-dark");
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
 
@@ -877,29 +877,10 @@ describe("public layout and lifecycle contract", () => {
       TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
     );
     expect(fixture.ui.setTheme).not.toHaveBeenCalled();
-    expect(fixture.ctx.reload).toHaveBeenCalledOnce();
-    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
-  });
-
-  it("falls back to a restart notice when Automatic settings cannot reload", async () => {
-    const fixture = makeFixture("tui", "session-1", "tokyo-night-dark");
-    fixture.ctx.reload.mockRejectedValueOnce(new Error("reload failed"));
-    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
-
-    const studio = fixture.command.handler("", fixture.ctx);
-    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
-    fixture.customComponent.handleInput("\r");
-    fixture.customComponent.handleInput("\r");
-    fixture.customComponent.handleInput("\x1b");
-    await studio;
-
-    expect(fixture.writePiThemeSetting).toHaveBeenCalledWith(
-      TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
-    );
-    expect(fixture.ctx.reload).toHaveBeenCalledOnce();
+    expect(fixture.ctx.reload).not.toHaveBeenCalled();
     expect(fixture.ui.notify).toHaveBeenCalledWith(
-      "Automatic Tokyo Night was saved, but Pi could not reload it. Restart Pi to apply it.",
-      "warning",
+      "Automatic Tokyo Night saved. Restart Pi to apply the terminal theme.",
+      "info",
     );
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
@@ -927,7 +908,8 @@ describe("public layout and lifecycle contract", () => {
 
     fixture.customComponent.handleInput("\x1b");
     await studio;
-    expect(fixture.ctx.reload).toHaveBeenCalledOnce();
+    expect(fixture.writePiThemeSetting).toHaveBeenCalledTimes(2);
+    expect(fixture.ctx.reload).not.toHaveBeenCalled();
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 

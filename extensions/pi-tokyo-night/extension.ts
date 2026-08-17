@@ -860,7 +860,6 @@ export function registerTokyoNightExtension(
               error: `Theme ${themeNameFor(choice)} is not available.`,
             };
       };
-      let reloadThemeSettings = false;
       const saveTheme = (
         choice: NeonStudioThemeChoice,
       ): NeonStudioThemeResult => {
@@ -871,10 +870,9 @@ export function registerTokyoNightExtension(
           TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
         );
         if (result.success) {
-          reloadThemeSettings = true;
           try {
             ctx.ui.notify(
-              "Automatic Tokyo Night saved. Reloading Pi settings.",
+              "Automatic Tokyo Night saved. Restart Pi to apply the terminal theme.",
               "info",
             );
           } catch (error) {
@@ -941,29 +939,6 @@ export function registerTokyoNightExtension(
             }
           }
         }
-      }
-      if (reloadThemeSettings && isCurrent(studioSession)) {
-        try {
-          await ctx.reload();
-        } catch (error) {
-          if (!isStaleExtensionContextError(error)) {
-            handleExtensionError(error, "Automatic theme settings reload");
-            try {
-              ctx.ui.notify(
-                "Automatic Tokyo Night was saved, but Pi could not reload it. Restart Pi to apply it.",
-                "warning",
-              );
-            } catch (notifyError) {
-              if (!isStaleExtensionContextError(notifyError)) {
-                handleExtensionError(
-                  notifyError,
-                  "Automatic theme reload notification",
-                );
-              }
-            }
-          }
-        }
-        return;
       }
     },
   });
