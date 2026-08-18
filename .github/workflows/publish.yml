@@ -55,6 +55,52 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
       - run: npm ci
+      - name: Verify release metadata and Gallery media
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          test "$GITHUB_REF_NAME" = "v$version"
+          git ls-files --error-unmatch assets/showcase.mp4 assets/thumbnail.png >/dev/null
+          video_codec="$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 assets/showcase.mp4)" || exit 1
+          audio_streams="$(ffprobe -v error -select_streams a -show_entries stream=index -of csv=p=0 assets/showcase.mp4)" || exit 1
+          test "$video_codec" = "h264"
+          test -z "$audio_streams"
+          python - <<'PY'
+          from pathlib import Path
+
+          data = Path("assets/showcase.mp4").read_bytes()
+          boxes = {}
+          offset = 0
+          while offset + 8 <= len(data):
+              size = int.from_bytes(data[offset:offset + 4], "big")
+              box_type = data[offset + 4:offset + 8]
+              header_size = 8
+              if size == 1:
+                  if offset + 16 > len(data):
+                      raise SystemExit("Invalid extended MP4 box header")
+                  size = int.from_bytes(data[offset + 8:offset + 16], "big")
+                  header_size = 16
+              elif size == 0:
+                  size = len(data) - offset
+              if size < header_size or offset + size > len(data):
+                  raise SystemExit("Invalid MP4 box size")
+              boxes.setdefault(box_type, offset)
+              offset += size
+
+          if b"moov" not in boxes or b"mdat" not in boxes or boxes[b"moov"] >= boxes[b"mdat"]:
+              raise SystemExit("Gallery video must enable faststart")
+          PY
+
+          video_url="$(node -p "require('./package.json').pi.video")"
+          image_url="$(node -p "require('./package.json').pi.image")"
+          media_root="https://raw.githubusercontent.com/wishx127/pi-tokyo-night/main/assets"
+          test "$video_url" = "$media_root/showcase.mp4"
+          test "$image_url" = "$media_root/thumbnail.png"
+          for url in "$video_url" "$image_url"; do
+            curl --fail --silent --show-error --location \
+              --retry 5 --retry-all-errors --retry-delay 2 \
+              --head "$url" >/dev/null
+          done
       - run: npm pack --dry-run
       - run: npm publish --provenance --access public
         env:

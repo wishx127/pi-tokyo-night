@@ -1,6 +1,6 @@
 # pi-tokyo-night
 
-一个适用于 [pi](https://github.com/earendil-works/pi) 的 Tokyo Night 主题与扩展，为终端带来 Tokyo Night 配色、Powerline 风格状态栏和动态雨景面板。
+一个为 [Pi](https://github.com/earendil-works/pi) 打造的动态 Tokyo Night 主题与扩展，通过自适应雨景、Powerline 状态栏、可切换的主题和实时设置，把东京夜色带进终端。
 
 [![npm 版本](https://img.shields.io/npm/v/%40wishx127%2Fpi-tokyo-night?logo=npm)](https://www.npmjs.com/package/@wishx127/pi-tokyo-night)
 [![npm 下载量](https://img.shields.io/npm/dm/%40wishx127%2Fpi-tokyo-night?logo=npm)](https://www.npmjs.com/package/@wishx127/pi-tokyo-night)
@@ -12,29 +12,27 @@
   <img src="assets/screenshot.png" alt="pi-tokyo-night" width="1100">
 </p>
 
-## ✨ 功能
-
-**Tokyo Night 主题** —— 为 pi TUI 提供完整配色，覆盖编辑器、消息、语法高亮、差异视图、工具输出和 Markdown 渲染。
-
-**Powerline 状态栏** —— 左侧为紫色渐变区域，显示模型、思考等级、路径和 Git 分支；右侧显示 tokens、费用和上下文进度条。
-
-**动态雨景面板** —— 编辑器上方的 Tokyo 夜空，包含缓缓飘落的青色雨滴、新月和紫色星星，可在运行时切换开关。
-
-**无边框编辑器** —— 编辑器可渲染在可选的圆角卡片边框内，并配有发光的紫色提示符箭头。
-
-**Neon Studio** —— 分组且非覆盖式的设置中心，支持主题选择，并可实时调整边框、雨景、配额、图标和状态模块。
-
 ## 📦 安装
 
 ```bash
 pi install npm:@wishx127/pi-tokyo-night
 ```
 
-重启 pi 以启用主题和扩展。
+重启 Pi，然后打开 `/tokyo-night` 选择深色、浅色或自动主题，并自定义界面。
+
+## ✨ 亮点
+
+**Tokyo Night 主题与扩展** —— 为 Pi 提供完整深浅色配色，并加入带外框编辑器和随活动变化的工作指示器。
+
+**自适应动态雨景** —— 青色雨滴、新月和紫色星星组成东京夜空，雨速与密度会随 Pi 活动变化。
+
+**Powerline 状态栏** —— 一眼查看模型、思考等级、路径、Git 分支、提供商限额、Tokens、费用和上下文进度。
+
+**Neon Studio** —— 使用 `/tokyo-night` 实时预览深色和浅色主题、配置下次启动 Pi 时使用的自动切换，并调整外框、雨景、配额、图标和状态模块。
 
 ## 🛠 使用
 
-安装后会自动启用。使用 `/tokyo-night` 控制扩展：
+重启 Pi 后扩展会自动加载。使用 `/tokyo-night` 控制扩展：
 
 ```
 /tokyo-night          # 打开 Neon Studio
