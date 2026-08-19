@@ -1,6 +1,6 @@
 # pi-tokyo-night
 
-An animated [Pi](https://github.com/earendil-works/pi) theme + extension that brings Tokyo Night to your terminal with adaptive rain, a Powerline status bar, switchable themes, and live customization.
+An animated [Pi](https://github.com/earendil-works/pi) theme + extension that brings Tokyo Night to your terminal with dynamic rain, a Powerline status bar, switchable themes, and live customization.
 
 [![npm version](https://img.shields.io/npm/v/%40wishx127%2Fpi-tokyo-night?logo=npm)](https://www.npmjs.com/package/@wishx127/pi-tokyo-night)
 [![npm downloads](https://img.shields.io/npm/dm/%40wishx127%2Fpi-tokyo-night?logo=npm)](https://www.npmjs.com/package/@wishx127/pi-tokyo-night)
@@ -24,7 +24,7 @@ Restart Pi, then open `/tokyo-night` to choose Dark, Light, or Automatic and cus
 
 **Tokyo Night theme + extension** — Complete dark/light colors for Pi plus a framed editor and an activity-aware working indicator.
 
-**Adaptive rain panel** — Cyan rain, a crescent moon, and purple stars form a Tokyo night sky whose speed and density respond to Pi activity.
+**Animated rain panel** — Cyan raindrops drift beneath a crescent moon and purple stars, with speed and density responding to Pi activity.
 
 **Powerline status bar** — See the model, thinking level, path, Git branch, provider limits, tokens, cost, and context progress at a glance.
 

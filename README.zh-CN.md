@@ -1,6 +1,6 @@
 # pi-tokyo-night
 
-一个为 [Pi](https://github.com/earendil-works/pi) 打造的动态 Tokyo Night 主题与扩展，通过自适应雨景、Powerline 状态栏、可切换的主题和实时设置，把东京夜色带进终端。
+一个为 [Pi](https://github.com/earendil-works/pi) 打造的动态 Tokyo Night 主题与扩展，通过动态雨景、Powerline 状态栏、可切换的主题和实时设置，把东京夜色带进终端。
 
 [![npm 版本](https://img.shields.io/npm/v/%40wishx127%2Fpi-tokyo-night?logo=npm)](https://www.npmjs.com/package/@wishx127/pi-tokyo-night)
 [![npm 下载量](https://img.shields.io/npm/dm/%40wishx127%2Fpi-tokyo-night?logo=npm)](https://www.npmjs.com/package/@wishx127/pi-tokyo-night)
@@ -24,7 +24,7 @@ pi install npm:@wishx127/pi-tokyo-night
 
 **Tokyo Night 主题与扩展** —— 为 Pi 提供完整深浅色配色，并加入带外框编辑器和随活动变化的工作指示器。
 
-**自适应动态雨景** —— 青色雨滴、新月和紫色星星组成东京夜空，雨速与密度会随 Pi 活动变化。
+**动态雨景面板** —— 青色雨滴在新月和紫色星星下飘落，雨速与密度会随 Pi 活动变化。
 
 **Powerline 状态栏** —— 一眼查看模型、思考等级、路径、Git 分支、提供商限额、Tokens、费用和上下文进度。
 
