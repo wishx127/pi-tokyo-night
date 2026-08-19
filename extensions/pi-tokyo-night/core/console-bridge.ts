@@ -5,7 +5,9 @@ import { format as formatConsoleArguments } from "node:util";
 import { EXT_PREFIX, type ExtensionErrorSink } from "./errors";
 
 export const TOKYO_NIGHT_LOG_FILE = "pi-tokyo-night.log";
+export const TOKYO_NIGHT_LOG_MAX_BYTES = 1024 * 1024;
 
+const TOKYO_NIGHT_LOG_RETAIN_BYTES = TOKYO_NIGHT_LOG_MAX_BYTES / 2;
 const GLOBAL_BRIDGE_KEY = Symbol.for("pi-tokyo-night.console-log-bridge");
 
 const CONSOLE_METHODS = [
@@ -61,6 +63,99 @@ function resolveLogFilePath(): string {
   return getTokyoNightLogPath();
 }
 
+function truncateUtf8ToBytes(value: string, maxBytes: number): string {
+  if (maxBytes <= 0) return "";
+  const buffer = Buffer.from(value, "utf8");
+  if (buffer.byteLength <= maxBytes) return value;
+
+  let end = maxBytes;
+  while (end > 0 && (buffer[end] & 0xc0) === 0x80) end -= 1;
+  return buffer.subarray(0, end).toString("utf8");
+}
+
+function limitLogEntry(line: string, maxBytes: number): string {
+  if (Buffer.byteLength(line, "utf8") <= maxBytes) return line;
+  const marker = `\n${EXT_PREFIX} log entry truncated to fit the 1 MiB limit.\n`;
+  const markerBytes = Buffer.byteLength(marker, "utf8");
+  return `${truncateUtf8ToBytes(line, Math.max(0, maxBytes - markerBytes))}${marker}`;
+}
+
+async function readRecentLogTail(filePath: string): Promise<string> {
+  let file: fs.promises.FileHandle | undefined;
+  try {
+    const stats = await fs.promises.stat(filePath);
+    const bytesToRead = Math.min(stats.size, TOKYO_NIGHT_LOG_RETAIN_BYTES);
+    if (bytesToRead === 0) return "";
+
+    const tailStart = stats.size - bytesToRead;
+    const boundaryProbeBytes = tailStart > 0 ? 1 : 0;
+    const buffer = Buffer.allocUnsafe(bytesToRead + boundaryProbeBytes);
+    file = await fs.promises.open(filePath, "r");
+    const { bytesRead } = await file.read(
+      buffer,
+      0,
+      buffer.byteLength,
+      tailStart - boundaryProbeBytes,
+    );
+    let retainedBytes = buffer.subarray(boundaryProbeBytes, bytesRead);
+    if (boundaryProbeBytes > 0 && buffer[0] !== 0x0a) {
+      const firstCompleteLine = retainedBytes.indexOf(0x0a);
+      retainedBytes = firstCompleteLine >= 0
+        ? retainedBytes.subarray(firstCompleteLine + 1)
+        : Buffer.alloc(0);
+    }
+    return truncateUtf8ToBytes(
+      retainedBytes.toString("utf8"),
+      TOKYO_NIGHT_LOG_RETAIN_BYTES,
+    );
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+    throw error;
+  } finally {
+    await file?.close();
+  }
+}
+
+async function replaceLogFile(filePath: string, content: string): Promise<void> {
+  const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    await fs.promises.writeFile(temporaryPath, content, "utf8");
+    await fs.promises.rename(temporaryPath, filePath);
+  } finally {
+    try {
+      await fs.promises.unlink(temporaryPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+}
+
+async function appendBoundedLogLine(filePath: string, line: string): Promise<void> {
+  let currentSize = 0;
+  try {
+    currentSize = (await fs.promises.stat(filePath)).size;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+
+  if (currentSize + Buffer.byteLength(line, "utf8") <= TOKYO_NIGHT_LOG_MAX_BYTES) {
+    await fs.promises.appendFile(filePath, line, "utf8");
+    return;
+  }
+
+  let retained = await readRecentLogTail(filePath);
+  if (retained && !retained.endsWith("\n")) retained += "\n";
+  const trimMarker = `[${new Date().toISOString()}] WARN ${EXT_PREFIX} log limit reached; discarded oldest log entries.\n`;
+  const availableEntryBytes = Math.max(
+    0,
+    TOKYO_NIGHT_LOG_MAX_BYTES -
+      Buffer.byteLength(retained, "utf8") -
+      Buffer.byteLength(trimMarker, "utf8"),
+  );
+  const boundedLine = limitLogEntry(line, availableEntryBytes);
+  await replaceLogFile(filePath, `${retained}${trimMarker}${boundedLine}`);
+}
+
 function appendLogLine(filePath: string, line: string): void {
   if (disabledLogFiles.has(filePath)) return;
 
@@ -72,7 +167,7 @@ function appendLogLine(filePath: string, line: string): void {
         await fs.promises.mkdir(directory, { recursive: true });
         preparedLogDirectories.add(directory);
       }
-      await fs.promises.appendFile(filePath, line, "utf8");
+      await appendBoundedLogLine(filePath, line);
     })
     .catch(() => {
       // Disable a failing sink for the rest of this process. Never fall back

@@ -22,6 +22,11 @@ function makeFixture(
   mode: Mode = "tui",
   sessionId = "session-1",
   initialThemeSetting = TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
+  compatibility?: {
+    version: string;
+    supported: boolean;
+    minimum: "0.80.5";
+  },
 ) {
   const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
   const widgets = new Map<string, any>();
@@ -113,6 +118,7 @@ function makeFixture(
     readPiThemeSetting,
     writePiThemeSetting,
     errorSink,
+    compatibility,
   });
   return {
     ui, ctx, pi, widgets, readPiThemeSetting, writePiThemeSetting, errorSink,
@@ -214,6 +220,44 @@ describe("public layout and lifecycle contract", () => {
     expect(output).not.toContain("╭");
     expect(output).toContain("╰");
     expect(lines.at(-1)).toContain("╯");
+  });
+
+  it("shows the minimum-version warning through Pi UI", async () => {
+    const fixture = makeFixture(
+      "tui",
+      "unsupported-session",
+      TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
+      { version: "0.80.4", supported: false, minimum: "0.80.5" },
+    );
+
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    expect(fixture.ui.notify).toHaveBeenCalledWith(
+      "[pi-tokyo-night] Pi 0.80.4 is below the supported minimum 0.80.5; interactive UI resources will not be registered.",
+      "warning",
+    );
+    expect(fixture.ui.setWidget).not.toHaveBeenCalled();
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("retries the minimum-version warning when UI notification fails", async () => {
+    const fixture = makeFixture(
+      "tui",
+      "unsupported-retry-session",
+      TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
+      { version: "0.80.4", supported: false, minimum: "0.80.5" },
+    );
+    fixture.ui.notify.mockImplementationOnce(() => {
+      throw new Error("notification failed");
+    });
+
+    await expect(
+      fixture.emit("session_start", { reason: "startup" }, fixture.ctx),
+    ).rejects.toThrow("notification failed");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    expect(fixture.ui.notify).toHaveBeenCalledTimes(2);
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
   it("registers rain permanently above the editor and keeps it through selector replacement", async () => {

@@ -9,6 +9,7 @@ import { TokyoConfigManager } from "./core/config";
 import {
   createTokyoNightErrorSink,
   installConsoleLogBridge,
+  type ConsoleLogBridge,
 } from "./core/console-bridge";
 import {
   EXT_PREFIX,
@@ -19,8 +20,8 @@ import {
 import {
   evaluatePiCompatibility,
   isFullscreenTui,
-  MINIMUM_PI_VERSION,
   requestHostRender,
+  type PiCompatibility,
   resolveWorkingIndicatorSetter,
 } from "./core/pi-compat";
 import { RainAnimationManager } from "./rain/rain-manager";
@@ -217,11 +218,14 @@ export function registerTokyoNightExtension(
     readPiThemeSetting?: typeof readPiThemeSetting;
     writePiThemeSetting?: typeof writePiThemeSetting;
     errorSink?: ExtensionErrorSink;
+    compatibility?: PiCompatibility;
   } = {},
 ): void {
   const configManager = new TokyoConfigManager();
   const codexUsageStore = createCodexUsageStore();
-  const consoleLogBridge = (dependencies.installConsoleLogBridge ?? installConsoleLogBridge)();
+  const installBridge = dependencies.installConsoleLogBridge ?? installConsoleLogBridge;
+  let consoleLogBridge: ConsoleLogBridge | undefined;
+  let consoleBridgeOwnerIdentity: string | undefined;
   const errorSink = dependencies.errorSink ?? createTokyoNightErrorSink();
   const sessionsByIdentity = new Map<string, SessionState>();
   let activeSession: SessionState | null = null;
@@ -239,7 +243,7 @@ export function registerTokyoNightExtension(
   let kimiPollModel: Model<any> | undefined;
   const loadPiThemeSetting = dependencies.readPiThemeSetting ?? readPiThemeSetting;
   const savePiThemeSetting = dependencies.writePiThemeSetting ?? writePiThemeSetting;
-  const compatibility = evaluatePiCompatibility(VERSION);
+  const compatibility = dependencies.compatibility ?? evaluatePiCompatibility(VERSION);
   let compatibilityWarningShown = false;
 
   const isInteractive = (ctx: ExtensionContext): boolean => ctx.mode === "tui" && ctx.hasUI;
@@ -744,15 +748,25 @@ export function registerTokyoNightExtension(
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    consoleLogBridge.setInteractive(isInteractive(ctx));
+    const identityKey = identityOf(ctx);
+    if (isInteractive(ctx)) {
+      consoleLogBridge ??= installBridge();
+      consoleLogBridge.setInteractive(true);
+      consoleBridgeOwnerIdentity = identityKey;
+    } else {
+      consoleLogBridge?.dispose();
+      consoleLogBridge = undefined;
+      consoleBridgeOwnerIdentity = undefined;
+    }
     if (!compatibility.supported) {
       if (!compatibilityWarningShown) {
+        const warning = `${EXT_PREFIX} Pi ${compatibility.version} is below the supported minimum ${compatibility.minimum}; interactive UI resources will not be registered.`;
+        if (ctx.hasUI) ctx.ui.notify(warning, "warning");
+        else console.warn(warning);
         compatibilityWarningShown = true;
-        console.warn(`${EXT_PREFIX} Pi ${VERSION} is below the supported minimum ${MINIMUM_PI_VERSION}; interactive UI resources will not be registered.`);
       }
       return;
     }
-    const identityKey = identityOf(ctx);
     const previous = activeSession;
     if (previous) retireSession(previous, previous.ui === ctx.ui);
     const duplicate = sessionsByIdentity.get(identityKey);
@@ -962,13 +976,21 @@ export function registerTokyoNightExtension(
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
-    const session = sessionsByIdentity.get(identityOf(ctx));
-    if (!session) return;
-    const wasActive = activeSession === session;
-    retireSession(session, session.mode === "tui" && session.hasUI);
-    if (wasActive) generation += 1;
-    // Keep late shutdown errors captured until the next session_start chooses
-    // the next routing mode; retiring async work can still log after shutdown.
+    const identityKey = identityOf(ctx);
+    const shouldDisposeBridge = consoleBridgeOwnerIdentity === identityKey;
+    try {
+      const session = sessionsByIdentity.get(identityKey);
+      if (!session) return;
+      const wasActive = activeSession === session;
+      retireSession(session, session.mode === "tui" && session.hasUI);
+      if (wasActive) generation += 1;
+    } finally {
+      if (shouldDisposeBridge) {
+        consoleLogBridge?.dispose();
+        consoleLogBridge = undefined;
+        consoleBridgeOwnerIdentity = undefined;
+      }
+    }
   });
 
   // The compatibility check above is diagnostic only. It never selects a
