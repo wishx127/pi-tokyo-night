@@ -14,6 +14,14 @@
 
 ## 📦 安装
 
+无需永久安装，即可在本次 Pi 运行中临时试用：
+
+```bash
+pi -e npm:@wishx127/pi-tokyo-night
+```
+
+如需永久安装：
+
 ```bash
 pi install npm:@wishx127/pi-tokyo-night
 ```

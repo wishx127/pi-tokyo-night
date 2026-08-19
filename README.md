@@ -14,6 +14,14 @@ An animated [Pi](https://github.com/earendil-works/pi) theme + extension that br
 
 ## 📦 Install
 
+Try it for one Pi run without installing it permanently:
+
+```bash
+pi -e npm:@wishx127/pi-tokyo-night
+```
+
+To install it permanently:
+
 ```bash
 pi install npm:@wishx127/pi-tokyo-night
 ```
