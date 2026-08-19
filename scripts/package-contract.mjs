@@ -89,6 +89,32 @@ function assertPiCorePeerDependencies(manifest) {
   }
 }
 
+function assertGalleryMediaUrl(value, label, assetName) {
+  assert.equal(typeof value, "string", `${label} must be a URL string`);
+  const url = new URL(value);
+  assert.equal(url.origin, "https://raw.githubusercontent.com", `${label} must use raw.githubusercontent.com`);
+  const repositoryRoot = "/wishx127/pi-tokyo-night/";
+  const assetSuffix = `/assets/${assetName}`;
+  assert(url.pathname.startsWith(repositoryRoot), `${label} must reference the project repository`);
+  assert(url.pathname.endsWith(assetSuffix), `${label} must reference ${assetName}`);
+  const ref = url.pathname.slice(repositoryRoot.length, -assetSuffix.length);
+  assert.equal(ref, "main", `${label} must use the stable main branch URL`);
+}
+
+function assertGalleryMetadata(packagedFiles, manifest) {
+  assertGalleryMediaUrl(manifest.pi?.video, "pi.video", "showcase.mp4");
+  assertGalleryMediaUrl(manifest.pi?.image, "pi.image", "thumbnail.png");
+
+  const videoPath = path.join(projectRoot, "assets/showcase.mp4");
+  assert(existsSync(videoPath), "Missing Gallery asset: assets/showcase.mp4");
+  assert(statSync(videoPath).size <= 5 * 1024 * 1024, "Gallery video must not exceed 5 MiB");
+
+  for (const assetPath of ["assets/showcase.mp4", "assets/thumbnail.png"]) {
+    assert(existsSync(path.join(projectRoot, assetPath)), `Missing Gallery asset: ${assetPath}`);
+    assert(!packagedFiles.has(assetPath), `Gallery-only asset must not be packed: ${assetPath}`);
+  }
+}
+
 function assertManifestEntries(packagedFiles, manifest) {
   const piManifest = manifest.pi;
   assert(piManifest && typeof piManifest === "object", "package.json is missing the pi manifest");
@@ -146,6 +172,7 @@ function main() {
 
   assertPiCorePeerDependencies(manifest);
   assertManifestEntries(packagedFiles, manifest);
+  assertGalleryMetadata(packagedFiles, manifest);
   console.log(`Package contract passed (${packagedFiles.size} files).`);
 }
 

@@ -1,6 +1,6 @@
 # pi-tokyo-night
 
-A [pi](https://github.com/earendil-works/pi) theme + extension that brings the tokyo-night color scheme to your terminal, with a Powerline-style status bar and animated rain panel.
+An animated [Pi](https://github.com/earendil-works/pi) theme + extension that brings Tokyo Night to your terminal with dynamic rain, a Powerline status bar, switchable themes, and live customization.
 
 [![npm version](https://img.shields.io/npm/v/%40wishx127%2Fpi-tokyo-night?logo=npm)](https://www.npmjs.com/package/@wishx127/pi-tokyo-night)
 [![npm downloads](https://img.shields.io/npm/dm/%40wishx127%2Fpi-tokyo-night?logo=npm)](https://www.npmjs.com/package/@wishx127/pi-tokyo-night)
@@ -12,29 +12,27 @@ A [pi](https://github.com/earendil-works/pi) theme + extension that brings the t
   <img src="assets/screenshot.png" alt="pi-tokyo-night" width="1100">
 </p>
 
-## ✨ Features
-
-**Tokyo Night theme** — Full color scheme for the pi TUI: editor, messages, syntax highlighting, diff view, tool output, and markdown rendering.
-
-**Powerline status bar** — Purple gradient left section (model, thinking level, path, git branch) and right section (tokens, cost, context progress bar).
-
-**Animated rain panel** — A Tokyo night sky above the editor with drifting cyan raindrops, a crescent moon, and purple stars. Toggle on/off at runtime.
-
-**Borderless editor** — Editor renders inside an optional rounded card frame with a glowing purple prompt chevron.
-
-**Neon Studio** — Grouped, non-overlay settings center with theme selection plus live frame, rain, quota, icon, and status-module updates.
-
 ## 📦 Install
 
 ```bash
 pi install npm:@wishx127/pi-tokyo-night
 ```
 
-Restart pi to activate.
+Restart Pi, then open `/tokyo-night` to choose Dark, Light, or Automatic and customize the interface.
+
+## ✨ Highlights
+
+**Tokyo Night theme + extension** — Complete dark/light colors for Pi plus a framed editor and an activity-aware working indicator.
+
+**Animated rain panel** — Cyan raindrops drift beneath a crescent moon and purple stars, with speed and density responding to Pi activity.
+
+**Powerline status bar** — See the model, thinking level, path, Git branch, provider limits, tokens, cost, and context progress at a glance.
+
+**Neon Studio** — Open `/tokyo-night` to preview Dark and Light themes, configure automatic switching for the next Pi start, and customize the frame, rain, quota, icons, and status modules live.
 
 ## 🛠 Usage
 
-Activates automatically on install. Use `/tokyo-night` to control the extension:
+After restarting Pi, the extension loads automatically. Use `/tokyo-night` to control it:
 
 ```
 /tokyo-night          # open Neon Studio
