@@ -93,14 +93,30 @@ jobs:
 
           video_url="$(node -p "require('./package.json').pi.video")"
           image_url="$(node -p "require('./package.json').pi.image")"
-          media_root="https://raw.githubusercontent.com/wishx127/pi-tokyo-night/main/assets"
-          test "$video_url" = "$media_root/showcase.mp4"
-          test "$image_url" = "$media_root/thumbnail.png"
-          for url in "$video_url" "$image_url"; do
+          expected_video_url="https://cdn.jsdelivr.net/gh/wishx127/pi-tokyo-night@main/assets/showcase.mp4"
+          expected_image_url="https://raw.githubusercontent.com/wishx127/pi-tokyo-night/main/assets/thumbnail.png"
+          test "$video_url" = "$expected_video_url"
+          test "$image_url" = "$expected_image_url"
+
+          video_response="$(
             curl --fail --silent --show-error --location \
               --retry 5 --retry-all-errors --retry-delay 2 \
-              --head "$url" >/dev/null
-          done
+              --header 'Range: bytes=0-0' \
+              --output /dev/null \
+              --write-out '%{http_code} %{content_type}' \
+              "$video_url"
+          )"
+          test "$video_response" = "206 video/mp4"
+
+          image_content_type="$(
+            curl --fail --silent --show-error --location \
+              --retry 5 --retry-all-errors --retry-delay 2 \
+              --head \
+              --output /dev/null \
+              --write-out '%{content_type}' \
+              "$image_url"
+          )"
+          test "$image_content_type" = "image/png"
       - run: npm pack --dry-run
       - run: npm publish --provenance --access public
         env:

@@ -89,21 +89,22 @@ function assertPiCorePeerDependencies(manifest) {
   }
 }
 
-function assertGalleryMediaUrl(value, label, assetName) {
+function assertGalleryMediaUrl(value, label, expectedUrl) {
   assert.equal(typeof value, "string", `${label} must be a URL string`);
-  const url = new URL(value);
-  assert.equal(url.origin, "https://raw.githubusercontent.com", `${label} must use raw.githubusercontent.com`);
-  const repositoryRoot = "/wishx127/pi-tokyo-night/";
-  const assetSuffix = `/assets/${assetName}`;
-  assert(url.pathname.startsWith(repositoryRoot), `${label} must reference the project repository`);
-  assert(url.pathname.endsWith(assetSuffix), `${label} must reference ${assetName}`);
-  const ref = url.pathname.slice(repositoryRoot.length, -assetSuffix.length);
-  assert.equal(ref, "main", `${label} must use the stable main branch URL`);
+  assert.equal(value, expectedUrl, `${label} must use the expected Gallery media URL`);
 }
 
 function assertGalleryMetadata(packagedFiles, manifest) {
-  assertGalleryMediaUrl(manifest.pi?.video, "pi.video", "showcase.mp4");
-  assertGalleryMediaUrl(manifest.pi?.image, "pi.image", "thumbnail.png");
+  assertGalleryMediaUrl(
+    manifest.pi?.video,
+    "pi.video",
+    "https://cdn.jsdelivr.net/gh/wishx127/pi-tokyo-night@main/assets/showcase.mp4",
+  );
+  assertGalleryMediaUrl(
+    manifest.pi?.image,
+    "pi.image",
+    "https://raw.githubusercontent.com/wishx127/pi-tokyo-night/main/assets/thumbnail.png",
+  );
 
   const videoPath = path.join(projectRoot, "assets/showcase.mp4");
   assert(existsSync(videoPath), "Missing Gallery asset: assets/showcase.mp4");
