@@ -641,6 +641,240 @@ describe("public layout and lifecycle contract", () => {
     expect(fixture.ctx.reload).not.toHaveBeenCalled();
   });
 
+  it("backs off Kimi usage requests after consecutive failures", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    fixture.ctx.model = {
+      id: "kimi-for-coding",
+      provider: "kimi-coding",
+      api: "anthropic-messages",
+      contextWindow: 128000,
+    };
+    fixture.ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue("kimi-key");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 500,
+    } as Response);
+
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(4 * 60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
+    await vi.advanceTimersByTimeAsync(14 * 60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(4);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(5);
+    await vi.advanceTimersByTimeAsync(14 * 60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(5);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(6);
+
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("backs off Kimi credential resolution when no credential is available", async () => {
+    vi.useFakeTimers();
+    vi.stubEnv("PI_CODING_AGENT_DIR", "/nonexistent/pi-tokyo-night-test");
+    vi.stubEnv("HOME", "/nonexistent/pi-tokyo-night-test");
+    const fixture = makeFixture();
+    fixture.ctx.model = {
+      id: "kimi-for-coding",
+      provider: "kimi-coding",
+      api: "anthropic-messages",
+      contextWindow: 128000,
+    };
+
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fixture.ctx.modelRegistry.getApiKeyForProvider).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fixture.ctx.modelRegistry.getApiKeyForProvider).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fixture.ctx.modelRegistry.getApiKeyForProvider).toHaveBeenCalledTimes(2);
+
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("logs a Kimi polling failure once until a successful recovery", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    fixture.ctx.model = {
+      id: "kimi-for-coding",
+      provider: "kimi-coding",
+      api: "anthropic-messages",
+      contextWindow: 128000,
+    };
+    fixture.ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue("kimi-key");
+    const unavailable = { ok: false, status: 500 } as Response;
+    const available = {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        limits: [{
+          window: { duration: "300", timeUnit: "TIME_UNIT_MINUTE" },
+          detail: {
+            limit: "100",
+            used: "25",
+            resetTime: new Date(Date.now() + 60 * 60_000).toISOString(),
+          },
+        }],
+      }),
+    } as Response;
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(unavailable)
+      .mockResolvedValueOnce(unavailable)
+      .mockResolvedValueOnce(available)
+      .mockResolvedValueOnce(unavailable);
+
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fixture.errorSink).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fixture.errorSink).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+    expect(fixture.errorSink).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fixture.errorSink).toHaveBeenCalledTimes(2);
+    expect(fixture.errorSink).toHaveBeenLastCalledWith(
+      expect.objectContaining({ message: "HTTP 500" }),
+      "kimi usage poll",
+    );
+
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("hides a stale Kimi usage snapshot after ten minutes of failures", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-25T12:00:00Z"));
+    const fixture = makeFixture();
+    fixture.ctx.model = {
+      id: "kimi-for-coding",
+      provider: "kimi-coding",
+      api: "anthropic-messages",
+      contextWindow: 128000,
+    };
+    fixture.ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue("kimi-key");
+    const available = {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        limits: [{
+          window: { duration: "300", timeUnit: "TIME_UNIT_MINUTE" },
+          detail: {
+            limit: "100",
+            used: "25",
+            resetTime: "2026-07-25T14:00:00Z",
+          },
+        }],
+      }),
+    } as Response;
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(available)
+      .mockResolvedValue({ ok: false, status: 500 } as Response);
+
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(0);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      theme,
+    );
+    expect(status.render(500).join("\n")).toContain("LIMIT");
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000 - 1);
+    expect(status.render(500).join("\n")).toContain("LIMIT");
+    await vi.advanceTimersByTimeAsync(1);
+    expect(status.render(500).join("\n")).not.toContain("LIMIT");
+
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("does not overlap Kimi polling while a usage request is pending", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    fixture.ctx.model = {
+      id: "kimi-for-coding",
+      provider: "kimi-coding",
+      api: "anthropic-messages",
+      contextWindow: 128000,
+    };
+    fixture.ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue("kimi-key");
+    let requestSignal: AbortSignal | undefined;
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((_input, init) => {
+      requestSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          reject(new DOMException("The operation was aborted.", "AbortError"));
+        }, { once: true });
+      });
+    });
+
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+    expect(requestSignal?.aborted).toBe(true);
+  });
+
+  it("stops Kimi polling when Studio previews Provider Limit off", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    fixture.ctx.model = {
+      id: "kimi-for-coding",
+      provider: "kimi-coding",
+      api: "anthropic-messages",
+      contextWindow: 128000,
+    };
+    fixture.ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue("kimi-key");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        limits: [{
+          window: { duration: "300", timeUnit: "TIME_UNIT_MINUTE" },
+          detail: {
+            limit: "100",
+            used: "25",
+            resetTime: new Date(Date.now() + 60 * 60_000).toISOString(),
+          },
+        }],
+      }),
+    } as Response));
+
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await Promise.resolve();
+    fixture.customComponent.handleInput("\t");
+    for (let index = 0; index < 4; index++) {
+      fixture.customComponent.handleInput("\x1b[B");
+    }
+    fixture.customComponent.handleInput("\r");
+    await vi.advanceTimersByTimeAsync(2 * 60_000);
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
   it("stops Kimi polling when Studio previews Kimi Limit off", async () => {
     vi.useFakeTimers();
     vi.stubEnv("PI_CODING_AGENT_DIR", "/nonexistent/pi-tokyo-night-test");

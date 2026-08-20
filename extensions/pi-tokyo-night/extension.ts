@@ -113,6 +113,8 @@ const TOKYO_WORKING_FRAMES = Object.freeze([
 ]);
 const CODEX_COUNTDOWN_REFRESH_MS = 30_000;
 const KIMI_POLL_INTERVAL_MS = 60_000;
+const KIMI_RETRY_DELAYS_MS = [60_000, 120_000, 300_000, 900_000] as const;
+const KIMI_SNAPSHOT_MAX_AGE_MS = 10 * 60_000;
 
 export const TOKYO_NIGHT_AUTOMATIC_THEME_SETTING =
   "tokyo-night-light/tokyo-night-dark";
@@ -241,6 +243,9 @@ export function registerTokyoNightExtension(
   let kimiPollGeneration = 0;
   let kimiPollSession: SessionState | null = null;
   let kimiPollModel: Model<any> | undefined;
+  let kimiPollFailures = 0;
+  let kimiNextPollAt = 0;
+  let kimiFailureLogged = false;
   const loadPiThemeSetting = dependencies.readPiThemeSetting ?? readPiThemeSetting;
   const savePiThemeSetting = dependencies.writePiThemeSetting ?? writePiThemeSetting;
   const compatibility = dependencies.compatibility ?? evaluatePiCompatibility(VERSION);
@@ -259,12 +264,16 @@ export function registerTokyoNightExtension(
     kimiPollController = undefined;
     kimiPollSession = null;
     kimiPollModel = undefined;
+    kimiPollFailures = 0;
+    kimiNextPollAt = 0;
+    kimiFailureLogged = false;
     kimiPollGeneration += 1;
   };
 
   const canPollKimi = (session: SessionState, model: Model<any> | undefined): boolean =>
     isCurrent(session) && session.mode === "tui" && session.hasUI &&
-    configManager.get().kimiQuota && activeModel === model && isKimiModel(model);
+    configManager.get().kimiQuota && configManager.get().statusModules.quota &&
+    activeModel === model && isKimiModel(model);
 
   const requestStatusRenderFor = (session: SessionState): void => {
     if (isCurrent(session)) session.requestStatusRender?.();
@@ -416,20 +425,61 @@ export function registerTokyoNightExtension(
     }, CODEX_COUNTDOWN_REFRESH_MS);
   };
 
+  const expireKimiSnapshot = (session: SessionState): void => {
+    const snapshot = session.kimiUsageStore.getSnapshot();
+    if (!snapshot || Date.now() - snapshot.capturedAt < KIMI_SNAPSHOT_MAX_AGE_MS) return;
+    session.kimiUsageStore.clearSnapshot();
+    requestStatusRenderFor(session);
+  };
+
+  const recordKimiFailure = (session: SessionState, error: unknown): void => {
+    const retryDelay = KIMI_RETRY_DELAYS_MS[
+      Math.min(kimiPollFailures, KIMI_RETRY_DELAYS_MS.length - 1)
+    ];
+    kimiPollFailures += 1;
+    kimiNextPollAt = Date.now() + retryDelay;
+    expireKimiSnapshot(session);
+    if (!kimiFailureLogged) {
+      kimiFailureLogged = true;
+      try {
+        errorSink(error, "kimi usage poll");
+      } catch {
+        // Error reporting must not turn a recoverable poll failure into an
+        // unhandled rejection from the detached polling task.
+      }
+    }
+  };
+
   const pollKimi = async (session: SessionState, model: Model<any>, pollGeneration: number): Promise<void> => {
-    if (!canPollKimi(session, model) || pollGeneration !== kimiPollGeneration) return;
+    if (!canPollKimi(session, model) || pollGeneration !== kimiPollGeneration || kimiPollController !== undefined) return;
+    if (Date.now() < kimiNextPollAt) {
+      expireKimiSnapshot(session);
+      return;
+    }
     const controller = new AbortController();
     kimiPollController = controller;
     try {
       const key = await resolveKimiApiKey((provider) => modelRegistry?.getApiKeyForProvider(provider) ?? Promise.resolve(undefined));
-      if (!key || controller.signal.aborted || !canPollKimi(session, model) || pollGeneration !== kimiPollGeneration) return;
+      if (controller.signal.aborted || !canPollKimi(session, model) || pollGeneration !== kimiPollGeneration) return;
+      if (!key) {
+        recordKimiFailure(session, new Error("Kimi credential unavailable"));
+        return;
+      }
       const result = await fetchKimiUsage(key, controller.signal);
-      if (result.ok && !controller.signal.aborted && canPollKimi(session, model) && pollGeneration === kimiPollGeneration) {
+      if (controller.signal.aborted || !canPollKimi(session, model) || pollGeneration !== kimiPollGeneration) return;
+      if (result.ok) {
+        kimiPollFailures = 0;
+        kimiNextPollAt = 0;
+        kimiFailureLogged = false;
         session.kimiUsageStore.setSnapshot(result.snapshot);
         requestStatusRenderFor(session);
+      } else {
+        recordKimiFailure(session, new Error(result.error));
       }
     } catch (error) {
-      if (!controller.signal.aborted && canPollKimi(session, model)) handleExtensionError(error, "kimi usage poll");
+      if (!controller.signal.aborted && canPollKimi(session, model) && pollGeneration === kimiPollGeneration) {
+        recordKimiFailure(session, error);
+      }
     } finally {
       if (kimiPollController === controller) kimiPollController = undefined;
     }
@@ -562,6 +612,7 @@ export function registerTokyoNightExtension(
       try { leafId = session.context.sessionManager.getLeafId(); }
       catch { leafId = undefined; }
       const codexUsage = codexUsageStore.getSnapshot();
+      expireKimiSnapshot(session);
       const kimiUsage = session.kimiUsageStore.getSnapshot();
 
       return session.statusRenderCache.render({
@@ -938,7 +989,10 @@ export function registerTokyoNightExtension(
               if (change.kind === "config" && change.key === "codexQuota") {
                 scheduleCodexRefresh(studioSession);
               }
-              if (change.kind === "config" && change.key === "kimiQuota") {
+              if (
+                (change.kind === "config" && change.key === "kimiQuota") ||
+                (change.kind === "status" && change.key === "quota")
+              ) {
                 refreshKimi();
               }
               requestStatusRenderFor(studioSession);
