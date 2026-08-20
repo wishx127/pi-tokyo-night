@@ -78,8 +78,7 @@ jobs:
             version="$REQUESTED_VERSION"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - run: npm install --no-save --package-lock=false --ignore-scripts @earendil-works/pi-ai@${{ steps.pi_version.outputs.version }} @earendil-works/pi-coding-agent@${{ steps.pi_version.outputs.version }} @earendil-works/pi-tui@${{ steps.pi_version.outputs.version }}
-      - run: npx --no-install pi --version
-      - run: node scripts/pi-tui-smoke.mjs
+      - name: Install packed tarball and run Pi TUI smoke
+        run: node scripts/pi-tui-smoke.mjs
         env:
           PI_COMPAT_VERSION: ${{ steps.pi_version.outputs.version }}
