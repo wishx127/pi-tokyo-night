@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { Theme, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { buildStatusLine, buildStatusLines } from "./status-bar";
 import { createKimiUsageStore } from "../usage";
@@ -9,6 +9,36 @@ import type { UsageSnapshot } from "../usage";
 const theme = {
   fg: (_color: string, text: string) => text,
 } as unknown as Theme;
+
+function makeStatusTheme(
+  name: "tokyo-night-dark" | "tokyo-night-light",
+): Theme {
+  const dark = name === "tokyo-night-dark";
+  return new Theme(
+    {
+      accent: dark ? "#bb9af7" : "#6636ba",
+      borderMuted: dark ? "#3d3577" : "#b4aed6",
+      error: dark ? "#f7768e" : "#c11f3d",
+      warning: dark ? "#e0af68" : "#885e16",
+      dim: dark ? "#414868" : "#8a92b4",
+      thinkingLow: dark ? "#7dcfff" : "#0979a5",
+      thinkingXhigh: dark ? "#f7768e" : "#c11f3d",
+      text: dark ? "#c0caf5" : "#24283b",
+      success: dark ? "#9ece6a" : "#1c784d",
+      muted: "#565f89",
+    } as any,
+    {
+      selectedBg: dark ? "#292e42" : "#d8dae6",
+      userMessageBg: dark ? "#1f2335" : "#e9eaf3",
+      customMessageBg: dark ? "#26253c" : "#e7e2ee",
+      toolPendingBg: dark ? "#24283b" : "#e2e5ee",
+      toolSuccessBg: dark ? "#28303b" : "#e2eee8",
+      toolErrorBg: dark ? "#3b2528" : "#eee2e4",
+    } as any,
+    "truecolor",
+    { name },
+  );
+}
 
 const config = {
   get: () => ({ codexQuota: false }),
@@ -70,6 +100,102 @@ function makeContext(
 }
 
 describe("buildStatusLine", () => {
+  it("keeps status module chrome independent from the active theme", () => {
+    const themed = {
+      fg: vi.fn((color: string, text: string) => `\x1b[38;5;1m${text}\x1b[39m`),
+      bg: vi.fn((color: string, text: string) => `\x1b[48;5;2m${text}\x1b[49m`),
+    } as unknown as Theme;
+
+    const line = buildStatusLine(
+      500,
+      themed,
+      makeContext([]),
+      "main",
+      "high",
+      makeStatusConfig(),
+    );
+
+    expect(line).toContain("\x1b[48;2;45;27;105m");
+    expect(line).toContain("\x1b[48;2;109;91;170m");
+    expect(themed.bg).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "tokyo-night-dark",
+      {
+        accent: "\x1b[38;2;187;154;247m",
+        dim: "\x1b[38;2;65;72;104m",
+      },
+    ],
+    [
+      "tokyo-night-light",
+      {
+        accent: "\x1b[38;2;102;54;186m",
+        dim: "\x1b[38;2;138;146;180m",
+      },
+    ],
+  ] as const)(
+    "renders the %s status palette",
+    (name, expected) => {
+      const lines = buildStatusLines(
+        500,
+        makeStatusTheme(name),
+        makeContext([]),
+        "main",
+        "high",
+        makeStatusConfig(),
+      );
+
+      expect(lines).toHaveLength(1);
+      expect(visibleWidth(lines[0])).toBeLessThanOrEqual(500);
+      expect(lines[0]).toContain(expected.accent);
+      expect(lines[0]).toContain(expected.dim);
+    },
+  );
+
+  it("keeps status chrome ANSI colors identical in dark and light themes", () => {
+    const dark = buildStatusLine(
+      500,
+      makeStatusTheme("tokyo-night-dark"),
+      makeContext([]),
+      "main",
+      "high",
+      makeStatusConfig(),
+    );
+    const light = buildStatusLine(
+      500,
+      makeStatusTheme("tokyo-night-light"),
+      makeContext([]),
+      "main",
+      "high",
+      makeStatusConfig(),
+    );
+    const chromeCodes = [
+      "\x1b[48;2;45;27;105m",
+      "\x1b[48;2;61;43;122m",
+      "\x1b[48;2;77;59;138m",
+      "\x1b[48;2;93;75;154m",
+      "\x1b[48;2;109;91;170m",
+      "\x1b[48;2;93;93;93m",
+      "\x1b[38;2;200;200;255m",
+      "\x1b[38;2;220;220;255m",
+      "\x1b[38;2;240;240;255m",
+      "\x1b[38;2;255;255;255m",
+      "\x1b[38;2;255;255;200m",
+      "\x1b[38;2;200;255;200m",
+      "\x1b[38;2;255;200;200m",
+    ];
+    const count = (value: string, code: string) =>
+      value.split(code).length - 1;
+
+    for (const code of chromeCodes) {
+      expect(dark, code).toContain(code);
+      expect(light, code).toContain(code);
+      expect(count(light, code), code).toBe(count(dark, code));
+    }
+  });
+
   it("hides file-configured modules and repacks the visible modules", () => {
     const line = buildStatusLines(
       60,

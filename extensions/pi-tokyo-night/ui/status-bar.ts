@@ -23,41 +23,19 @@ import {
 import { handleExtensionError } from "../core/errors";
 import { resolveIcons, type StatusIcons } from "./icons";
 import {
-  bgRgb,
-  fgRgb,
-  RESET_BG,
-  RESET_FG,
-} from "./ui-primitives";
+  createTokyoNightPalette,
+  type TokyoNightBackgroundRole,
+  type TokyoNightForegroundRole,
+  type TokyoNightThemePalette,
+} from "./theme-palette";
+import { RESET_BG } from "./ui-primitives";
 
-// Left module gradient (deep → light purple)
-// NOTE: Not `as const` — mutable number[][] needed for Module type compatibility.
-const MODULE_BG: number[][] = [
-  [45, 27, 105], // Deep purple   #2d1b69
-  [61, 43, 122], // Medium purple #3d2b7a
-  [77, 59, 138], // Lighter purple #4d3b8a
-  [93, 75, 154], // Light purple  #5d4b9a
-];
-
-const MODULE_FG: number[][] = [
-  [200, 200, 255],
-  [220, 220, 255],
-  [240, 240, 255],
-  [255, 255, 255],
-];
-
-// Right module colors
-const TOKENS_BG = [109, 91, 170]; // Very light purple #6d5baa
-const COST_BG = [93, 93, 93]; // Gray #5d5d5d
-const LIMIT_BG = [101, 83, 162]; // Mid purple — between branch and tokens backgrounds
-
-type Module =
-  | { text: string; bg: number; fg: number; noEndArrow?: boolean }
-  | {
-      text: string;
-      bgColor: number[] | null;
-      textColor: number[];
-      noEndArrow?: boolean;
-    };
+type Module = {
+  text: string;
+  bg: TokyoNightBackgroundRole | null;
+  fg: TokyoNightForegroundRole;
+  noEndArrow?: boolean;
+};
 
 // Shared "LIMIT" module for provider quota (Codex via response headers,
 // Kimi via polled usages API — both render through formatStatus).
@@ -65,8 +43,8 @@ const buildLimitModule = (snap: UsageSnapshot | undefined): Module[] =>
   snap
     ? [{
         text: `LIMIT ${formatStatus(snap)}`,
-        bgColor: LIMIT_BG as number[],
-        textColor: [245, 240, 255] as number[],
+        bg: "quota",
+        fg: "statusLimit",
       }]
     : [];
 
@@ -217,40 +195,32 @@ function getSessionStats(ctx: ExtensionContext): SessionStats {
   }
 }
 
-const getModuleBg = (m: Module): number[] | null =>
-  "bg" in m ? MODULE_BG[m.bg] : m.bgColor;
-const getModuleFg = (m: Module): number[] =>
-  "fg" in m ? MODULE_FG[m.fg] : m.textColor;
+const getModuleBg = (m: Module): TokyoNightBackgroundRole | null => m.bg;
 
 // Powerline transition arrow between two modules (1-char wide)
 const buildTransition = (
   from: Module,
   to: Module,
   icons: StatusIcons,
-): string => {
-  const c1 = getModuleBg(from);
-  const c2 = getModuleBg(to);
-  const bg = c2 === null ? RESET_BG : bgRgb(c2);
-  const fg = c1 === null ? RESET_FG : fgRgb(c1);
-  return `${bg}${fg}${icons.transition}${RESET_BG}${RESET_FG}`;
-};
+  palette: TokyoNightThemePalette,
+): string => palette.transition(from.bg, to.bg, icons.transition);
 
 const getModuleText = (m: Module): string => ` ${m.text} `;
 const getModuleWidth = (m: Module): number => visibleWidth(getModuleText(m));
 const formatIconLabel = (icon: string, label: string): string =>
   icon ? `${icon} ${label}` : label;
 
-const buildModule = (m: Module): string => {
-  const bgColor = getModuleBg(m);
-  const textColor = getModuleFg(m);
-  const bgCode = bgColor === null ? RESET_BG : bgRgb(bgColor);
-  const fgCode = fgRgb(textColor);
-
-  return `${bgCode}${fgCode}${getModuleText(m)}${RESET_BG}${RESET_FG}`;
+const buildModule = (m: Module, palette: TokyoNightThemePalette): string => {
+  const text = palette.fg(m.fg, getModuleText(m));
+  return m.bg === null ? `${RESET_BG}${text}` : palette.bg(m.bg, text);
 };
 
 // Build a section (array of modules) with Powerline transitions
-const buildSection = (modules: Module[], icons: StatusIcons) => {
+const buildSection = (
+  modules: Module[],
+  icons: StatusIcons,
+  palette: TokyoNightThemePalette,
+) => {
   let result = "";
   let currentWidth = 0;
 
@@ -259,12 +229,12 @@ const buildSection = (modules: Module[], icons: StatusIcons) => {
 
     // Powerline transition before module (except first)
     if (i > 0) {
-      const transition = buildTransition(modules[i - 1], m, icons);
+      const transition = buildTransition(modules[i - 1], m, icons, palette);
       result += transition;
       currentWidth += visibleWidth(transition);
     }
 
-    result += buildModule(m);
+    result += buildModule(m, palette);
     currentWidth += getModuleWidth(m);
   }
 
@@ -275,30 +245,40 @@ type StatusLayout = {
   oneLine: string;
   modules: Module[];
   icons: StatusIcons;
+  palette: TokyoNightThemePalette;
 };
 
 const END_MODULE: Module = {
   text: "",
-  bgColor: null,
-  textColor: [],
+  bg: null,
+  fg: "statusContext",
 };
 
-const buildEndArrow = (module: Module, icons: StatusIcons): string =>
-  module.noEndArrow ? "" : buildTransition(module, END_MODULE, icons);
+const buildEndArrow = (
+  module: Module,
+  icons: StatusIcons,
+  palette: TokyoNightThemePalette,
+): string =>
+  module.noEndArrow ? "" : buildTransition(module, END_MODULE, icons, palette);
 
-function buildRow(modules: Module[], icons: StatusIcons): string {
+function buildRow(
+  modules: Module[],
+  icons: StatusIcons,
+  palette: TokyoNightThemePalette,
+): string {
   if (modules.length === 0) return "";
-  return `${buildSection(modules, icons).result}${buildEndArrow(modules[modules.length - 1], icons)}`;
+  return `${buildSection(modules, icons, palette).result}${buildEndArrow(modules[modules.length - 1], icons, palette)}`;
 }
 
 function buildResponsiveRows(
   modules: Module[],
   width: number,
   icons: StatusIcons,
+  palette: TokyoNightThemePalette,
 ): string[] {
   if (width <= 0 || modules.length === 0) return [];
 
-  const firstArrow = buildEndArrow(modules[0], icons);
+  const firstArrow = buildEndArrow(modules[0], icons, palette);
   const firstArrowWidth = visibleWidth(firstArrow);
   if (width <= firstArrowWidth + 2) {
     return [truncateToWidth(firstArrow, width)];
@@ -310,18 +290,18 @@ function buildResponsiveRows(
 
   const flush = () => {
     if (current.length === 0) return;
-    rows.push(buildRow(current, icons));
+    rows.push(buildRow(current, icons, palette));
     current = [];
     currentWidth = 0;
   };
 
   for (const module of modules) {
     const moduleWidth = getModuleWidth(module);
-    const endArrowWidth = visibleWidth(buildEndArrow(module, icons));
+    const endArrowWidth = visibleWidth(buildEndArrow(module, icons, palette));
 
     if (current.length > 0) {
       const previous = current[current.length - 1];
-      const transition = buildTransition(previous, module, icons);
+      const transition = buildTransition(previous, module, icons, palette);
       const candidateWidth =
         currentWidth + visibleWidth(transition) + moduleWidth + endArrowWidth;
 
@@ -354,7 +334,7 @@ function buildResponsiveRows(
       currentWidth = getModuleWidth(truncatedModule);
       flush();
     } else {
-      rows.push(truncateToWidth(buildEndArrow(module, icons), width));
+      rows.push(truncateToWidth(buildEndArrow(module, icons, palette), width));
     }
   }
 
@@ -362,10 +342,14 @@ function buildResponsiveRows(
   return rows;
 }
 
-function buildColoredFill(bgColor: number[] | null, width: number): string {
+function buildColoredFill(
+  bgColor: TokyoNightBackgroundRole | null,
+  width: number,
+  palette: TokyoNightThemePalette,
+): string {
   if (width <= 0) return "";
-  const bgCode = bgColor === null ? RESET_BG : bgRgb(bgColor);
-  return `${bgCode}${" ".repeat(width)}${RESET_BG}`;
+  const fill = " ".repeat(width);
+  return bgColor === null ? `${RESET_BG}${fill}${RESET_BG}` : palette.bg(bgColor, fill);
 }
 
 function buildWideStatusLine(
@@ -375,6 +359,7 @@ function buildWideStatusLine(
   leftSection: ReturnType<typeof buildSection>,
   rightSection: ReturnType<typeof buildSection>,
   icons: StatusIcons,
+  palette: TokyoNightThemePalette,
   stretchSides: boolean,
 ): string {
   if (leftModules.length === 0 && rightModules.length === 0) return "";
@@ -382,13 +367,14 @@ function buildWideStatusLine(
   const safeWidth = Math.max(1, width - 2);
   if (leftModules.length === 0) {
     const fillWidth = Math.max(1, safeWidth - rightSection.currentWidth);
-    return `${buildColoredFill(getModuleBg(rightModules[0]), fillWidth)}${rightSection.result}`;
+    return `${buildColoredFill(getModuleBg(rightModules[0]), fillWidth, palette)}${rightSection.result}`;
   }
   if (rightModules.length === 0) {
     const fillWidth = Math.max(1, safeWidth - leftSection.currentWidth);
     return `${leftSection.result}${buildColoredFill(
       getModuleBg(leftModules[leftModules.length - 1]),
       fillWidth,
+      palette,
     )}`;
   }
 
@@ -396,6 +382,7 @@ function buildWideStatusLine(
     leftModules[leftModules.length - 1],
     rightModules[0],
     icons,
+    palette,
   );
   const paddingWidth = Math.max(
     1,
@@ -405,6 +392,7 @@ function buildWideStatusLine(
     return `${leftSection.result}${buildColoredFill(
       getModuleBg(leftModules[leftModules.length - 1]),
       paddingWidth,
+      palette,
     )}${bridgeTransition}${rightSection.result}`;
   }
 
@@ -413,9 +401,11 @@ function buildWideStatusLine(
   return `${leftSection.result}${buildColoredFill(
     getModuleBg(leftModules[leftModules.length - 1]),
     leftFillWidth,
+    palette,
   )}${bridgeTransition}${buildColoredFill(
     getModuleBg(rightModules[0]),
     rightFillWidth,
+    palette,
   )}${rightSection.result}`;
 }
 
@@ -433,6 +423,7 @@ function buildStatusLayout(
   // with Nerd Font glyphs that may be rendered as double-width by the terminal
   // but counted as single-width by visibleWidth()
   const icons = resolveIcons(config.get().iconMode);
+  const palette = createTokyoNightPalette(theme);
   const statusModules: StatusModulesConfig = {
     ...DEFAULT_STATUS_MODULES,
     ...(config.get().statusModules ?? {}),
@@ -486,34 +477,34 @@ function buildStatusLayout(
     theme.fg(barColor, icons.gaugeFilled.repeat(filled)) +
     theme.fg("dim", icons.gaugeEmpty.repeat(8 - filled));
 
-  // Build left modules (model, thinking, path, branch) - purple gradient
+  // Build left modules (model, thinking, path, branch) from themed surfaces.
   const leftModules: Module[] = [];
   if (statusModules.model) {
     leftModules.push({
       text: formatIconLabel(icons.model, shortName(modelId)),
-      bg: 0,
-      fg: 0,
+      bg: "model",
+      fg: "statusModel",
     });
   }
   if (statusModules.thinking) {
     leftModules.push({
       text: formatIconLabel(icons.thinking, thinkingLevel),
-      bg: 1,
-      fg: 1,
+      bg: "thinking",
+      fg: "statusThinking",
     });
   }
   if (statusModules.path) {
     leftModules.push({
       text: formatIconLabel(icons.path, shortenPath(cwd)),
-      bg: 2,
-      fg: 2,
+      bg: "path",
+      fg: "statusPath",
     });
   }
   if (statusModules.git && branch) {
     leftModules.push({
       text: formatIconLabel(icons.branch, branch),
-      bg: 3,
-      fg: 3,
+      bg: "git",
+      fg: "statusGit",
     });
   }
 
@@ -537,29 +528,29 @@ function buildStatusLayout(
     ...(statusModules.tokens
       ? [{
           text: `${icons.tokens} ${fmt(totalTokens)} tokens`,
-          bgColor: TOKENS_BG as number[],
-          textColor: [255, 255, 200] as number[],
+          bg: "tokens" as const,
+          fg: "statusTokens" as const,
         }]
       : []),
     ...(statusModules.cost
       ? [{
           text: `$${fmtCost(cost)}`,
-          bgColor: COST_BG as number[],
-          textColor: [200, 255, 200] as number[],
+          bg: "cost" as const,
+          fg: "statusCost" as const,
         }]
       : []),
     ...(statusModules.context
       ? [{
           text: `${progressBar} ${pct}%/${fmt(maxCtx)}`,
-          bgColor: null as number[] | null,
-          textColor: [255, 200, 200] as number[],
+          bg: null,
+          fg: "statusContext" as const,
           noEndArrow: true,
         }]
       : []),
   ];
 
-  const leftSection = buildSection(leftModules, icons);
-  const rightSection = buildSection(rightModules, icons);
+  const leftSection = buildSection(leftModules, icons, palette);
+  const rightSection = buildSection(rightModules, icons, palette);
 
   return {
     oneLine: buildWideStatusLine(
@@ -569,10 +560,12 @@ function buildStatusLayout(
       leftSection,
       rightSection,
       icons,
+      palette,
       stretchSides,
     ),
     modules: [...leftModules, ...rightModules],
     icons,
+    palette,
   };
 }
 
@@ -627,7 +620,12 @@ export function buildStatusLines(
     return [layout.oneLine];
   }
 
-  return buildResponsiveRows(layout.modules, renderWidth, layout.icons);
+  return buildResponsiveRows(
+    layout.modules,
+    renderWidth,
+    layout.icons,
+    layout.palette,
+  );
 }
 
 export function shortName(id: string): string {

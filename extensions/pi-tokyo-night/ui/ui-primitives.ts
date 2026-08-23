@@ -1,11 +1,13 @@
-// ── Tokyo Night ANSI Colors ─────────────────────────────────────────────────
-// Pre-computed ANSI escape codes for the status bar gradient.
-// These are custom RGB colors not available as theme tokens.
-export const PURPLE = "\x1b[38;2;187;154;247m"; // #bb9af7 - prompt char
-export const CYAN = "\x1b[38;2;125;202;247m"; // #7dcfff - rain drops
-export const RESET = "\x1b[0m";
+// ANSI resets and RGB encoders are kept below the ThemePalette boundary:
+// dynamic accents can use the active Theme while Tokyo Night chrome can keep
+// its stable original RGB palette.
 export const RESET_BG = "\x1b[49m";
 export const RESET_FG = "\x1b[39m";
+
+export const fgRgb = (rgb: readonly number[]): string =>
+  `\x1b[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
+export const bgRgb = (rgb: readonly number[]): string =>
+  `\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
 
 // Rounded box-drawing characters used by the shared frame composer to wrap
 // Rain, the active main surface, and Status into one cohesive card.
@@ -17,9 +19,3 @@ export const BOX = {
   h: "─", // horizontal
   v: "│", // vertical
 } as const;
-export const FRAME_RGB: number[] = [61, 53, 119]; // #3d3577 - borderMuted, subtle purple frame
-
-export const fgRgb = (rgb: number[]): string =>
-  `\x1b[38;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;
-export const bgRgb = (rgb: number[]): string =>
-  `\x1b[48;2;${rgb[0]};${rgb[1]};${rgb[2]}m`;

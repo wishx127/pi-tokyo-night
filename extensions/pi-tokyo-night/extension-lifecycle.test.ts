@@ -273,6 +273,44 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
+  it("uses the current UI theme when an existing status widget rerenders", async () => {
+    const fixture = makeFixture();
+    const darkTheme = {
+      fg: vi.fn((_color: string, text: string) =>
+        `\x1b[38;5;1m${text}\x1b[39m`
+      ),
+      bg: vi.fn((_color: string, text: string) => text),
+    } as any;
+    const lightTheme = {
+      fg: vi.fn((_color: string, text: string) =>
+        `\x1b[38;5;2m${text}\x1b[39m`
+      ),
+      bg: vi.fn((_color: string, text: string) => text),
+    } as any;
+    let activeTheme = darkTheme;
+    const themeProxy = new Proxy({} as any, {
+      get: (_target, property) =>
+        Reflect.get(activeTheme, property, activeTheme),
+    });
+    fixture.ui.theme = themeProxy;
+
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      themeProxy,
+    );
+    const first = status.render(500);
+
+    activeTheme = lightTheme;
+    status.invalidate();
+    const changed = status.render(500);
+
+    expect(darkTheme.fg).toHaveBeenCalled();
+    expect(lightTheme.fg).toHaveBeenCalled();
+    expect(changed).not.toEqual(first);
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
   it("hides the separate status widget in fullscreen mode", async () => {
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
@@ -317,6 +355,7 @@ describe("public layout and lifecycle contract", () => {
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
     const renderTheme = { fg: vi.fn((_color: string, text: string) => text) } as any;
+    fixture.ui.theme = renderTheme;
     const status = fixture.widgets.get("tokyo-status")(
       { requestRender: vi.fn(), mode: "regular" },
       renderTheme,

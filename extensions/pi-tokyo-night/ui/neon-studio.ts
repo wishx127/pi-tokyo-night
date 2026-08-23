@@ -16,6 +16,10 @@ import {
   getMainSurfaceFrameRole,
   renderFrameSegment,
 } from "./frame-layout";
+import {
+  createTokyoNightPalette,
+  type TokyoNightThemePalette,
+} from "./theme-palette";
 
 type StudioRow = {
   label: string;
@@ -95,6 +99,7 @@ export class NeonStudioComponent implements Component {
     if (outputWidth === 0) return this.withFullscreenStatus([], outputWidth);
 
     const renderTheme = this.getRenderTheme();
+    const palette = createTokyoNightPalette(renderTheme);
     const activeSection = SECTIONS[this.sectionIndex];
     const tabs = SECTIONS.map((section, index) =>
       index === this.sectionIndex ? `[${section.label}]` : section.label
@@ -125,17 +130,23 @@ export class NeonStudioComponent implements Component {
       lines: content,
       frameEnabled: config.editorFrame,
       role: getMainSurfaceFrameRole(config.panel),
-    }), outputWidth);
+      palette,
+    }), outputWidth, palette);
   }
 
   invalidate(): void {}
 
-  private withFullscreenStatus(lines: string[], width: number): string[] {
+  private withFullscreenStatus(
+    lines: string[],
+    width: number,
+    palette?: TokyoNightThemePalette,
+  ): string[] {
     if (!isFullscreenTui(this.tui)) return lines;
     return composeFrameDock({
       width,
       lines,
       frameEnabled: this.controller.config.get().editorFrame,
+      palette: palette ?? createTokyoNightPalette(this.getRenderTheme()),
       renderBottom: () => this.options.renderFullscreenStatus?.(width) ?? [],
     });
   }

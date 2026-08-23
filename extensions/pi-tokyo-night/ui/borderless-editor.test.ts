@@ -4,11 +4,18 @@ import { visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui
 import { buildStatusWidgetLines } from "../extension";
 import { renderRainPanelLines } from "../rain/rain-panel";
 import { BorderlessEditor } from "./borderless-editor";
-import { FRAME_RGB, fgRgb } from "./ui-primitives";
+import { createTokyoNightPalette } from "./theme-palette";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 
 const EditorProto = Object.getPrototypeOf(CustomEditor.prototype) as {
   render(width: number): string[];
 };
+
+const frameAnsi = "\x1b[38;2;61;53;119m";
+const palette = createTokyoNightPalette({
+  fg: (_color: string, text: string) => `${frameAnsi}${text}\x1b[39m`,
+  bg: (_color: string, text: string) => text,
+} as unknown as Theme);
 
 const configShape = (panel: boolean, editorFrame: boolean) => ({
   panel,
@@ -33,7 +40,11 @@ function makeEditor(
     tui as unknown as TUI,
     {} as EditorTheme,
     {} as KeybindingsManager,
-    { config: config as any, renderFullscreenStatus },
+    {
+      config: config as any,
+      getPalette: () => palette,
+      renderFullscreenStatus,
+    },
   );
   return { editor, config, tui };
 }
@@ -70,9 +81,10 @@ describe("BorderlessEditor public composition", () => {
         frameEnabled: true,
         rainRows: 1,
         snapshot: { drops: [], stars: [] },
+        palette,
       }),
       ...editor.render(40),
-      ...buildStatusWidgetLines(40, "status", true),
+      ...buildStatusWidgetLines(40, "status", true, palette),
     ];
     const output = lines.join("\n");
     const plain = lines.map((line) =>
@@ -82,7 +94,7 @@ describe("BorderlessEditor public composition", () => {
     expect(output.match(/╭/g)).toHaveLength(1);
     expect(output.match(/╰/g)).toHaveLength(1);
     expect(lines.every((line) => visibleWidth(line) === 40)).toBe(true);
-    expect(lines.every((line) => line.startsWith(fgRgb(FRAME_RGB)))).toBe(true);
+    expect(lines.every((line) => line.startsWith(frameAnsi))).toBe(true);
     expect(
       plain.slice(1, -1).every((line) =>
         line.startsWith("│") && line.endsWith("│")

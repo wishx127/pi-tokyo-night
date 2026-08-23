@@ -1,5 +1,6 @@
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { Component, TUI } from "@earendil-works/pi-tui";
+import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { TokyoConfigManager } from "../core/config";
 import { handleExtensionError } from "../core/errors";
 import { requestHostRender } from "../core/pi-compat";
@@ -7,11 +8,13 @@ import {
   getFrameContentWidth,
   renderFrameSegment,
 } from "../ui/frame-layout";
-import { CYAN, PURPLE, RESET } from "../ui/ui-primitives";
+import {
+  createTokyoNightPalette,
+  type TokyoNightThemePalette,
+} from "../ui/theme-palette";
 import type { RainAnimationManager, RainFrameSnapshot } from "./rain-manager";
 
 export const MOON = "🌙";
-export const MOON_FG = "\x1b[38;2;255;235;170m";
 export const MOON_COL = 2;
 export const MOON_ROW = 0;
 export const STAR = "✦";
@@ -22,6 +25,7 @@ export interface RainPanelRenderOptions {
   frameEnabled: boolean;
   rainRows: number;
   snapshot: RainFrameSnapshot;
+  palette?: TokyoNightThemePalette;
 }
 
 export function renderRainPanelLines(
@@ -70,13 +74,13 @@ export function renderRainPanelLines(
         column === MOON_COL &&
         column + moonWidth <= innerWidth
       ) {
-        row += MOON_FG + MOON + RESET;
+        row += options.palette?.fg("moon", MOON) ?? MOON;
         column += moonWidth;
       } else if (dropSet.has(position)) {
-        row += CYAN + RAIN_DROP + RESET;
+        row += options.palette?.fg("rain", RAIN_DROP) ?? RAIN_DROP;
         column += 1;
       } else if (starSet.has(position)) {
-        row += PURPLE + STAR + RESET;
+        row += options.palette?.fg("star", STAR) ?? STAR;
         column += 1;
       } else {
         row += " ";
@@ -90,15 +94,19 @@ export function renderRainPanelLines(
     lines,
     frameEnabled: options.frameEnabled,
     role: "top",
+    palette: options.palette,
   });
 }
 
 export interface RainPanelDependencies {
   config: TokyoConfigManager;
   rain: RainAnimationManager;
+  getTheme?: () => Theme;
+  palette?: TokyoNightThemePalette;
 }
 
 type RainPanelCacheEntry = {
+  theme: Theme | undefined;
   revision: number;
   width: number;
   frameEnabled: boolean;
@@ -128,6 +136,10 @@ export class RainPanelComponent implements Component {
       const config = this.dependencies.config.get();
       if (!config.panel) return [];
 
+      const theme = this.dependencies.getTheme?.();
+      const palette = theme
+        ? createTokyoNightPalette(theme)
+        : this.dependencies.palette;
       const outputWidth = Math.max(0, Math.floor(width));
       this.dependencies.rain.setRenderWidth(
         getFrameContentWidth(outputWidth, config.editorFrame),
@@ -137,6 +149,7 @@ export class RainPanelComponent implements Component {
       if (
         !this.invalidated &&
         cached &&
+        cached.theme === theme &&
         cached.revision === revision &&
         cached.width === outputWidth &&
         cached.frameEnabled === config.editorFrame &&
@@ -150,9 +163,11 @@ export class RainPanelComponent implements Component {
         frameEnabled: config.editorFrame,
         rainRows: config.rainRows,
         snapshot: this.dependencies.rain.getSnapshot(),
+        palette,
       });
       const lines = rendered;
       this.cache = {
+        theme,
         revision,
         width: outputWidth,
         frameEnabled: config.editorFrame,

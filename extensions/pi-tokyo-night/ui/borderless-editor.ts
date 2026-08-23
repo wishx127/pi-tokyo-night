@@ -13,12 +13,13 @@ import {
   getMainSurfaceFrameRole,
   renderFrameSegment,
 } from "./frame-layout";
-import { PURPLE, RESET } from "./ui-primitives";
+import type { TokyoNightThemePalette } from "./theme-palette";
 
 const FULLSCREEN_EDITOR_MIN_ROWS = 3;
 
 export interface BorderlessEditorDependencies {
   config: TokyoConfigManager;
+  getPalette?: () => TokyoNightThemePalette | undefined;
   renderFullscreenStatus?: (width: number) => string[];
 }
 
@@ -67,6 +68,7 @@ export class BorderlessEditor extends CustomEditor {
           lines: this.extractEditorContentLines(super.render(width)),
           frameEnabled: true,
           role: getMainSurfaceFrameRole(config.panel),
+          palette: this.dependencies.getPalette?.(),
         });
         return isFullscreenTui(this.tuiRef)
           ? this.renderFullscreenDockLines(lines, width)
@@ -96,6 +98,7 @@ export class BorderlessEditor extends CustomEditor {
       width,
       lines,
       frameEnabled: this.dependencies.config.get().editorFrame,
+      palette: this.dependencies.getPalette?.(),
       renderBottom: () =>
         this.dependencies.renderFullscreenStatus?.(width) ?? [],
       recoverLines: () => this.fillFullscreenDockRows(lines, width),
@@ -118,6 +121,7 @@ export class BorderlessEditor extends CustomEditor {
         lines: Array.from({ length: missingRows }, () => ""),
         frameEnabled,
         role: "middle",
+        palette: this.dependencies.getPalette?.(),
         padUnframed: true,
       }),
     ];
@@ -139,7 +143,8 @@ export class BorderlessEditor extends CustomEditor {
   private renderEditorMode(width: number): string[] {
     const config = this.dependencies.config.get();
     const frameEnabled = config.editorFrame;
-    const promptPrefix = ` ${PURPLE}❯${RESET} `;
+    const palette = this.dependencies.getPalette?.();
+    const promptPrefix = ` ${palette?.fg("prompt", "❯") ?? "❯"} `;
     const continuationPrefix = " ".repeat(visibleWidth(promptPrefix));
     const innerWidth = Math.max(
       1,
@@ -163,6 +168,7 @@ export class BorderlessEditor extends CustomEditor {
       lines: result,
       frameEnabled,
       role: getMainSurfaceFrameRole(config.panel),
+      palette,
     });
   }
 

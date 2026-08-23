@@ -1,5 +1,9 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { BOX, FRAME_RGB, RESET, fgRgb } from "./ui-primitives";
+import {
+  DEFAULT_TOKYO_NIGHT_PALETTE,
+  type TokyoNightThemePalette,
+} from "./theme-palette";
+import { BOX } from "./ui-primitives";
 
 export type FrameSegmentRole = "top" | "middle" | "bottom" | "standalone";
 
@@ -8,6 +12,7 @@ export interface FrameSegmentOptions {
   lines: readonly string[];
   frameEnabled: boolean;
   role: FrameSegmentRole;
+  palette?: TokyoNightThemePalette;
   padUnframed?: boolean;
 }
 
@@ -15,6 +20,7 @@ export interface FrameDockOptions {
   width: number;
   lines: readonly string[];
   frameEnabled: boolean;
+  palette?: TokyoNightThemePalette;
   renderBottom?: () => readonly string[];
   recoverLines?: () => readonly string[];
   onBottomError?: (error: unknown) => void;
@@ -48,16 +54,23 @@ function hasBottomEdge(role: FrameSegmentRole): boolean {
   return role === "bottom" || role === "standalone";
 }
 
-function frameColor(value: string): string {
-  return value.length > 0 ? `${fgRgb(FRAME_RGB)}${value}${RESET}` : "";
+function frameColor(
+  value: string,
+  palette: TokyoNightThemePalette,
+): string {
+  return value.length > 0 ? palette.fg("frame", value) : "";
 }
 
-function renderEdge(width: number, edge: "top" | "bottom"): string {
+function renderEdge(
+  width: number,
+  edge: "top" | "bottom",
+  palette: TokyoNightThemePalette,
+): string {
   if (width === 0) return "";
-  if (width === 1) return frameColor(edge === "top" ? BOX.tl : BOX.bl);
+  if (width === 1) return frameColor(edge === "top" ? BOX.tl : BOX.bl, palette);
   const left = edge === "top" ? BOX.tl : BOX.bl;
   const right = edge === "top" ? BOX.tr : BOX.br;
-  return frameColor(`${left}${BOX.h.repeat(width - 2)}${right}`);
+  return frameColor(`${left}${BOX.h.repeat(width - 2)}${right}`, palette);
 }
 
 function fitLine(line: string, width: number, pad: boolean): string {
@@ -80,18 +93,21 @@ export function renderFrameSegment(options: FrameSegmentOptions): string[] {
     );
   }
 
+  const palette = options.palette ?? DEFAULT_TOKYO_NIGHT_PALETTE;
   const contentWidth = getFrameContentWidth(outputWidth, true);
   const body = options.lines.map((line) => {
     const content = fitLine(line, contentWidth, true);
     return outputWidth >= 2
-      ? frameColor(BOX.v) + content + frameColor(BOX.v)
+      ? frameColor(BOX.v, palette) + content + frameColor(BOX.v, palette)
       : content;
   });
   const result: string[] = [];
-  if (hasTopEdge(options.role)) result.push(renderEdge(outputWidth, "top"));
+  if (hasTopEdge(options.role)) {
+    result.push(renderEdge(outputWidth, "top", palette));
+  }
   result.push(...body);
   if (hasBottomEdge(options.role)) {
-    result.push(renderEdge(outputWidth, "bottom"));
+    result.push(renderEdge(outputWidth, "bottom", palette));
   }
   return result;
 }
@@ -122,6 +138,7 @@ export function composeFrameDock(options: FrameDockOptions): string[] {
       lines: [],
       frameEnabled: options.frameEnabled,
       role: "bottom",
+      palette: options.palette,
     }),
   ];
 }

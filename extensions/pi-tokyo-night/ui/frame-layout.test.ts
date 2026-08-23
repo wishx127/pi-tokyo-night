@@ -105,6 +105,18 @@ describe("shared frame layout", () => {
     expect(getFrameContentWidth(0, true)).toBe(0);
   });
 
+  it("keeps the original Tokyo Night frame color without a caller palette", () => {
+    const lines = renderFrameSegment({
+      width: 8,
+      lines: ["content"],
+      frameEnabled: true,
+      role: "standalone",
+    });
+
+    expect(lines[0]).toMatch(/^\x1b\[38;2;61;53;119m/);
+    expect(lines.at(-1)).toMatch(/^\x1b\[38;2;61;53;119m/);
+  });
+
   it("removes all box chrome when framing is disabled", () => {
     const lines = renderFrameSegment({
       width: 8,

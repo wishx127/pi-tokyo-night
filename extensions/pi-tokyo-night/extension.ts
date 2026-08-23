@@ -41,7 +41,10 @@ import {
 import { buildStatusLines } from "./ui/status-bar";
 import { StatusRenderCache } from "./ui/status-render-cache";
 import { renderFrameSegment } from "./ui/frame-layout";
-import { CYAN, PURPLE, RESET } from "./ui/ui-primitives";
+import {
+  createTokyoNightPalette,
+  type TokyoNightThemePalette,
+} from "./ui/theme-palette";
 import { createCodexUsageStore, createKimiUsageStore, fetchKimiUsage, isCodexModel, isKimiModel, resolveKimiApiKey, type KimiUsageStore } from "./usage";
 
 export type TokyoNightMode = "tui" | "rpc" | "json" | "print";
@@ -62,6 +65,7 @@ type NativeWorkingState = {
   phaseStartedAt: number | undefined;
   activeTools: Map<string, WorkingTool>;
   timer: ReturnType<typeof setInterval> | undefined;
+  indicatorConfigured: boolean;
   setIndicator: ReturnType<typeof resolveWorkingIndicatorSetter>;
 };
 
@@ -99,18 +103,26 @@ type SessionState = {
 
 const WORKING_MESSAGE_INTERVAL_MS = 100;
 const WORKING_INDICATOR_INTERVAL_MS = 80;
-const TOKYO_WORKING_FRAMES = Object.freeze([
-  `${CYAN}⠋${RESET}`,
-  `${PURPLE}⠙${RESET}`,
-  `${CYAN}⠹${RESET}`,
-  `${PURPLE}⠸${RESET}`,
-  `${CYAN}⠼${RESET}`,
-  `${PURPLE}⠴${RESET}`,
-  `${CYAN}⠦${RESET}`,
-  `${PURPLE}⠧${RESET}`,
-  `${CYAN}⠇${RESET}`,
-  `${PURPLE}⠏${RESET}`,
-]);
+const TOKYO_WORKING_GLYPHS = Object.freeze([
+  ["workingCyan", "⠋"],
+  ["workingPurple", "⠙"],
+  ["workingCyan", "⠹"],
+  ["workingPurple", "⠸"],
+  ["workingCyan", "⠼"],
+  ["workingPurple", "⠴"],
+  ["workingCyan", "⠦"],
+  ["workingPurple", "⠧"],
+  ["workingCyan", "⠇"],
+  ["workingPurple", "⠏"],
+] as const);
+
+function buildTokyoWorkingFrames(theme: Theme | undefined): string[] {
+  const palette = theme ? createTokyoNightPalette(theme) : undefined;
+  return TOKYO_WORKING_GLYPHS.map(([role, glyph]) =>
+    palette?.fg(role, glyph) ?? glyph
+  );
+}
+
 const CODEX_COUNTDOWN_REFRESH_MS = 30_000;
 const KIMI_POLL_INTERVAL_MS = 60_000;
 const KIMI_RETRY_DELAYS_MS = [60_000, 120_000, 300_000, 900_000] as const;
@@ -203,12 +215,14 @@ export function buildStatusWidgetLines(
   width: number,
   statusContent: string | string[],
   frameEnabled = true,
+  palette?: TokyoNightThemePalette,
 ): string[] {
   return renderFrameSegment({
     width: safeTerminalWidth(width),
     lines: Array.isArray(statusContent) ? statusContent : [statusContent],
     frameEnabled,
     role: "bottom",
+    palette,
     padUnframed: true,
   });
 }
@@ -294,6 +308,7 @@ export function registerTokyoNightExtension(
     session.working.phase = "waiting";
     session.working.phaseStartedAt = undefined;
     session.working.activeTools.clear();
+    session.working.indicatorConfigured = false;
   };
   const formatDuration = (milliseconds: number): string => {
     const seconds = Math.max(0, milliseconds) / 1000;
@@ -311,8 +326,25 @@ export function registerTokyoNightExtension(
     const elapsed = working.phaseStartedAt === undefined ? "0.0s" : formatDuration(Date.now() - working.phaseStartedAt);
     return `${label} ${elapsed}`;
   };
+  const syncWorkingIndicator = (session: SessionState): void => {
+    const theme = session.ui.theme;
+    if (session.working.indicatorConfigured) return;
+    try {
+      session.working.setIndicator?.({
+        frames: buildTokyoWorkingFrames(theme),
+        intervalMs: WORKING_INDICATOR_INTERVAL_MS,
+      });
+    } catch (error) {
+      if (!isStaleExtensionContextError(error)) {
+        handleExtensionError(error, "working indicator update");
+      }
+    } finally {
+      session.working.indicatorConfigured = true;
+    }
+  };
   const updateWorking = (session: SessionState): void => {
     if (!isCurrent(session) || session.mode !== "tui" || !session.hasUI) return;
+    syncWorkingIndicator(session);
     try { session.ui.setWorkingMessage(workingMessage(session.working)); }
     catch (error) { if (!isStaleExtensionContextError(error)) handleExtensionError(error, "working message update"); }
     try {
@@ -329,14 +361,7 @@ export function registerTokyoNightExtension(
   };
   const startWorking = (session: SessionState): void => {
     stopWorking(session);
-    try {
-      session.working.setIndicator?.({
-        frames: [...TOKYO_WORKING_FRAMES],
-        intervalMs: WORKING_INDICATOR_INTERVAL_MS,
-      });
-    } catch (error) {
-      if (!isStaleExtensionContextError(error)) handleExtensionError(error, "working indicator update");
-    }
+    syncWorkingIndicator(session);
     updateWorking(session);
     session.working.timer = setInterval(() => {
       if (!isCurrent(session)) { stopWorking(session); return; }
@@ -602,6 +627,8 @@ export function registerTokyoNightExtension(
   const createSessionResources = (session: SessionState): void => {
     const borderlessDependencies: BorderlessEditorDependencies = {
       config: configManager,
+      getPalette: () =>
+        session.ui.theme ? createTokyoNightPalette(session.ui.theme) : undefined,
     };
     const renderStatusLines = (width: number, theme: Theme): string[] => {
       if (!isCurrent(session)) return [];
@@ -637,7 +664,12 @@ export function registerTokyoNightExtension(
           codexUsageStore,
           session.kimiUsageStore,
         );
-        return buildStatusWidgetLines(outputWidth, lines, config.editorFrame);
+        return buildStatusWidgetLines(
+          outputWidth,
+          lines,
+          config.editorFrame,
+          theme ? createTokyoNightPalette(theme) : undefined,
+        );
       });
     };
     session.resources.renderFullscreenStatus = (width) =>
@@ -666,6 +698,7 @@ export function registerTokyoNightExtension(
       const panel = new RainPanelComponent(tui, {
         config: configManager,
         rain: session.resources.rainManager!,
+        getTheme: () => session.ui.theme,
       });
       if (isCurrent(session)) session.resources.rainPanel = panel;
       return panel;
@@ -681,7 +714,7 @@ export function registerTokyoNightExtension(
           // Fullscreen composes status inside BorderlessEditor so the host's
           // fixed editor height cannot insert a separator row before it.
           if (isFullscreenTui(tui)) return [];
-          return renderStatusLines(width, theme);
+          return renderStatusLines(width, session.ui.theme ?? theme);
         },
         dispose: () => { if (session.resources.statusTui === tui) session.resources.statusTui = null; },
       };
@@ -841,6 +874,7 @@ export function registerTokyoNightExtension(
         phaseStartedAt: undefined,
         activeTools: new Map(),
         timer: undefined,
+        indicatorConfigured: false,
         setIndicator: resolveWorkingIndicatorSetter(ctx.ui),
       },
       rainActivity: "idle",

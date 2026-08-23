@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import { createTokyoNightPalette } from "./ui/theme-palette";
 
 type ThemeValue = string | number;
 type ThemeSection = Record<string, ThemeValue>;
@@ -118,6 +120,16 @@ function assertResolvableColor(
   assertResolvableColor(vars[reference], vars, `${location} -> vars.${reference}`, nextResolving);
 }
 
+function readAnsiRgb(value: string, channel: "38" | "48"): string {
+  const match = value.match(
+    new RegExp(`\\x1b\\[${channel};2;(\\d+);(\\d+);(\\d+)m`),
+  );
+  expect(match, `missing RGB ${channel} ANSI code`).not.toBeNull();
+  return `#${[match![1], match![2], match![3]]
+    .map((part) => Number(part).toString(16).padStart(2, "0"))
+    .join("")}`;
+}
+
 describe("theme contract", () => {
   const dark = readTheme(THEME_FILES.dark);
   const light = readTheme(THEME_FILES.light);
@@ -155,6 +167,43 @@ describe("theme contract", () => {
       for (const token of REQUIRED_COLOR_TOKENS) {
         expect(Object.hasOwn(colors, token), `${themeName}.colors is missing '${token}'`).toBe(true);
       }
+    }
+  });
+
+  it("keeps the original Tokyo Night chrome palette stable", () => {
+    const palette = createTokyoNightPalette({
+      fg: () => "",
+      bg: () => "",
+    } as unknown as Theme);
+    const foregrounds = [
+      ["prompt", "#bb9af7"],
+      ["workingCyan", "#7dcaf7"],
+      ["workingPurple", "#bb9af7"],
+      ["frame", "#3d3577"],
+      ["statusModel", "#c8c8ff"],
+      ["statusThinking", "#dcdcff"],
+      ["statusPath", "#f0f0ff"],
+      ["statusGit", "#ffffff"],
+      ["statusLimit", "#f5f0ff"],
+      ["statusTokens", "#ffffc8"],
+      ["statusCost", "#c8ffc8"],
+      ["statusContext", "#ffc8c8"],
+    ] as const;
+    const backgrounds = [
+      ["model", "#2d1b69"],
+      ["thinking", "#3d2b7a"],
+      ["path", "#4d3b8a"],
+      ["git", "#5d4b9a"],
+      ["quota", "#6553a2"],
+      ["tokens", "#6d5baa"],
+      ["cost", "#5d5d5d"],
+    ] as const;
+
+    for (const [role, expected] of foregrounds) {
+      expect(readAnsiRgb(palette.fg(role, "x"), "38"), role).toBe(expected);
+    }
+    for (const [role, expected] of backgrounds) {
+      expect(readAnsiRgb(palette.bg(role, "x"), "48"), role).toBe(expected);
     }
   });
 
