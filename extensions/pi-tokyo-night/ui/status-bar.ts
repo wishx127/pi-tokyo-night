@@ -48,7 +48,13 @@ const buildLimitModule = (snap: UsageSnapshot | undefined): Module[] =>
       }]
     : [];
 
-type SessionStats = { input: number; output: number; cost: number };
+export type LiveSessionUsage = {
+  input: number;
+  output: number;
+  cost: number;
+};
+
+type SessionStats = LiveSessionUsage;
 
 type StatsCacheEntry = {
   sessionId: string | undefined;
@@ -161,7 +167,11 @@ function calculateSessionStats(ctx: ExtensionContext): SessionStats {
   return { input, output, cost };
 }
 
-function getSessionStats(ctx: ExtensionContext): SessionStats {
+export function invalidateSessionStats(ctx: ExtensionContext): void {
+  sessionStatsCache.delete(ctx.sessionManager as unknown as object);
+}
+
+export function getSessionStats(ctx: ExtensionContext): LiveSessionUsage {
   const manager = ctx.sessionManager as unknown as object;
   const getLeafId = (
     ctx.sessionManager as unknown as { getLeafId?: () => string | null }
@@ -418,6 +428,7 @@ function buildStatusLayout(
   config: TokyoConfigManager,
   codexUsageStore?: Pick<CodexUsageStore, "getSnapshot">,
   kimiUsageStore?: Pick<KimiUsageStore, "getSnapshot">,
+  liveUsage?: LiveSessionUsage,
 ): StatusLayout {
   // Use a slightly smaller width to account for potential width miscalculations
   // with Nerd Font glyphs that may be rendered as double-width by the terminal
@@ -429,7 +440,10 @@ function buildStatusLayout(
     ...(config.get().statusModules ?? {}),
   };
   const stretchSides = Object.values(statusModules).some((visible) => !visible);
-  const { input, output, cost } = getSessionStats(ctx);
+  const sessionStats = getSessionStats(ctx);
+  const input = sessionStats.input + (liveUsage?.input ?? 0);
+  const output = sessionStats.output + (liveUsage?.output ?? 0);
+  const cost = sessionStats.cost + (liveUsage?.cost ?? 0);
 
   const fmt = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`);
   const fmtCost = (c: number) =>
@@ -578,6 +592,7 @@ export function buildStatusLine(
   config: TokyoConfigManager,
   codexUsageStore?: Pick<CodexUsageStore, "getSnapshot">,
   kimiUsageStore?: Pick<KimiUsageStore, "getSnapshot">,
+  liveUsage?: LiveSessionUsage,
 ): string {
   const layout = buildStatusLayout(
     width,
@@ -588,6 +603,7 @@ export function buildStatusLine(
     config,
     codexUsageStore,
     kimiUsageStore,
+    liveUsage,
   );
   return truncateToWidth(layout.oneLine, width);
 }
@@ -601,6 +617,7 @@ export function buildStatusLines(
   config: TokyoConfigManager,
   codexUsageStore?: Pick<CodexUsageStore, "getSnapshot">,
   kimiUsageStore?: Pick<KimiUsageStore, "getSnapshot">,
+  liveUsage?: LiveSessionUsage,
 ): string[] {
   if (!Number.isFinite(width) || width <= 0) return [];
 
@@ -614,6 +631,7 @@ export function buildStatusLines(
     config,
     codexUsageStore,
     kimiUsageStore,
+    liveUsage,
   );
 
   if (visibleWidth(layout.oneLine) <= renderWidth) {

@@ -374,6 +374,327 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
+  it("shows partial token and cost usage while an assistant response streams", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const statusTui = { requestRender: vi.fn(), mode: "regular" as const };
+    const status = fixture.widgets.get("tokyo-status")(statusTui, theme);
+
+    expect(status.render(500).join("\n")).toContain("Σ 0 tokens");
+
+    await fixture.emit("agent_start", {}, fixture.ctx);
+    statusTui.requestRender.mockClear();
+    await fixture.emit(
+      "message_update",
+      {
+        assistantMessageEvent: {
+          type: "text_delta",
+          partial: {
+            usage: {
+              input: 120,
+              output: 34,
+              cost: { total: 0.03 },
+            },
+          },
+        },
+      },
+      fixture.ctx,
+    );
+
+    expect(status.render(500).join("\n")).toContain("Σ 154 tokens");
+    expect(status.render(500).join("\n")).toContain("$0.03");
+    await vi.advanceTimersByTimeAsync(33);
+    expect(statusTui.requestRender).toHaveBeenCalledOnce();
+
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("replaces live usage updates and reconciles with the finalized session stats", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    const branch: any[] = [];
+    fixture.ctx.sessionManager.getLeafId = () => "leaf-1";
+    fixture.ctx.sessionManager.getBranch = () => branch;
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      theme,
+    );
+
+    await fixture.emit("agent_start", {}, fixture.ctx);
+    await fixture.emit(
+      "message_update",
+      {
+        assistantMessageEvent: {
+          type: "text_delta",
+          partial: {
+            usage: { input: 10, output: 5, cost: { total: 0.01 } },
+          },
+        },
+      },
+      fixture.ctx,
+    );
+    expect(status.render(500).join("\n")).toContain("Σ 15 tokens");
+
+    await fixture.emit(
+      "message_update",
+      {
+        assistantMessageEvent: {
+          type: "text_delta",
+          partial: {
+            usage: { input: 10, output: 20, cost: { total: 0.02 } },
+          },
+        },
+      },
+      fixture.ctx,
+    );
+    expect(status.render(500).join("\n")).toContain("Σ 30 tokens");
+    expect(status.render(500).join("\n")).toContain("$0.02");
+    expect(status.render(500).join("\n")).not.toContain("Σ 45 tokens");
+
+    branch.push({
+      type: "message",
+      message: { role: "assistant", usage: { input: 10, output: 20, cost: { total: 0.02 } } },
+    });
+    // Reconcile even if a host keeps the same leaf identity after updating
+    // the branch; the finalized stats cache is explicitly invalidated.
+    await fixture.emit("agent_end", {}, fixture.ctx);
+
+    expect(status.render(500).join("\n")).toContain("Σ 30 tokens");
+    expect(status.render(500).join("\n")).toContain("$0.02");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("uses final message usage as authoritative without double counting it", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    let leaf = "leaf-1";
+    const branch: any[] = [{
+      type: "message",
+      message: {
+        role: "assistant",
+        usage: { input: 100, output: 100, cost: { total: 1 } },
+      },
+    }];
+    fixture.ctx.sessionManager.getLeafId = () => leaf;
+    fixture.ctx.sessionManager.getBranch = () => branch;
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      theme,
+    );
+
+    expect(status.render(500).join("\n")).toContain("Σ 200 tokens");
+    await fixture.emit("agent_start", {}, fixture.ctx);
+    await fixture.emit(
+      "message_update",
+      {
+        assistantMessageEvent: {
+          type: "text_delta",
+          partial: {
+            usage: { input: 50, output: 50, cost: { total: 0.5 } },
+          },
+        },
+      },
+      fixture.ctx,
+    );
+    expect(status.render(500).join("\n")).toContain("Σ 300 tokens");
+
+    await fixture.emit(
+      "message_end",
+      {
+        message: {
+          role: "assistant",
+          usage: { input: 20, output: 10, cost: { total: 0.2 } },
+        },
+      },
+      fixture.ctx,
+    );
+    // The final provider usage is authoritative, even when it corrects the
+    // larger partial estimate downward.
+    expect(status.render(500).join("\n")).toContain("Σ 230 tokens");
+    expect(status.render(500).join("\n")).toContain("$1.20");
+
+    branch.push({
+      type: "message",
+      message: {
+        role: "assistant",
+        usage: { input: 20, output: 10, cost: { total: 0.2 } },
+      },
+    });
+    leaf = "leaf-2";
+    // The persisted message must reconcile before turn_end as well, so a
+    // repaint in that interval cannot add the final usage a second time.
+    expect(status.render(500).join("\n")).toContain("Σ 230 tokens");
+    await fixture.emit("turn_end", {}, fixture.ctx);
+
+    expect(status.render(500).join("\n")).toContain("Σ 230 tokens");
+    expect(status.render(500).join("\n")).not.toContain("Σ 260 tokens");
+    expect(status.render(500).join("\n")).not.toContain("Σ 330 tokens");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("shows final usage when no partial update carried usage", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    let leaf = "leaf-1";
+    const branch: any[] = [];
+    fixture.ctx.sessionManager.getLeafId = () => leaf;
+    fixture.ctx.sessionManager.getBranch = () => branch;
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      theme,
+    );
+
+    await fixture.emit("agent_start", {}, fixture.ctx);
+    await fixture.emit(
+      "message_end",
+      {
+        message: {
+          role: "assistant",
+          usage: { input: 12, output: 8, cost: { total: 0.04 } },
+        },
+      },
+      fixture.ctx,
+    );
+
+    expect(status.render(500).join("\n")).toContain("Σ 20 tokens");
+    expect(status.render(500).join("\n")).toContain("$0.04");
+
+    branch.push({
+      type: "message",
+      message: {
+        role: "assistant",
+        usage: { input: 12, output: 8, cost: { total: 0.04 } },
+      },
+    });
+    leaf = "leaf-2";
+    expect(status.render(500).join("\n")).toContain("Σ 20 tokens");
+    expect(status.render(500).join("\n")).not.toContain("Σ 40 tokens");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("keeps the live overlay through delayed message persistence", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    let leaf = "leaf-1";
+    let persisted = false;
+    const branch: any[] = [];
+    fixture.ctx.sessionManager.getLeafId = () => leaf;
+    fixture.ctx.sessionManager.getBranch = () => persisted ? branch : [];
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      theme,
+    );
+
+    await fixture.emit("agent_start", {}, fixture.ctx);
+    await fixture.emit(
+      "message_update",
+      {
+        assistantMessageEvent: {
+          type: "text_delta",
+          partial: {
+            usage: { input: 10, output: 5, cost: { total: 0.01 } },
+          },
+        },
+      },
+      fixture.ctx,
+    );
+    expect(status.render(500).join("\n")).toContain("Σ 15 tokens");
+
+    await fixture.emit("message_end", { message: { role: "assistant" } }, fixture.ctx);
+
+    // Pi persists the finalized message after extension message_end handlers
+    // return. The live value must remain visible during that gap.
+    expect(status.render(500).join("\n")).toContain("Σ 15 tokens");
+
+    branch.push({
+      type: "message",
+      message: { role: "assistant", usage: { input: 10, output: 5, cost: { total: 0.01 } } },
+    });
+    persisted = true;
+    leaf = "leaf-2";
+
+    expect(status.render(500).join("\n")).toContain("Σ 15 tokens");
+    expect(status.render(500).join("\n")).not.toContain("Σ 30 tokens");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("reconciles live usage before a subsequent turn starts", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    let leaf = "leaf-1";
+    let persisted = false;
+    const branch: any[] = [];
+    fixture.ctx.sessionManager.getLeafId = () => leaf;
+    fixture.ctx.sessionManager.getBranch = () => persisted ? branch : [];
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      theme,
+    );
+
+    await fixture.emit("agent_start", {}, fixture.ctx);
+    await fixture.emit(
+      "message_update",
+      {
+        assistantMessageEvent: {
+          type: "text_delta",
+          partial: {
+            usage: { input: 10, output: 5, cost: { total: 0.01 } },
+          },
+        },
+      },
+      fixture.ctx,
+    );
+
+    branch.push({
+      type: "message",
+      message: { role: "assistant", usage: { input: 10, output: 5, cost: { total: 0.01 } } },
+    });
+    persisted = true;
+    leaf = "leaf-2";
+    await fixture.emit("turn_start", {}, fixture.ctx);
+
+    expect(status.render(500).join("\n")).toContain("Σ 15 tokens");
+    expect(status.render(500).join("\n")).not.toContain("Σ 30 tokens");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("keeps the status redraw scheduled during frequent stream updates", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const statusTui = { requestRender: vi.fn(), mode: "regular" as const };
+    fixture.widgets.get("tokyo-status")(statusTui, theme);
+
+    await fixture.emit("agent_start", {}, fixture.ctx);
+    statusTui.requestRender.mockClear();
+    const update = (output: number) => fixture.emit(
+      "message_update",
+      {
+        assistantMessageEvent: {
+          type: "text_delta",
+          partial: {
+            usage: { input: 10, output, cost: { total: 0.01 } },
+          },
+        },
+      },
+      fixture.ctx,
+    );
+
+    await update(1);
+    await vi.advanceTimersByTimeAsync(20);
+    await update(2);
+    await vi.advanceTimersByTimeAsync(13);
+
+    expect(statusTui.requestRender).toHaveBeenCalledOnce();
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
   it("refreshes cached status data when the active model changes", async () => {
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);

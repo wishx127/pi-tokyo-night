@@ -38,7 +38,12 @@ import {
   type NeonStudioThemeChoice,
   type NeonStudioThemeResult,
 } from "./ui/neon-studio-controller";
-import { buildStatusLines } from "./ui/status-bar";
+import {
+  buildStatusLines,
+  getSessionStats,
+  invalidateSessionStats,
+  type LiveSessionUsage,
+} from "./ui/status-bar";
 import { StatusRenderCache } from "./ui/status-render-cache";
 import { renderFrameSegment } from "./ui/frame-layout";
 import {
@@ -91,12 +96,16 @@ type SessionState = {
   footerData: ReadonlyFooterDataProvider | null;
   branch: BranchState;
   resources: SessionUIResources;
-  statusRenderDebounceTimeout: ReturnType<typeof setTimeout> | undefined;
+  statusRenderThrottleTimeout: ReturnType<typeof setTimeout> | undefined;
   codexCountdownRefreshTimeout: ReturnType<typeof setTimeout> | undefined;
   working: NativeWorkingState;
   rainActivity: RainActivity;
   kimiUsageStore: KimiUsageStore;
   statusRenderCache: StatusRenderCache;
+  liveUsage: LiveSessionUsage | undefined;
+  liveUsageBaseline: LiveSessionUsage | undefined;
+  liveUsageFinalizing: boolean;
+  liveUsageRevision: number;
   context: ExtensionContext;
   requestStatusRender: (() => void) | undefined;
 };
@@ -138,6 +147,36 @@ export interface PiThemeSettingResult {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function finiteNonNegative(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
+}
+
+function normalizeLiveUsage(value: unknown): LiveSessionUsage | undefined {
+  if (!isRecord(value)) return undefined;
+  const cost = isRecord(value.cost) ? finiteNonNegative(value.cost.total) : undefined;
+  const input = finiteNonNegative(value.input);
+  const output = finiteNonNegative(value.output);
+  if (input === undefined && output === undefined && cost === undefined) {
+    return undefined;
+  }
+  return {
+    input: input ?? 0,
+    output: output ?? 0,
+    cost: cost ?? 0,
+  };
+}
+
+function sameLiveUsage(
+  left: LiveSessionUsage | undefined,
+  right: LiveSessionUsage | undefined,
+): boolean {
+  return left?.input === right?.input &&
+    left?.output === right?.output &&
+    left?.cost === right?.cost;
 }
 
 export function readPiThemeSetting(agentDir = getAgentDir()): string | undefined {
@@ -291,6 +330,54 @@ export function registerTokyoNightExtension(
 
   const requestStatusRenderFor = (session: SessionState): void => {
     if (isCurrent(session)) session.requestStatusRender?.();
+  };
+
+  const usageIncludesLiveValue = (
+    stats: LiveSessionUsage,
+    baseline: LiveSessionUsage,
+    live: LiveSessionUsage,
+  ): boolean =>
+    stats.input >= baseline.input + live.input &&
+    stats.output >= baseline.output + live.output &&
+    stats.cost >= baseline.cost + live.cost;
+
+  const updateLiveUsage = (session: SessionState, value: unknown): void => {
+    const next = normalizeLiveUsage(value);
+    if (!next) return;
+    if (!session.liveUsage) {
+      session.liveUsageBaseline = getSessionStats(session.context);
+    }
+    session.liveUsageFinalizing = false;
+    if (sameLiveUsage(session.liveUsage, next)) return;
+    session.liveUsage = next;
+    session.liveUsageRevision += 1;
+    requestStatusRenderFor(session);
+  };
+
+  const reconcileLiveUsage = (
+    session: SessionState,
+    requestRender = true,
+  ): boolean => {
+    const live = session.liveUsage;
+    const baseline = session.liveUsageBaseline;
+    if (!session.liveUsageFinalizing || !live || !baseline) return false;
+
+    const persisted = getSessionStats(session.context);
+    if (!usageIncludesLiveValue(persisted, baseline, live)) return false;
+
+    session.liveUsage = undefined;
+    session.liveUsageBaseline = undefined;
+    session.liveUsageFinalizing = false;
+    session.liveUsageRevision += 1;
+    if (requestRender) requestStatusRenderFor(session);
+    return true;
+  };
+
+  const finalizeLiveUsage = (session: SessionState): void => {
+    if (!session.liveUsage) return;
+    session.liveUsageFinalizing = true;
+    invalidateSessionStats(session.context);
+    reconcileLiveUsage(session);
   };
 
   const requestRainRender = (session: SessionState): void => {
@@ -558,8 +645,8 @@ export function registerTokyoNightExtension(
     resetWorking(session);
     abortBranch(session.branch);
     session.branch.requestToken += 1;
-    if (session.statusRenderDebounceTimeout !== undefined) clearTimeout(session.statusRenderDebounceTimeout);
-    session.statusRenderDebounceTimeout = undefined;
+    if (session.statusRenderThrottleTimeout !== undefined) clearTimeout(session.statusRenderThrottleTimeout);
+    session.statusRenderThrottleTimeout = undefined;
     if (session.codexCountdownRefreshTimeout !== undefined) clearTimeout(session.codexCountdownRefreshTimeout);
     session.codexCountdownRefreshTimeout = undefined;
   };
@@ -632,6 +719,7 @@ export function registerTokyoNightExtension(
     };
     const renderStatusLines = (width: number, theme: Theme): string[] => {
       if (!isCurrent(session)) return [];
+      reconcileLiveUsage(session, false);
       const outputWidth = safeTerminalWidth(width);
       const config = configManager.get();
       const thinkingLevel = pi.getThinkingLevel();
@@ -652,6 +740,7 @@ export function registerTokyoNightExtension(
         leafId,
         codexUsage,
         kimiUsage,
+        liveUsageRevision: session.liveUsageRevision,
       }, () => {
         void updateBranch(session);
         const lines = buildStatusLines(
@@ -663,6 +752,7 @@ export function registerTokyoNightExtension(
           configManager,
           codexUsageStore,
           session.kimiUsageStore,
+          session.liveUsage,
         );
         return buildStatusWidgetLines(
           outputWidth,
@@ -764,7 +854,9 @@ export function registerTokyoNightExtension(
   });
   pi.on("turn_start", async (_event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
-    if (!session || !isCurrent(session) || session.working.phaseStartedAt === undefined) return;
+    if (!session || !isCurrent(session)) return;
+    finalizeLiveUsage(session);
+    if (session.working.phaseStartedAt === undefined) return;
     setWorkingPhase(session, "waiting", true);
     updateWorking(session);
   });
@@ -772,6 +864,7 @@ export function registerTokyoNightExtension(
     const session = sessionsByIdentity.get(identityOf(ctx));
     if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI) return;
     stopWorking(session);
+    finalizeLiveUsage(session);
     try { requestRainRender(session); }
     catch (error) { if (!isStaleExtensionContextError(error)) handleExtensionError(error, "agent end rain render"); }
   });
@@ -779,15 +872,37 @@ export function registerTokyoNightExtension(
     const session = sessionsByIdentity.get(identityOf(ctx));
     if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI || !ctx.isIdle()) return;
     applyRainProfile(session, "idle");
+    finalizeLiveUsage(session);
     resetWorking(session);
     restoreWorkingUi(session);
   });
   pi.on("message_update", async (event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
-    if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI || session.working.phaseStartedAt === undefined) return;
-    const type = event.assistantMessageEvent.type;
+    if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI) return;
+    const assistantEvent = event.assistantMessageEvent;
+    if ("partial" in assistantEvent) {
+      updateLiveUsage(session, assistantEvent.partial.usage);
+    }
+    if (session.working.phaseStartedAt === undefined) return;
+    const type = assistantEvent.type;
     const phase: WorkingPhase | undefined = type.includes("thinking") || type.includes("toolcall") ? "thinking" : type.includes("text") ? "streaming" : undefined;
     if (phase && setWorkingPhase(session, phase)) updateWorking(session);
+  });
+  pi.on("message_end", async (event, ctx) => {
+    const session = sessionsByIdentity.get(identityOf(ctx));
+    if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI) return;
+    if (event.message.role === "assistant") {
+      updateLiveUsage(session, event.message.usage);
+      if (session.liveUsage) {
+        session.liveUsageFinalizing = true;
+        requestStatusRenderFor(session);
+      }
+    }
+  });
+  pi.on("turn_end", async (_event, ctx) => {
+    const session = sessionsByIdentity.get(identityOf(ctx));
+    if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI) return;
+    finalizeLiveUsage(session);
   });
   pi.on("tool_execution_start", async (event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
@@ -867,7 +982,7 @@ export function registerTokyoNightExtension(
       footerData: null,
       branch: { cachedBranch: "", cacheTime: 0, pending: false, requestToken: 0, requestController: undefined, cwd: undefined },
       resources: { editorFactory: null, editor: null, rainPanel: null, rainManager: null, statusTui: null, renderFullscreenStatus: null, footerOwned: false, footerSubscription: null },
-      statusRenderDebounceTimeout: undefined,
+      statusRenderThrottleTimeout: undefined,
       codexCountdownRefreshTimeout: undefined,
       working: {
         phase: "waiting",
@@ -880,6 +995,10 @@ export function registerTokyoNightExtension(
       rainActivity: "idle",
       kimiUsageStore: createKimiUsageStore(),
       statusRenderCache: new StatusRenderCache(),
+      liveUsage: undefined,
+      liveUsageBaseline: undefined,
+      liveUsageFinalizing: false,
+      liveUsageRevision: 0,
       context: ctx,
       requestStatusRender: undefined,
     };
@@ -896,9 +1015,9 @@ export function registerTokyoNightExtension(
       session.requestStatusRender = () => {
         if (!isCurrent(session)) return;
         session.statusRenderCache.invalidate();
-        if (session.statusRenderDebounceTimeout !== undefined) clearTimeout(session.statusRenderDebounceTimeout);
-        session.statusRenderDebounceTimeout = setTimeout(() => {
-          session.statusRenderDebounceTimeout = undefined;
+        if (session.statusRenderThrottleTimeout !== undefined) return;
+        session.statusRenderThrottleTimeout = setTimeout(() => {
+          session.statusRenderThrottleTimeout = undefined;
           if (isCurrent(session)) requestHostRender(session.resources.statusTui);
         }, 33);
       };

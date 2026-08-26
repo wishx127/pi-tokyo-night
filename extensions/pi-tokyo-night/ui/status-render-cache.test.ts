@@ -47,6 +47,7 @@ describe("StatusRenderCache", () => {
       (key) => ({ ...key, leafId: "leaf-2" }),
       (key) => ({ ...key, codexUsage: {} }),
       (key) => ({ ...key, kimiUsage: {} }),
+      (key) => ({ ...key, liveUsageRevision: 1 }),
     ];
 
     for (const change of changes) {

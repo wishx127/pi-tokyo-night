@@ -8,6 +8,7 @@ interface StatusRenderCacheKey {
   leafId: string | null | undefined;
   codexUsage: unknown;
   kimiUsage: unknown;
+  liveUsageRevision?: number;
 }
 
 type StatusRenderCacheEntry = {
@@ -28,7 +29,8 @@ function keysEqual(
     left.model === right.model &&
     left.leafId === right.leafId &&
     left.codexUsage === right.codexUsage &&
-    left.kimiUsage === right.kimiUsage;
+    left.kimiUsage === right.kimiUsage &&
+    (left.liveUsageRevision ?? 0) === (right.liveUsageRevision ?? 0);
 }
 
 /** Single-entry cache for the fully rendered status frame segment of one live session. */
