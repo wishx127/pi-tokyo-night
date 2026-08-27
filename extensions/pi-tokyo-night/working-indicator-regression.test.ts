@@ -50,6 +50,7 @@ describe("working indicator compatibility regression", () => {
     vi.useFakeTimers();
     const fixture = makeFixture();
     fixture.ui.theme = {
+      name: "tokyo-night-dark",
       fg: vi.fn((color: string, text: string) => `<dark:${color}>${text}</dark:${color}>`),
     };
 
@@ -62,6 +63,7 @@ describe("working indicator compatibility regression", () => {
 
     fixture.ui.setWorkingIndicator.mockClear();
     fixture.ui.theme = {
+      name: "tokyo-night-light",
       fg: vi.fn((color: string, text: string) => `<light:${color}>${text}</light:${color}>`),
     };
     await vi.advanceTimersByTimeAsync(100);
@@ -70,6 +72,37 @@ describe("working indicator compatibility regression", () => {
     const refreshedFrames = fixture.ui.setWorkingIndicator.mock.calls[0][0].frames as string[];
     expect(refreshedFrames[0]).toBe("<light:thinkingLow>⠋</light:thinkingLow>");
     expect(refreshedFrames[1]).toBe("<light:thinkingMedium>⠙</light:thinkingMedium>");
+    await fixture.emit("session_shutdown", {}, fixture.ctx);
+  });
+
+  it("reconfigures working chrome when a stable Theme proxy changes its target", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    let selected: "dark" | "light" = "dark";
+    const themes = {
+      dark: {
+        name: "tokyo-night-dark",
+        fg: (color: string, text: string) => `<dark:${color}>${text}</dark:${color}>`,
+      },
+      light: {
+        name: "tokyo-night-light",
+        fg: (color: string, text: string) => `<light:${color}>${text}</light:${color}>`,
+      },
+    };
+    fixture.ui.theme = new Proxy({}, {
+      get: (_target, property) => themes[selected][property as keyof typeof themes.dark],
+    });
+
+    await fixture.emit("session_start", {}, fixture.ctx);
+    await fixture.emit("agent_start", {}, fixture.ctx);
+    fixture.ui.setWorkingIndicator.mockClear();
+
+    selected = "light";
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(fixture.ui.setWorkingIndicator).toHaveBeenCalledOnce();
+    const frames = fixture.ui.setWorkingIndicator.mock.calls[0][0].frames as string[];
+    expect(frames[0]).toBe("<light:thinkingLow>⠋</light:thinkingLow>");
     await fixture.emit("session_shutdown", {}, fixture.ctx);
   });
 

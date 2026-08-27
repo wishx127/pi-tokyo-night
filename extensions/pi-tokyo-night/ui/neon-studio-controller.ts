@@ -54,6 +54,7 @@ export interface NeonStudioControllerDependencies {
   onConfigChange(change: NeonStudioConfigChange): void;
   previewTheme(choice: NeonStudioThemeChoice): NeonStudioThemeResult;
   saveTheme(choice: NeonStudioThemeChoice): NeonStudioThemeResult;
+  restoreTheme(): NeonStudioThemeResult;
   initialThemeChoice?: NeonStudioThemeChoice;
   persistedThemeChoice?: NeonStudioThemeChoice;
   done(): void;
@@ -66,6 +67,7 @@ export class NeonStudioController {
   private readonly persistedTheme: NeonStudioThemeChoice | undefined;
   private selectedTheme: NeonStudioThemeChoice;
   private themeChanged = false;
+  private themeSelectionTouched = false;
 
   constructor(
     private readonly dependencies: NeonStudioControllerDependencies,
@@ -140,6 +142,7 @@ export class NeonStudioController {
       configSaved = false;
     }
     if (!configSaved) {
+      this.restoreThemePreview();
       this.safeNotify(
         force
           ? "Could not save Tokyo Night settings before Neon Studio closed."
@@ -153,7 +156,15 @@ export class NeonStudioController {
     }
 
     let themeResult: NeonStudioThemeResult = { success: true };
-    if (configSaved && this.themeChanged) {
+    if (force) {
+      if (configSaved) this.restoreThemePreview();
+    } else if (
+      configSaved &&
+      (
+        this.themeChanged ||
+        (this.themeSelectionTouched && this.selectedTheme === "automatic")
+      )
+    ) {
       try {
         themeResult = this.dependencies.saveTheme(this.selectedTheme);
       } catch (error) {
@@ -164,6 +175,7 @@ export class NeonStudioController {
       }
     }
     if (!themeResult.success) {
+      this.restoreThemePreview();
       this.safeNotify(
         themeResult.error ??
           (force
@@ -210,6 +222,23 @@ export class NeonStudioController {
     }
   }
 
+  private restoreThemePreview(): void {
+    let result: NeonStudioThemeResult;
+    try {
+      result = this.dependencies.restoreTheme();
+    } catch (error) {
+      result = {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (!result.success) {
+      this.safeNotify(
+        result.error ?? "Could not restore the opening Tokyo Night theme.",
+      );
+    }
+  }
+
   private safeNotify(message: string): void {
     try {
       this.dependencies.notify(message, "error");
@@ -241,9 +270,15 @@ export class NeonStudioController {
             error: error instanceof Error ? error.message : String(error),
           };
         }
-        if (result.success) {
+        if (result.success || next === "automatic") {
+          if (!result.success) {
+            this.safeNotify(
+              result.error ?? "Could not restore the opening Theme preview.",
+            );
+          }
           this.selectedTheme = next;
           this.themeChanged = this.selectedTheme !== this.persistedTheme;
+          this.themeSelectionTouched = true;
           return true;
         }
         lastError = result.error;

@@ -6,6 +6,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
 import { TokyoConfigManager } from "./core/config";
+import { detectTerminalTheme } from "./core/terminal-theme";
 import {
   createTokyoNightErrorSink,
   installConsoleLogBridge,
@@ -71,7 +72,7 @@ type NativeWorkingState = {
   activeTools: Map<string, WorkingTool>;
   timer: ReturnType<typeof setInterval> | undefined;
   indicatorConfigured: boolean;
-  indicatorTheme: Theme | undefined;
+  indicatorThemeName: string | undefined;
   setIndicator: ReturnType<typeof resolveWorkingIndicatorSetter>;
 };
 
@@ -134,6 +135,7 @@ function buildTokyoWorkingFrames(theme: Theme | undefined): string[] {
 }
 
 const CODEX_COUNTDOWN_REFRESH_MS = 30_000;
+const AUTOMATIC_THEME_QUERY_TIMEOUT_MS = 100;
 const KIMI_POLL_INTERVAL_MS = 60_000;
 const KIMI_RETRY_DELAYS_MS = [60_000, 120_000, 300_000, 900_000] as const;
 const KIMI_SNAPSHOT_MAX_AGE_MS = 10 * 60_000;
@@ -194,7 +196,7 @@ export function readPiThemeSetting(agentDir = getAgentDir()): string | undefined
 }
 
 export function writePiThemeSetting(
-  themeSetting: string,
+  themeSetting: string | undefined,
   agentDir = getAgentDir(),
 ): PiThemeSettingResult {
   const settingsPath = path.join(agentDir, "settings.json");
@@ -213,11 +215,15 @@ export function writePiThemeSetting(
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
 
+    const nextSettings = { ...settings };
+    if (themeSetting === undefined) delete nextSettings.theme;
+    else nextSettings.theme = themeSetting;
+
     fs.mkdirSync(agentDir, { recursive: true });
     temporaryPath = `${settingsPath}.${process.pid}.${Date.now()}.tmp`;
     fs.writeFileSync(
       temporaryPath,
-      JSON.stringify({ ...settings, theme: themeSetting }, null, 2),
+      JSON.stringify(nextSettings, null, 2),
       "utf-8",
     );
     fs.renameSync(temporaryPath, settingsPath);
@@ -397,7 +403,7 @@ export function registerTokyoNightExtension(
     session.working.phaseStartedAt = undefined;
     session.working.activeTools.clear();
     session.working.indicatorConfigured = false;
-    session.working.indicatorTheme = undefined;
+    session.working.indicatorThemeName = undefined;
   };
   const formatDuration = (milliseconds: number): string => {
     const seconds = Math.max(0, milliseconds) / 1000;
@@ -417,9 +423,10 @@ export function registerTokyoNightExtension(
   };
   const syncWorkingIndicator = (session: SessionState): void => {
     const theme = session.ui.theme;
+    const themeName = theme?.name;
     if (
       session.working.indicatorConfigured &&
-      session.working.indicatorTheme === theme
+      session.working.indicatorThemeName === themeName
     ) return;
     try {
       session.working.setIndicator?.({
@@ -432,7 +439,7 @@ export function registerTokyoNightExtension(
       }
     } finally {
       session.working.indicatorConfigured = true;
-      session.working.indicatorTheme = theme;
+      session.working.indicatorThemeName = themeName;
     }
   };
   const updateWorking = (session: SessionState): void => {
@@ -996,7 +1003,7 @@ export function registerTokyoNightExtension(
         activeTools: new Map(),
         timer: undefined,
         indicatorConfigured: false,
-        indicatorTheme: undefined,
+        indicatorThemeName: undefined,
         setIndicator: resolveWorkingIndicatorSetter(ctx.ui),
       },
       rainActivity: "idle",
@@ -1087,26 +1094,102 @@ export function registerTokyoNightExtension(
         persistedThemeChoice === "automatic"
           ? "automatic"
           : activeThemeChoice ?? persistedThemeChoice ?? "automatic";
+      const openingThemeName = ctx.ui.theme.name;
+      const openingTheme = openingThemeName
+        ? ctx.ui.getTheme(openingThemeName)
+        : undefined;
       const previewThemes = {
         dark: ctx.ui.getTheme(themeNameFor("dark")),
         light: ctx.ui.getTheme(themeNameFor("light")),
       };
+      let automaticPreviewRevision = 0;
+      let automaticPreviewPending = false;
+      const restoreOpeningTheme = (): NeonStudioThemeResult => {
+        automaticPreviewRevision += 1;
+        automaticPreviewPending = false;
+        return openingTheme && ctx.ui.theme.name !== openingTheme.name
+          ? ctx.ui.setTheme(openingTheme)
+          : { success: true };
+      };
+      let automaticPreviewTheme: Theme | undefined;
+      let previewAutomaticTheme: (() => void) | undefined;
       const previewTheme = (
         choice: NeonStudioThemeChoice,
       ): NeonStudioThemeResult => {
-        if (choice === "automatic") return { success: true };
-        return previewThemes[choice]
-          ? { success: true }
-          : {
-              success: false,
-              error: `Theme ${themeNameFor(choice)} is not available.`,
-            };
+        if (choice === "automatic") {
+          previewAutomaticTheme?.();
+          return { success: true };
+        }
+
+        automaticPreviewRevision += 1;
+        automaticPreviewPending = false;
+        const preview: Theme | undefined = choice === "dark"
+          ? previewThemes.dark
+          : previewThemes.light;
+        if (!preview) {
+          return {
+            success: false,
+            error: `Theme ${choice === "dark"
+              ? themeNameFor("dark")
+              : themeNameFor("light")} is not available.`,
+          };
+        }
+        return openingTheme ? ctx.ui.setTheme(preview) : { success: true };
       };
       const saveTheme = (
         choice: NeonStudioThemeChoice,
       ): NeonStudioThemeResult => {
         if (choice !== "automatic") {
-          return ctx.ui.setTheme(themeNameFor(choice));
+          const themeName = themeNameFor(choice);
+          const persisted = savePiThemeSetting(themeName);
+          if (!persisted.success) return persisted;
+
+          const rollbackFixedSetting = (
+            applyError: string,
+          ): NeonStudioThemeResult => {
+            try {
+              const rollback = savePiThemeSetting(configuredTheme);
+              return {
+                success: false,
+                error: rollback.success
+                  ? applyError
+                  : `${applyError} ${rollback.error ?? "Could not restore the previous theme setting."}`,
+              };
+            } catch (error) {
+              return {
+                success: false,
+                error: `${applyError} Could not restore the previous theme setting: ${error instanceof Error ? error.message : String(error)}`,
+              };
+            }
+          };
+
+          let applied: NeonStudioThemeResult;
+          try {
+            applied = ctx.ui.setTheme(themeName);
+          } catch (error) {
+            return rollbackFixedSetting(
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+          return applied.success
+            ? applied
+            : rollbackFixedSetting(
+                applied.error ?? `Could not apply ${themeName}.`,
+              );
+        }
+        if (automaticPreviewPending) {
+          const restored = restoreOpeningTheme();
+          if (!restored.success) return restored;
+        } else if (
+          openingTheme &&
+          automaticPreviewTheme &&
+          ctx.ui.theme.name !== automaticPreviewTheme.name
+        ) {
+          const applied = ctx.ui.setTheme(automaticPreviewTheme);
+          if (!applied.success) return applied;
+        }
+        if (configuredTheme === TOKYO_NIGHT_AUTOMATIC_THEME_SETTING) {
+          return { success: true };
         }
         const result = savePiThemeSetting(
           TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
@@ -1114,7 +1197,7 @@ export function registerTokyoNightExtension(
         if (result.success) {
           try {
             ctx.ui.notify(
-              "Automatic Tokyo Night saved. Restart Pi to apply the terminal theme.",
+              "Automatic Tokyo Night saved. Restart Pi to keep following terminal theme changes.",
               "info",
             );
           } catch (error) {
@@ -1129,6 +1212,48 @@ export function registerTokyoNightExtension(
       let studioController: NeonStudioController | null = null;
       try {
         await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+          previewAutomaticTheme = () => {
+            const revision = ++automaticPreviewRevision;
+            automaticPreviewPending = true;
+            automaticPreviewTheme = undefined;
+            void detectTerminalTheme(tui, {
+              timeoutMs: AUTOMATIC_THEME_QUERY_TIMEOUT_MS,
+            }).then(({ scheme }) => {
+              if (revision !== automaticPreviewRevision) return;
+              automaticPreviewPending = false;
+              if (
+                !isCurrent(studioSession) ||
+                studioController?.themeChoice !== "automatic"
+              ) return;
+
+              const preview = previewThemes[scheme];
+              if (!preview) {
+                ctx.ui.notify(
+                  `Theme ${themeNameFor(scheme)} is not available.`,
+                  "error",
+                );
+                return;
+              }
+              automaticPreviewTheme = preview;
+              if (!openingTheme || ctx.ui.theme.name === preview.name) {
+                tui.requestRender();
+                return;
+              }
+              const result = ctx.ui.setTheme(preview);
+              if (!result.success) {
+                ctx.ui.notify(
+                  result.error ?? `Could not preview ${themeNameFor(scheme)}.`,
+                  "error",
+                );
+              }
+            }).catch((error) => {
+              if (revision !== automaticPreviewRevision) return;
+              automaticPreviewPending = false;
+              if (!isStaleExtensionContextError(error)) {
+                handleExtensionError(error, "Automatic theme preview");
+              }
+            });
+          };
           studioController = new NeonStudioController({
             config: configManager,
             errorSink,
@@ -1159,6 +1284,7 @@ export function registerTokyoNightExtension(
             },
             previewTheme,
             saveTheme,
+            restoreTheme: restoreOpeningTheme,
             initialThemeChoice,
             persistedThemeChoice,
             done: () => done(undefined),
@@ -1167,13 +1293,24 @@ export function registerTokyoNightExtension(
             session: studioSession,
             controller: studioController,
           };
+          if (
+            studioController.themeChoice === "automatic" &&
+            persistedThemeChoice === "automatic"
+          ) {
+            previewAutomaticTheme();
+          }
           return new NeonStudioComponent(tui, theme, studioController, {
             renderFullscreenStatus:
               studioSession.resources.renderFullscreenStatus ?? undefined,
             previewThemes,
+            getTheme: openingTheme ? () => ctx.ui.theme : undefined,
+            getAutomaticTheme: () => automaticPreviewTheme,
           });
         });
       } finally {
+        automaticPreviewRevision += 1;
+        automaticPreviewPending = false;
+        previewAutomaticTheme = undefined;
         if (activeNeonStudio?.controller === studioController) {
           const studio = activeNeonStudio;
           activeNeonStudio = null;

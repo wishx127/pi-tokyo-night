@@ -34,6 +34,10 @@ function makeFixture(
   let footerFactory: any;
   let customComponent: any;
   let customTuiMode: "regular" | "fullscreen" = "regular";
+  const queryTerminalColorScheme = vi.fn(
+    async (): Promise<"dark" | "light" | undefined> => "dark",
+  );
+  const queryTerminalBackgroundColor = vi.fn(async () => undefined);
   const ui = {
     setWidget: vi.fn((key: string, content: unknown) => {
       if (content === undefined) widgets.delete(key);
@@ -67,7 +71,12 @@ function makeFixture(
         const done = (value: unknown) => resolve(value);
         Promise.resolve(
           factory(
-            { requestRender: vi.fn(), mode: customTuiMode },
+            {
+              requestRender: vi.fn(),
+              mode: customTuiMode,
+              queryTerminalColorScheme,
+              queryTerminalBackgroundColor,
+            },
             theme,
             {},
             done,
@@ -77,6 +86,16 @@ function makeFixture(
         }, reject);
       })),
   } as any;
+  ui.setTheme.mockImplementation((themeOrName: string | typeof theme) => {
+    const nextTheme = typeof themeOrName === "string"
+      ? ui.getTheme(themeOrName)
+      : themeOrName;
+    if (!nextTheme) {
+      return { success: false, error: `Unknown theme: ${themeOrName}` };
+    }
+    ui.theme = nextTheme;
+    return { success: true };
+  });
   const ctx = {
     ui,
     mode,
@@ -105,10 +124,10 @@ function makeFixture(
     getThinkingLevel: () => "high",
     exec: vi.fn(async () => ({ code: 0, stdout: "main\n", stderr: "" })),
   } as any;
-  let themeSetting = initialThemeSetting;
+  let themeSetting: string | undefined = initialThemeSetting;
   const readPiThemeSetting = vi.fn(() => themeSetting);
   const writePiThemeSetting = vi.fn(
-    (nextThemeSetting: string): PiThemeSettingResult => {
+    (nextThemeSetting: string | undefined): PiThemeSettingResult => {
       themeSetting = nextThemeSetting;
       return { success: true };
     },
@@ -122,6 +141,7 @@ function makeFixture(
   });
   return {
     ui, ctx, pi, widgets, readPiThemeSetting, writePiThemeSetting, errorSink,
+    queryTerminalColorScheme, queryTerminalBackgroundColor,
     get editorFactory() { return editorFactory; },
     get footerFactory() { return footerFactory; },
     get customComponent() { return customComponent; },
@@ -171,6 +191,19 @@ describe("Pi theme settings persistence", () => {
     expect(JSON.parse(fs.readFileSync(settingsPath, "utf-8"))).toEqual({
       ...original,
       theme: TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
+    });
+  });
+
+  it("removes only the global theme setting when restoring an unset value", () => {
+    const settingsPath = path.join(tempDir, "settings.json");
+    fs.writeFileSync(settingsPath, JSON.stringify({
+      theme: "tokyo-night-dark",
+      defaultProvider: "openai",
+    }), "utf-8");
+
+    expect(writePiThemeSetting(undefined, tempDir)).toEqual({ success: true });
+    expect(JSON.parse(fs.readFileSync(settingsPath, "utf-8"))).toEqual({
+      defaultProvider: "openai",
     });
   });
 
@@ -755,13 +788,17 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
-  it("keeps fullscreen local Theme switches off the Status and Git hot path", async () => {
+  it("refreshes fullscreen Status and Git data during a full UI Theme preview", async () => {
     const fixture = makeFixture();
+    fixture.queryTerminalColorScheme.mockResolvedValue("light");
     fixture.setCustomTuiMode("fullscreen");
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
 
     const studio = fixture.command.handler("", fixture.ctx);
-    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+    await vi.waitFor(() => {
+      expect(fixture.customComponent).toBeDefined();
+      expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(tokyoLightTheme);
+    });
     fixture.customComponent.render(80);
     await Promise.resolve();
     await Promise.resolve();
@@ -775,8 +812,9 @@ describe("public layout and lifecycle contract", () => {
     fixture.customComponent.render(80);
     await Promise.resolve();
 
-    expect(fixture.ui.setTheme).not.toHaveBeenCalled();
-    expect(fixture.pi.exec).not.toHaveBeenCalled();
+    expect(fixture.ui.setTheme).toHaveBeenCalledOnce();
+    expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(tokyoDarkTheme);
+    expect(fixture.pi.exec).toHaveBeenCalledOnce();
     fixture.customComponent.handleInput("\x1b");
     await studio;
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
@@ -983,8 +1021,9 @@ describe("public layout and lifecycle contract", () => {
     await studio;
   });
 
-  it("does not reload a stale session when shutdown saves Automatic", async () => {
+  it("restores the opening Theme without saving a stale preview on shutdown", async () => {
     const fixture = makeFixture("tui", "session-1", "tokyo-night-dark");
+    const openingTheme = fixture.ui.theme;
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
 
     const studio = fixture.command.handler("", fixture.ctx);
@@ -995,9 +1034,8 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
     await studio;
 
-    expect(fixture.writePiThemeSetting).toHaveBeenCalledWith(
-      TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
-    );
+    expect(fixture.writePiThemeSetting).not.toHaveBeenCalled();
+    expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(openingTheme);
     expect(fixture.ctx.reload).not.toHaveBeenCalled();
   });
 
@@ -1340,22 +1378,35 @@ describe("public layout and lifecycle contract", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("cycles the three cached theme states without global changes during preview", async () => {
+  it("cycles the three cached theme states through in-memory full UI previews", async () => {
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
 
     const studio = fixture.command.handler("", fixture.ctx);
-    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+    await vi.waitFor(() => {
+      expect(fixture.customComponent).toBeDefined();
+      expect(fixture.queryTerminalColorScheme).toHaveBeenCalledOnce();
+      expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(tokyoDarkTheme);
+    });
     expect(fixture.ui.getTheme).toHaveBeenCalledWith("tokyo-night-dark");
     expect(fixture.ui.getTheme).toHaveBeenCalledWith("tokyo-night-light");
     fixture.ui.getTheme.mockClear();
+    fixture.ui.setTheme.mockClear();
+    fixture.queryTerminalColorScheme.mockClear();
 
     fixture.customComponent.handleInput("\r");
     fixture.customComponent.handleInput("\r");
     fixture.customComponent.handleInput("\r");
 
+    await vi.waitFor(() => {
+      expect(fixture.queryTerminalColorScheme).toHaveBeenCalledOnce();
+      expect(fixture.ui.setTheme.mock.calls.map(([value]: [unknown]) => value)).toEqual([
+        tokyoDarkTheme,
+        tokyoLightTheme,
+        tokyoDarkTheme,
+      ]);
+    });
     expect(fixture.ui.getTheme).not.toHaveBeenCalled();
-    expect(fixture.ui.setTheme).not.toHaveBeenCalled();
     expect(fixture.writePiThemeSetting).not.toHaveBeenCalled();
     expect(fixture.customComponent.render(80).join("\n")).toContain(
       "Theme: Automatic",
@@ -1363,12 +1414,175 @@ describe("public layout and lifecycle contract", () => {
 
     fixture.customComponent.handleInput("\x1b");
     await studio;
-    expect(fixture.ui.setTheme).not.toHaveBeenCalled();
+    expect(fixture.ui.setTheme).toHaveBeenCalledTimes(3);
     expect(fixture.writePiThemeSetting).not.toHaveBeenCalled();
     expect(fixture.ui.notify).not.toHaveBeenCalledWith(
       expect.stringContaining("Restart Pi"),
       "info",
     );
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("keeps Pi native auto-sync when Automatic already matches the terminal scheme", async () => {
+    const fixture = makeFixture(
+      "tui",
+      "session-1",
+      TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
+    );
+    fixture.ui.theme = tokyoDarkTheme;
+    fixture.queryTerminalColorScheme.mockResolvedValue("dark");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => {
+      expect(fixture.customComponent).toBeDefined();
+      expect(fixture.queryTerminalColorScheme).toHaveBeenCalledOnce();
+    });
+    await Promise.resolve();
+
+    expect(fixture.ui.setTheme).not.toHaveBeenCalled();
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("refreshes an initially Automatic theme from the current terminal scheme", async () => {
+    const fixture = makeFixture(
+      "tui",
+      "session-1",
+      TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
+    );
+    fixture.queryTerminalColorScheme.mockResolvedValue("light");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => {
+      expect(fixture.customComponent).toBeDefined();
+      expect(fixture.queryTerminalColorScheme).toHaveBeenCalledOnce();
+      expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(tokyoLightTheme);
+    });
+    expect(fixture.customComponent.render(80).join("\n")).toContain(
+      "Theme: Automatic",
+    );
+
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("previews Automatic from the current terminal scheme instead of the opening Theme", async () => {
+    const fixture = makeFixture("tui", "session-1", "tokyo-night-dark");
+    fixture.queryTerminalColorScheme.mockResolvedValue("dark");
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\r");
+
+    await vi.waitFor(() => {
+      expect(fixture.queryTerminalColorScheme).toHaveBeenCalledOnce();
+      expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(tokyoDarkTheme);
+    });
+    expect(fixture.customComponent.render(80).join("\n")).toContain(
+      "Theme: Automatic",
+    );
+
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("finalizes a pending Automatic preview after cycling back to the persisted choice", async () => {
+    const fixture = makeFixture(
+      "tui",
+      "session-1",
+      TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
+    );
+    fixture.ui.theme = tokyoDarkTheme;
+    let resolveSecondScheme!: (scheme: "dark" | "light" | undefined) => void;
+    fixture.queryTerminalColorScheme
+      .mockResolvedValueOnce("dark")
+      .mockImplementationOnce(() =>
+        new Promise((resolve) => { resolveSecondScheme = resolve; })
+      );
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => {
+      expect(fixture.customComponent).toBeDefined();
+      expect(fixture.queryTerminalColorScheme).toHaveBeenCalledOnce();
+    });
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\r");
+    await vi.waitFor(() =>
+      expect(fixture.queryTerminalColorScheme).toHaveBeenCalledTimes(2)
+    );
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+
+    expect(fixture.writePiThemeSetting).not.toHaveBeenCalled();
+    expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(tokyoDarkTheme);
+    resolveSecondScheme("light");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(tokyoDarkTheme);
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("does not leave a pinned preview active when Automatic is saved during detection", async () => {
+    const fixture = makeFixture("tui", "session-1", "tokyo-night-dark");
+    let resolveScheme!: (scheme: "dark" | "light" | undefined) => void;
+    fixture.queryTerminalColorScheme.mockImplementation(() =>
+      new Promise((resolve) => { resolveScheme = resolve; })
+    );
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\r");
+    await vi.waitFor(() => expect(fixture.queryTerminalColorScheme).toHaveBeenCalledOnce());
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+
+    expect(fixture.writePiThemeSetting).toHaveBeenCalledWith(
+      TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
+    );
+    expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(theme);
+    resolveScheme("dark");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(theme);
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("ignores a stale Automatic detection after a pinned Theme is selected", async () => {
+    const fixture = makeFixture("tui", "session-1", "tokyo-night-dark");
+    let resolveScheme!: (scheme: "dark" | "light" | undefined) => void;
+    fixture.queryTerminalColorScheme.mockImplementation(() =>
+      new Promise((resolve) => { resolveScheme = resolve; })
+    );
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\r");
+    await vi.waitFor(() => expect(fixture.queryTerminalColorScheme).toHaveBeenCalledOnce());
+    fixture.customComponent.handleInput("\r");
+    resolveScheme("light");
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fixture.customComponent.render(80).join("\n")).toContain(
+      "Theme: Tokyo Night Dark",
+    );
+    expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(tokyoDarkTheme);
+
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
@@ -1393,7 +1607,7 @@ describe("public layout and lifecycle contract", () => {
     fixture.customComponent.handleInput("\x1b");
     await studio;
     expect(fixture.ui.setTheme).toHaveBeenCalledOnce();
-    expect(fixture.ui.setTheme).toHaveBeenCalledWith("tokyo-night-dark");
+    expect(fixture.ui.setTheme).toHaveBeenLastCalledWith("tokyo-night-dark");
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
@@ -1431,9 +1645,14 @@ describe("public layout and lifecycle contract", () => {
     fixture.customComponent.handleInput("\x1b");
     await studio;
 
-    expect(fixture.ui.setTheme).toHaveBeenCalledOnce();
-    expect(fixture.ui.setTheme).toHaveBeenCalledWith("tokyo-night-light");
-    expect(fixture.writePiThemeSetting).not.toHaveBeenCalled();
+    expect(fixture.ui.setTheme.mock.calls.map(([value]: [unknown]) => value)).toEqual([
+      tokyoDarkTheme,
+      tokyoLightTheme,
+      "tokyo-night-light",
+    ]);
+    expect(fixture.writePiThemeSetting).toHaveBeenCalledWith(
+      "tokyo-night-light",
+    );
     expect(fixture.ctx.reload).not.toHaveBeenCalled();
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
@@ -1457,7 +1676,8 @@ describe("public layout and lifecycle contract", () => {
     await studio;
 
     expect(fixture.writePiThemeSetting).not.toHaveBeenCalled();
-    expect(fixture.ui.setTheme).not.toHaveBeenCalled();
+    expect(fixture.ui.setTheme).toHaveBeenCalledOnce();
+    expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(tokyoDarkTheme);
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
@@ -1516,12 +1736,42 @@ describe("public layout and lifecycle contract", () => {
     expect(fixture.writePiThemeSetting).toHaveBeenCalledWith(
       TOKYO_NIGHT_AUTOMATIC_THEME_SETTING,
     );
-    expect(fixture.ui.setTheme).not.toHaveBeenCalled();
+    expect(fixture.ui.setTheme.mock.calls.map(([value]: [unknown]) => value)).toEqual([
+      tokyoLightTheme,
+      theme,
+    ]);
     expect(fixture.ctx.reload).not.toHaveBeenCalled();
     expect(fixture.ui.notify).toHaveBeenCalledWith(
-      "Automatic Tokyo Night saved. Restart Pi to apply the terminal theme.",
+      "Automatic Tokyo Night saved. Restart Pi to keep following terminal theme changes.",
       "info",
     );
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("reapplies the detected Automatic theme after a failed save is retried", async () => {
+    const fixture = makeFixture("tui", "session-1", "tokyo-night-dark");
+    fixture.queryTerminalColorScheme.mockResolvedValue("dark");
+    fixture.writePiThemeSetting.mockReturnValueOnce({
+      success: false,
+      error: "settings write failed",
+    });
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\r");
+    await vi.waitFor(() =>
+      expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(tokyoDarkTheme)
+    );
+
+    fixture.customComponent.handleInput("\x1b");
+    expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(theme);
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+
+    expect(fixture.writePiThemeSetting).toHaveBeenCalledTimes(2);
+    expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(tokyoDarkTheme);
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
@@ -1539,7 +1789,10 @@ describe("public layout and lifecycle contract", () => {
     fixture.customComponent.handleInput("\r");
     fixture.customComponent.handleInput("\x1b");
 
-    expect(fixture.ui.setTheme).not.toHaveBeenCalled();
+    expect(fixture.ui.setTheme.mock.calls.map(([value]: [unknown]) => value)).toEqual([
+      tokyoLightTheme,
+      theme,
+    ]);
     expect(fixture.ui.notify).toHaveBeenCalledWith(
       "settings write failed",
       "error",
@@ -1553,16 +1806,85 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
-  it("persists the locally previewed Theme only when Studio closes", async () => {
-    const fixture = makeFixture();
+  it("restores the previous setting when applying a persisted fixed Theme throws", async () => {
+    const fixture = makeFixture("tui", "session-1", "other-theme");
+    const setTheme = fixture.ui.setTheme.getMockImplementation()!;
+    fixture.ui.setTheme.mockImplementation((value: unknown) => {
+      if (typeof value === "string") throw new Error("fixed apply failed");
+      return setTheme(value);
+    });
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
 
     const studio = fixture.command.handler("", fixture.ctx);
     await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
     fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\x1b");
+
+    expect(fixture.writePiThemeSetting.mock.calls.map(
+      ([value]: [string | undefined]) => value,
+    )).toEqual([
+      "tokyo-night-dark",
+      "other-theme",
+    ]);
+    expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(theme);
+    expect(fixture.ui.notify).toHaveBeenCalledWith(
+      "fixed apply failed",
+      "error",
+    );
+
+    fixture.ui.setTheme.mockImplementation(setTheme);
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("keeps Studio open and restores the opening Theme when fixed-theme persistence fails", async () => {
+    const fixture = makeFixture("tui", "session-1", "tokyo-night-dark");
+    fixture.writePiThemeSetting.mockReturnValueOnce({
+      success: false,
+      error: "fixed theme write failed",
+    });
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\x1b");
+
+    expect(fixture.writePiThemeSetting).toHaveBeenCalledWith(
+      "tokyo-night-light",
+    );
+    expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(theme);
+    expect(fixture.ui.setTheme).not.toHaveBeenCalledWith("tokyo-night-light");
+    expect(fixture.ui.notify).toHaveBeenCalledWith(
+      "fixed theme write failed",
+      "error",
+    );
+
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+    expect(fixture.writePiThemeSetting).toHaveBeenCalledTimes(2);
+    expect(fixture.ui.setTheme).toHaveBeenLastCalledWith("tokyo-night-light");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("previews the selected Theme across the UI before persisting it on close", async () => {
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => {
+      expect(fixture.customComponent).toBeDefined();
+      expect(fixture.queryTerminalColorScheme).toHaveBeenCalledOnce();
+      expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(tokyoDarkTheme);
+    });
+    fixture.ui.setTheme.mockClear();
+    fixture.customComponent.handleInput("\r");
 
     expect(fixture.ui.getTheme).toHaveBeenCalledWith("tokyo-night-dark");
-    expect(fixture.ui.setTheme).not.toHaveBeenCalled();
+    expect(fixture.ui.setTheme).toHaveBeenCalledOnce();
+    expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(tokyoDarkTheme);
+    expect(fixture.writePiThemeSetting).not.toHaveBeenCalled();
     expect(fixture.customComponent.render(80).join("\n")).toContain(
       "Theme: Tokyo Night Dark",
     );
@@ -1570,8 +1892,11 @@ describe("public layout and lifecycle contract", () => {
     fixture.customComponent.handleInput("\x1b");
     await studio;
 
-    expect(fixture.ui.setTheme).toHaveBeenCalledOnce();
-    expect(fixture.ui.setTheme).toHaveBeenCalledWith("tokyo-night-dark");
+    expect(fixture.writePiThemeSetting).toHaveBeenCalledWith(
+      "tokyo-night-dark",
+    );
+    expect(fixture.ui.setTheme).toHaveBeenCalledTimes(2);
+    expect(fixture.ui.setTheme).toHaveBeenLastCalledWith("tokyo-night-dark");
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 

@@ -36,7 +36,7 @@ Restart Pi, then open `/tokyo-night` to choose Dark, Light, or Automatic and cus
 
 **Powerline status bar** — See the model, thinking level, path, Git branch, provider limits, tokens, cost, and context progress at a glance.
 
-**Neon Studio** — Open `/tokyo-night` to preview Dark and Light themes, configure automatic switching for the next Pi start, and customize the frame, rain, quota, icons, and status modules live.
+**Neon Studio** — Open `/tokyo-night` to preview Dark and Light themes. Automatic immediately follows the current IDE terminal background and saves the light/dark pair for the next Pi start. You can also customize the frame, rain, quota, icons, and status modules live.
 
 ## 🛠 Usage
 
@@ -84,7 +84,7 @@ Extension settings are persisted in an extension-owned file:
 - **Windows:** `%USERPROFILE%\.pi\agent\extensions\pi-tokyo-night.json`
 - **macOS / Linux:** `~/.pi/agent/extensions/pi-tokyo-night.json`
 
-Existing settings are copied here automatically on first run. Neon Studio applies extension settings and pinned Dark/Light themes live; Automatic applies after restarting Pi. The file remains available for manual editing, with unspecified status modules enabled by default. Manually edited values are loaded on the next Pi start:
+Existing settings are copied here automatically on first run. Neon Studio applies extension settings and pinned Dark/Light themes live; The file remains available for manual editing, with unspecified status modules enabled by default. Manually edited values are loaded on the next Pi start:
 
 ```json
 {

@@ -36,7 +36,7 @@ pi install npm:@wishx127/pi-tokyo-night
 
 **Powerline 状态栏** —— 一眼查看模型、思考等级、路径、Git 分支、提供商限额、Tokens、费用和上下文进度。
 
-**Neon Studio** —— 使用 `/tokyo-night` 实时预览深色和浅色主题、配置下次启动 Pi 时使用的自动切换，并调整外框、雨景、配额、图标和状态模块。
+**Neon Studio** —— 使用 `/tokyo-night` 实时预览深色和浅色主题；Automatic 会根据当前 IDE 终端背景即时选择对应配色，并保存下次启动使用的自动组合。你还可以调整外框、雨景、配额、图标和状态模块。
 
 ## 🛠 使用
 
@@ -82,7 +82,7 @@ pi install npm:@wishx127/pi-tokyo-night
 - **Windows：** `%USERPROFILE%\.pi\agent\extensions\pi-tokyo-night.json`
 - **macOS / Linux：** `~/.pi/agent/extensions/pi-tokyo-night.json`
 
-首次运行时，现有设置会自动复制到此文件。Neon Studio 会实时应用扩展设置以及固定的深色/浅色主题；自动主题会在重启 Pi 后生效。该文件仍可手动编辑，未指定的状态模块默认启用。手动编辑的值会在下一次启动 Pi 时加载：
+首次运行时，现有设置会自动复制到此文件。Neon Studio 会实时应用扩展设置以及固定的深色/浅色主题；该文件仍可手动编辑，未指定的状态模块默认启用。手动编辑的值会在下一次启动 Pi 时加载：
 
 ```json
 {
