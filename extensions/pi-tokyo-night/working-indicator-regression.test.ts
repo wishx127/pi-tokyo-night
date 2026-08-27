@@ -46,22 +46,30 @@ describe("working indicator compatibility regression", () => {
     }
   });
 
-  it("keeps working indicator chrome stable when the UI theme changes mid-run", async () => {
+  it("reconfigures working indicator chrome when the active theme changes", async () => {
     vi.useFakeTimers();
     const fixture = makeFixture();
-    fixture.ui.theme = { fg: vi.fn((_color: string, text: string) => text) };
+    fixture.ui.theme = {
+      fg: vi.fn((color: string, text: string) => `<dark:${color}>${text}</dark:${color}>`),
+    };
 
     await fixture.emit("session_start", {}, fixture.ctx);
     await fixture.emit("agent_start", {}, fixture.ctx);
     expect(fixture.ui.setWorkingIndicator).toHaveBeenCalledOnce();
-    const frames = fixture.ui.setWorkingIndicator.mock.calls[0][0].frames as string[];
-    expect(frames[0]).toContain("\x1b[38;2;125;202;247m");
-    expect(frames[1]).toContain("\x1b[38;2;187;154;247m");
+    const initialFrames = fixture.ui.setWorkingIndicator.mock.calls[0][0].frames as string[];
+    expect(initialFrames[0]).toBe("<dark:thinkingLow>⠋</dark:thinkingLow>");
+    expect(initialFrames[1]).toBe("<dark:thinkingMedium>⠙</dark:thinkingMedium>");
 
-    fixture.ui.theme = { fg: vi.fn((_color: string, text: string) => `L${text}`) };
+    fixture.ui.setWorkingIndicator.mockClear();
+    fixture.ui.theme = {
+      fg: vi.fn((color: string, text: string) => `<light:${color}>${text}</light:${color}>`),
+    };
     await vi.advanceTimersByTimeAsync(100);
 
     expect(fixture.ui.setWorkingIndicator).toHaveBeenCalledOnce();
+    const refreshedFrames = fixture.ui.setWorkingIndicator.mock.calls[0][0].frames as string[];
+    expect(refreshedFrames[0]).toBe("<light:thinkingLow>⠋</light:thinkingLow>");
+    expect(refreshedFrames[1]).toBe("<light:thinkingMedium>⠙</light:thinkingMedium>");
     await fixture.emit("session_shutdown", {}, fixture.ctx);
   });
 

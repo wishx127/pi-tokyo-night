@@ -130,6 +130,40 @@ function readAnsiRgb(value: string, channel: "38" | "48"): string {
     .join("")}`;
 }
 
+function resolveHexColor(value: ThemeValue, vars: ThemeSection): string {
+  if (typeof value === "string" && HEX_COLOR.test(value)) {
+    return value.toLowerCase();
+  }
+  if (typeof value === "string" && Object.hasOwn(vars, value)) {
+    return resolveHexColor(vars[value], vars);
+  }
+  throw new Error(`Expected a resolvable hex color, received '${String(value)}'`);
+}
+
+function relativeLuminance(hex: string): number {
+  const channels = [1, 3, 5].map((offset) =>
+    Number.parseInt(hex.slice(offset, offset + 2), 16) / 255
+  );
+  const linear = channels.map((channel) =>
+    channel <= 0.04045
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4
+  );
+  return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const lighter = Math.max(
+    relativeLuminance(foreground),
+    relativeLuminance(background),
+  );
+  const darker = Math.min(
+    relativeLuminance(foreground),
+    relativeLuminance(background),
+  );
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 describe("theme contract", () => {
   const dark = readTheme(THEME_FILES.dark);
   const light = readTheme(THEME_FILES.light);
@@ -170,15 +204,12 @@ describe("theme contract", () => {
     }
   });
 
-  it("keeps the original Tokyo Night chrome palette stable", () => {
+  it("keeps the original Tokyo Night status and frame chrome stable", () => {
     const palette = createTokyoNightPalette({
       fg: () => "",
       bg: () => "",
     } as unknown as Theme);
     const foregrounds = [
-      ["prompt", "#bb9af7"],
-      ["workingCyan", "#7dcaf7"],
-      ["workingPurple", "#bb9af7"],
       ["frame", "#3d3577"],
       ["statusModel", "#c8c8ff"],
       ["statusThinking", "#dcdcff"],
@@ -204,6 +235,24 @@ describe("theme contract", () => {
     }
     for (const [role, expected] of backgrounds) {
       expect(readAnsiRgb(palette.bg(role, "x"), "48"), role).toBe(expected);
+    }
+  });
+
+  it.each([
+    ["dark", dark],
+    ["light", light],
+  ] as const)("keeps %s adaptive surface colors distinguishable from the page background", (name, theme) => {
+    const vars = getSection(theme, "vars") ?? {};
+    const colors = getSection(theme, "colors") ?? {};
+    const exported = getSection(theme, "export") ?? {};
+    const background = resolveHexColor(exported.pageBg, vars);
+
+    for (const token of ["accent", "thinkingLow", "thinkingMedium", "dim"] as const) {
+      const foreground = resolveHexColor(colors[token], vars);
+      expect(
+        contrastRatio(foreground, background),
+        `${name}.colors.${token} must have at least 3:1 contrast`,
+      ).toBeGreaterThanOrEqual(3);
     }
   });
 

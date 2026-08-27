@@ -109,6 +109,27 @@ describe("BorderlessEditor public composition", () => {
     expect(lines).toContain("❯");
   });
 
+  it("renders the input prompt with the active Theme accent", () => {
+    const activeTheme = {
+      fg: vi.fn((color: string, text: string) => `<fg:${color}>${text}</fg:${color}>`),
+    } as unknown as Theme;
+    const config = { get: vi.fn(() => configShape(false, true)) };
+    const editor = new BorderlessEditor(
+      { requestRender: vi.fn() } as unknown as TUI,
+      {} as EditorTheme,
+      {} as KeybindingsManager,
+      {
+        config: config as any,
+        getPalette: () => createTokyoNightPalette(activeTheme),
+      },
+    );
+
+    expect(editor.render(40).join("\n")).toContain(
+      "<fg:accent>❯</fg:accent>",
+    );
+    expect(activeTheme.fg).toHaveBeenCalledWith("accent", "❯");
+  });
+
   it("composes fullscreen status rows inside the editor dock", () => {
     const renderFullscreenStatus = vi.fn(() => ["status row", "status bottom"]);
     const { editor } = makeEditor(

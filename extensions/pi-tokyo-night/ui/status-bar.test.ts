@@ -20,7 +20,7 @@ function makeStatusTheme(
       borderMuted: dark ? "#3d3577" : "#b4aed6",
       error: dark ? "#f7768e" : "#c11f3d",
       warning: dark ? "#e0af68" : "#885e16",
-      dim: dark ? "#414868" : "#8a92b4",
+      dim: "#697096",
       thinkingLow: dark ? "#7dcfff" : "#0979a5",
       thinkingXhigh: dark ? "#f7768e" : "#c11f3d",
       text: dark ? "#c0caf5" : "#24283b",
@@ -125,14 +125,14 @@ describe("buildStatusLine", () => {
       "tokyo-night-dark",
       {
         accent: "\x1b[38;2;187;154;247m",
-        dim: "\x1b[38;2;65;72;104m",
+        dim: "\x1b[38;2;105;112;150m",
       },
     ],
     [
       "tokyo-night-light",
       {
         accent: "\x1b[38;2;102;54;186m",
-        dim: "\x1b[38;2;138;146;180m",
+        dim: "\x1b[38;2;105;112;150m",
       },
     ],
   ] as const)(

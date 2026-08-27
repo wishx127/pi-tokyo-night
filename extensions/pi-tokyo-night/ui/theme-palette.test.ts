@@ -23,10 +23,13 @@ describe("Tokyo Night theme palette", () => {
       "<fg:warning>🌙</fg:warning>",
     );
     expect(palette.fg("prompt", "❯")).toBe(
-      "\x1b[38;2;187;154;247m❯\x1b[39m",
+      "<fg:accent>❯</fg:accent>",
     );
     expect(palette.fg("workingCyan", "⠋")).toBe(
-      "\x1b[38;2;125;202;247m⠋\x1b[39m",
+      "<fg:thinkingLow>⠋</fg:thinkingLow>",
+    );
+    expect(palette.fg("workingPurple", "⠙")).toBe(
+      "<fg:thinkingMedium>⠙</fg:thinkingMedium>",
     );
     expect(palette.fg("frame", "─")).toBe(
       "\x1b[38;2;61;53;119m─\x1b[39m",

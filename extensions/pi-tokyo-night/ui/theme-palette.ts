@@ -51,18 +51,17 @@ const THEME_FOREGROUND_TOKENS: Partial<
   rain: "thinkingLow",
   star: "accent",
   moon: "warning",
+  prompt: "accent",
+  workingCyan: "thinkingLow",
+  workingPurple: "thinkingMedium",
 };
 
-// Tokyo Night's extension chrome is intentionally stable across the host's
-// light/dark themes. The host theme supplies the dynamic Rain accents, while
-// the status bar, prompt, working indicator, and shared frame retain the
-// original Tokyo Night visual identity.
+// Tokyo Night's status bar and shared frame retain a stable visual identity.
+// Foregrounds rendered directly on the terminal surface follow the active
+// Theme so they remain legible across light and dark backgrounds.
 const STATIC_FOREGROUND_COLORS: Partial<
   Record<TokyoNightForegroundRole, RgbColor>
 > = {
-  prompt: [187, 154, 247], // #bb9af7
-  workingCyan: [125, 202, 247], // #7dcfff
-  workingPurple: [187, 154, 247], // #bb9af7
   frame: [61, 53, 119], // #3d3577
   statusModel: [200, 200, 255],
   statusThinking: [220, 220, 255],
@@ -110,8 +109,8 @@ function renderChromeTransition(
 }
 
 /**
- * Resolve Rain accents through the active Theme while keeping Tokyo Night's
- * chrome independent from generic content-surface tokens.
+ * Resolve surface accents through the active Theme while keeping Tokyo Night's
+ * status and frame chrome independent from generic content-surface tokens.
  */
 export function createTokyoNightPalette(
   theme: Theme,

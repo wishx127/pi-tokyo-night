@@ -71,6 +71,7 @@ type NativeWorkingState = {
   activeTools: Map<string, WorkingTool>;
   timer: ReturnType<typeof setInterval> | undefined;
   indicatorConfigured: boolean;
+  indicatorTheme: Theme | undefined;
   setIndicator: ReturnType<typeof resolveWorkingIndicatorSetter>;
 };
 
@@ -396,6 +397,7 @@ export function registerTokyoNightExtension(
     session.working.phaseStartedAt = undefined;
     session.working.activeTools.clear();
     session.working.indicatorConfigured = false;
+    session.working.indicatorTheme = undefined;
   };
   const formatDuration = (milliseconds: number): string => {
     const seconds = Math.max(0, milliseconds) / 1000;
@@ -415,7 +417,10 @@ export function registerTokyoNightExtension(
   };
   const syncWorkingIndicator = (session: SessionState): void => {
     const theme = session.ui.theme;
-    if (session.working.indicatorConfigured) return;
+    if (
+      session.working.indicatorConfigured &&
+      session.working.indicatorTheme === theme
+    ) return;
     try {
       session.working.setIndicator?.({
         frames: buildTokyoWorkingFrames(theme),
@@ -427,6 +432,7 @@ export function registerTokyoNightExtension(
       }
     } finally {
       session.working.indicatorConfigured = true;
+      session.working.indicatorTheme = theme;
     }
   };
   const updateWorking = (session: SessionState): void => {
@@ -990,6 +996,7 @@ export function registerTokyoNightExtension(
         activeTools: new Map(),
         timer: undefined,
         indicatorConfigured: false,
+        indicatorTheme: undefined,
         setIndicator: resolveWorkingIndicatorSetter(ctx.ui),
       },
       rainActivity: "idle",
