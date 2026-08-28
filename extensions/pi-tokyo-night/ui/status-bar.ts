@@ -56,6 +56,11 @@ export type LiveSessionUsage = {
 
 type SessionStats = LiveSessionUsage;
 
+type CacheUsage = Pick<
+  AssistantMessage["usage"],
+  "input" | "cacheRead" | "cacheWrite"
+>;
+
 type StatsCacheEntry = {
   sessionId: string | undefined;
   leafId: string;
@@ -78,9 +83,16 @@ type ContextUsageCacheEntry = {
   usage: ContextUsage | undefined;
 };
 
+type CacheHitRateCacheEntry = {
+  sessionId: string | undefined;
+  leafId: string | null;
+  rate: number | undefined;
+};
+
 // Session branches are immutable between leaf changes. Keep this cache keyed by
 // manager identity so a reused module can never share stats between sessions.
 const sessionStatsCache = new WeakMap<object, StatsCacheEntry>();
+const cacheHitRateCache = new WeakMap<object, CacheHitRateCacheEntry>();
 
 // Context usage can change while a leaf is streaming, so this is intentionally
 // time-bounded rather than leaf-only. A one-second sample keeps the status
@@ -148,6 +160,102 @@ function getCachedContextUsage(
   return usage;
 }
 
+function cacheUsage(value: unknown): CacheUsage | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const usage = value as Partial<CacheUsage>;
+  if (
+    typeof usage.input !== "number" || !Number.isFinite(usage.input) ||
+    typeof usage.cacheRead !== "number" || !Number.isFinite(usage.cacheRead) ||
+    typeof usage.cacheWrite !== "number" || !Number.isFinite(usage.cacheWrite)
+  ) return undefined;
+  return {
+    input: usage.input,
+    cacheRead: usage.cacheRead,
+    cacheWrite: usage.cacheWrite,
+  };
+}
+
+/** Mirror Pi's native Footer calculation for the latest Assistant request. */
+export function getLatestCacheHitRate(
+  ctx: ExtensionContext,
+): number | undefined {
+  const manager = ctx.sessionManager as unknown as {
+    getEntries?: () => unknown[];
+    getLeafId?: () => string | null;
+    getSessionId?: () => string;
+  };
+  if (typeof manager.getEntries !== "function") return undefined;
+
+  let sessionId: string | undefined;
+  let leafId: string | null | undefined;
+  try {
+    sessionId = typeof manager.getSessionId === "function"
+      ? manager.getSessionId()
+      : undefined;
+    leafId = typeof manager.getLeafId === "function"
+      ? manager.getLeafId()
+      : undefined;
+  } catch {
+    // Scan without caching when host identity methods are unavailable.
+  }
+  const cacheOwner = ctx.sessionManager as unknown as object;
+  const cached = cacheHitRateCache.get(cacheOwner);
+  if (
+    leafId !== undefined &&
+    cached !== undefined &&
+    cached.sessionId === sessionId &&
+    cached.leafId === leafId
+  ) return cached.rate;
+
+  let cacheReported = false;
+  let cacheFieldsValid = true;
+  let latestRate: number | undefined;
+  try {
+    for (const candidate of manager.getEntries.call(ctx.sessionManager)) {
+      if (typeof candidate !== "object" || candidate === null) continue;
+      const entry = candidate as {
+        type?: unknown;
+        message?: { role?: unknown; usage?: unknown };
+        usage?: unknown;
+      };
+      const assistant =
+        entry.type === "message" && entry.message?.role === "assistant";
+      const nestedUsage =
+        entry.type === "message" && entry.message?.role === "toolResult"
+          ? entry.message.usage
+          : (entry.type === "compaction" || entry.type === "branch_summary")
+            ? entry.usage
+            : undefined;
+      const rawUsage = assistant ? entry.message?.usage : nestedUsage;
+      if (rawUsage === undefined) continue;
+
+      const usage = cacheUsage(rawUsage);
+      if (!usage) {
+        cacheFieldsValid = false;
+        if (assistant) latestRate = undefined;
+        continue;
+      }
+      if (assistant) {
+        const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
+        latestRate = promptTokens > 0
+          ? (usage.cacheRead / promptTokens) * 100
+          : undefined;
+      }
+      if (usage.cacheRead > 0 || usage.cacheWrite > 0) {
+        cacheReported = true;
+      }
+    }
+  } catch (error) {
+    handleExtensionError(error, "cache hit rate");
+    return undefined;
+  }
+  const rate = cacheFieldsValid && cacheReported ? latestRate : undefined;
+  if (leafId !== undefined) {
+    cacheHitRateCache.set(cacheOwner, { sessionId, leafId, rate });
+  }
+  return rate;
+}
+
 function calculateSessionStats(ctx: ExtensionContext): SessionStats {
   let input = 0;
   let output = 0;
@@ -168,7 +276,9 @@ function calculateSessionStats(ctx: ExtensionContext): SessionStats {
 }
 
 export function invalidateSessionStats(ctx: ExtensionContext): void {
-  sessionStatsCache.delete(ctx.sessionManager as unknown as object);
+  const manager = ctx.sessionManager as unknown as object;
+  sessionStatsCache.delete(manager);
+  cacheHitRateCache.delete(manager);
 }
 
 export function getSessionStats(ctx: ExtensionContext): LiveSessionUsage {
@@ -441,6 +551,9 @@ function buildStatusLayout(
   };
   const stretchSides = Object.values(statusModules).some((visible) => !visible);
   const sessionStats = getSessionStats(ctx);
+  const cacheHitRate = statusModules.tokens && liveUsage === undefined
+    ? getLatestCacheHitRate(ctx)
+    : undefined;
   const input = sessionStats.input + (liveUsage?.input ?? 0);
   const output = sessionStats.output + (liveUsage?.output ?? 0);
   const cost = sessionStats.cost + (liveUsage?.cost ?? 0);
@@ -536,12 +649,16 @@ function buildStatusLayout(
       : undefined,
   );
 
+  const cacheHitLabel = cacheHitRate === undefined
+    ? ""
+    : ` · CH ${cacheHitRate.toFixed(1)}%`;
+
   // Build right modules (provider usage, tokens, cost, progress)
   const rightModules: Module[] = [
     ...(statusModules.quota ? [...codexModule, ...kimiModule] : []),
     ...(statusModules.tokens
       ? [{
-          text: `${icons.tokens} ${fmt(totalTokens)} tokens`,
+          text: `${icons.tokens} ${fmt(totalTokens)} tokens${cacheHitLabel}`,
           bg: "tokens" as const,
           fg: "statusTokens" as const,
         }]

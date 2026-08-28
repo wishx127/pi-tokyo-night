@@ -63,7 +63,7 @@ Kimi Code usage (5-hour rolling window + weekly quota) is shown in the status ba
 | Left     | Branch      | Current Git branch (hidden when not in a repo)                                    |
 | Right    | Codex Limit | Codex quota / reset status (SSE + Codex-compatible models only)                   |
 | Right    | Kimi Limit  | Kimi Code 5h window + weekly quota with reset countdown (kimi-coding models only) |
-| Right    | Tokens      | Cumulative input + output token count                                             |
+| Right    | Tokens      | Cumulative input/output tokens plus the latest cache hit rate reported by Pi      |
 | Right    | Cost        | Session cost                                                                      |
 | Right    | Progress    | Context window usage bar with percentage                                          |
 

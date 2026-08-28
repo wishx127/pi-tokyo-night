@@ -68,15 +68,33 @@ function makeStatusConfig(
   };
 }
 
-function makeAssistant(input: number, output: number): unknown {
+function makeAssistant(
+  input: number,
+  output: number,
+  cacheRead = 0,
+  cacheWrite = 0,
+): unknown {
   return {
     type: "message",
-    id: `${input}-${output}`,
+    id: `${input}-${output}-${cacheRead}-${cacheWrite}`,
     parentId: null,
     timestamp: new Date().toISOString(),
     message: {
       role: "assistant",
-      usage: { input, output, cost: { total: 1.25 } },
+      usage: {
+        input,
+        output,
+        cacheRead,
+        cacheWrite,
+        totalTokens: input + output + cacheRead + cacheWrite,
+        cost: {
+          input: 0,
+          output: 1.25,
+          cacheRead: 0,
+          cacheWrite: 0,
+          total: 1.25,
+        },
+      },
     } as AssistantMessage,
   };
 }
@@ -88,6 +106,7 @@ function makeContext(
 ): ExtensionContext {
   const sessionManager = sessionManagerOverride ?? {
     getBranch: () => branch,
+    getEntries: () => branch,
     getLeafId: () => "leaf-1",
     getSessionId: () => "session-1",
   };
@@ -379,6 +398,228 @@ describe("buildStatusLine", () => {
     expect(asciiRows.slice(0, -1).every((line) => line.endsWith("\uE0B0"))).toBe(true);
     expect(asciiRows.at(-1)).not.toMatch(/\uE0B0$/);
 
+  });
+
+  it("shows Pi-native latest cache hit rate with one decimal in Tokens", () => {
+    const entries = [makeAssistant(100, 10, 100, 100)];
+    const ctx = makeContext(entries);
+
+    const line = buildStatusLine(500, theme, ctx, "", "high", config);
+
+    expect(line).toContain("Σ 110 tokens · CH 33.3%");
+  });
+
+  it("hides cache hit rate until Pi reports cache activity", () => {
+    const entries = [makeAssistant(100, 10)];
+    const line = buildStatusLine(
+      500,
+      theme,
+      makeContext(entries),
+      "",
+      "high",
+      config,
+    );
+
+    expect(line).not.toContain("CH ");
+  });
+
+  it("uses the latest Assistant request after cache activity was reported", () => {
+    const entries = [
+      makeAssistant(100, 10, 100, 0),
+      makeAssistant(200, 10, 0, 0),
+    ];
+    const line = buildStatusLine(
+      500,
+      theme,
+      makeContext(entries),
+      "",
+      "high",
+      config,
+    );
+
+    expect(line).toContain("Σ 320 tokens · CH 0.0%");
+  });
+
+  it("hides cache hit rate when legacy usage omits cache fields", () => {
+    const legacyAssistant = {
+      type: "message",
+      id: "legacy",
+      parentId: null,
+      timestamp: new Date().toISOString(),
+      message: {
+        role: "assistant",
+        usage: {
+          input: 200,
+          output: 10,
+          cost: { total: 0 },
+        },
+      },
+    };
+    const entries = [makeAssistant(100, 10, 100, 0), legacyAssistant];
+    const line = buildStatusLine(
+      500,
+      theme,
+      makeContext(entries),
+      "",
+      "high",
+      config,
+    );
+
+    expect(line).not.toContain("CH ");
+  });
+
+  it("reads cache hit rate from all session entries rather than the active branch", () => {
+    const branch = [makeAssistant(10, 10)];
+    const entries = [makeAssistant(100, 10, 100, 0)];
+    const sessionManager = {
+      getBranch: () => branch,
+      getEntries: () => entries,
+      getLeafId: () => "leaf-cache",
+      getSessionId: () => "session-cache",
+    };
+    const line = buildStatusLine(
+      500,
+      theme,
+      makeContext(branch, undefined, sessionManager),
+      "",
+      "high",
+      config,
+    );
+
+    expect(line).toContain("Σ 20 tokens · CH 50.0%");
+  });
+
+  it("hides cache hit rate when the latest prompt has no tokens", () => {
+    const entries = [
+      makeAssistant(100, 10, 100, 0),
+      makeAssistant(0, 0, 0, 0),
+    ];
+    const line = buildStatusLine(
+      500,
+      theme,
+      makeContext(entries),
+      "",
+      "high",
+      config,
+    );
+
+    expect(line).not.toContain("CH ");
+  });
+
+  it("hides cache hit rate when nested legacy usage omits cache fields", () => {
+    const entries = [
+      makeAssistant(100, 10, 100, 0),
+      {
+        type: "compaction",
+        usage: { input: 10, output: 5, cost: { total: 0 } },
+      },
+      makeAssistant(100, 10, 100, 0),
+    ];
+    const line = buildStatusLine(
+      500,
+      theme,
+      makeContext(entries),
+      "",
+      "high",
+      config,
+    );
+
+    expect(line).not.toContain("CH ");
+  });
+
+  it("does not scan cache usage when the Tokens module is hidden", () => {
+    const getEntries = vi.fn(() => [makeAssistant(100, 10, 100, 0)]);
+    const sessionManager = {
+      getBranch: () => [],
+      getEntries,
+      getLeafId: () => "leaf-hidden",
+      getSessionId: () => "session-hidden",
+    };
+
+    buildStatusLine(
+      500,
+      theme,
+      makeContext([], undefined, sessionManager),
+      "",
+      "high",
+      makeStatusConfig({ tokens: false }),
+    );
+
+    expect(getEntries).not.toHaveBeenCalled();
+  });
+
+  it("caches cache hit rate until the session leaf changes", () => {
+    let leafId = "leaf-cache-1";
+    const getEntries = vi.fn(() => [makeAssistant(100, 10, 100, 0)]);
+    const sessionManager = {
+      getBranch: () => [],
+      getEntries,
+      getLeafId: () => leafId,
+      getSessionId: () => "session-cache",
+    };
+    const ctx = makeContext([], undefined, sessionManager);
+
+    buildStatusLine(500, theme, ctx, "", "high", config);
+    buildStatusLine(500, theme, ctx, "", "high", config);
+    expect(getEntries).toHaveBeenCalledOnce();
+
+    leafId = "leaf-cache-2";
+    buildStatusLine(500, theme, ctx, "", "high", config);
+    expect(getEntries).toHaveBeenCalledTimes(2);
+  });
+
+  it("hides persisted cache rate while live usage is not yet in session entries", () => {
+    const entries = [makeAssistant(100, 10, 100, 0)];
+    const line = buildStatusLine(
+      500,
+      theme,
+      makeContext(entries),
+      "",
+      "high",
+      config,
+      undefined,
+      undefined,
+      { input: 10, output: 5, cost: 0.01 },
+    );
+
+    expect(line).not.toContain("CH ");
+  });
+
+  it("keeps the cache suffix within narrow terminal rows", () => {
+    const entries = [makeAssistant(100, 10, 100, 0)];
+    const width = 40;
+    const lines = buildStatusLines(
+      width,
+      theme,
+      makeContext(entries),
+      "main",
+      "high",
+      config,
+    );
+    const plain = lines.map((line) =>
+      line.replace(/\u001b\[[0-9;]*m/g, "")
+    ).join("\n");
+
+    expect(plain).toContain("CH 50.0%");
+    expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+  });
+
+  it("hides cache hit rate when getEntries is unavailable", () => {
+    const sessionManager = {
+      getBranch: () => [makeAssistant(100, 10, 100, 0)],
+      getLeafId: () => "leaf-no-entries",
+      getSessionId: () => "session-no-entries",
+    };
+    const line = buildStatusLine(
+      500,
+      theme,
+      makeContext([], undefined, sessionManager),
+      "",
+      "high",
+      config,
+    );
+
+    expect(line).not.toContain("CH ");
   });
 
   it("keeps cumulative tokens separate from current context usage", () => {
