@@ -68,6 +68,29 @@ function makeStatusConfig(
   };
 }
 
+function makeUsage(
+  input: number,
+  output: number,
+  cacheRead = 0,
+  cacheWrite = 0,
+  totalCost = 1.25,
+) {
+  return {
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    totalTokens: input + output + cacheRead + cacheWrite,
+    cost: {
+      input: 0,
+      output: totalCost,
+      cacheRead: 0,
+      cacheWrite: 0,
+      total: totalCost,
+    },
+  };
+}
+
 function makeAssistant(
   input: number,
   output: number,
@@ -81,20 +104,7 @@ function makeAssistant(
     timestamp: new Date().toISOString(),
     message: {
       role: "assistant",
-      usage: {
-        input,
-        output,
-        cacheRead,
-        cacheWrite,
-        totalTokens: input + output + cacheRead + cacheWrite,
-        cost: {
-          input: 0,
-          output: 1.25,
-          cacheRead: 0,
-          cacheWrite: 0,
-          total: 1.25,
-        },
-      },
+      usage: makeUsage(input, output, cacheRead, cacheWrite),
     } as AssistantMessage,
   };
 }
@@ -406,7 +416,7 @@ describe("buildStatusLine", () => {
 
     const line = buildStatusLine(500, theme, ctx, "", "high", config);
 
-    expect(line).toContain("Σ 110 tokens · CH 33.3%");
+    expect(line).toContain("Σ 310 tokens · CH 33.3%");
   });
 
   it("hides cache hit rate until Pi reports cache activity", () => {
@@ -437,7 +447,7 @@ describe("buildStatusLine", () => {
       config,
     );
 
-    expect(line).toContain("Σ 320 tokens · CH 0.0%");
+    expect(line).toContain("Σ 420 tokens · CH 0.0%");
   });
 
   it("hides cache hit rate when legacy usage omits cache fields", () => {
@@ -465,6 +475,7 @@ describe("buildStatusLine", () => {
       config,
     );
 
+    expect(line).toContain("Σ 420 tokens");
     expect(line).not.toContain("CH ");
   });
 
@@ -486,7 +497,7 @@ describe("buildStatusLine", () => {
       config,
     );
 
-    expect(line).toContain("Σ 20 tokens · CH 50.0%");
+    expect(line).toContain("Σ 210 tokens · CH 50.0%");
   });
 
   it("hides cache hit rate when the latest prompt has no tokens", () => {
@@ -506,7 +517,7 @@ describe("buildStatusLine", () => {
     expect(line).not.toContain("CH ");
   });
 
-  it("hides cache hit rate when nested legacy usage omits cache fields", () => {
+  it("keeps latest Assistant CH when nested legacy usage omits cache fields", () => {
     const entries = [
       makeAssistant(100, 10, 100, 0),
       {
@@ -524,10 +535,10 @@ describe("buildStatusLine", () => {
       config,
     );
 
-    expect(line).not.toContain("CH ");
+    expect(line).toContain("Σ 435 tokens · CH 50.0%");
   });
 
-  it("does not scan cache usage when the Tokens module is hidden", () => {
+  it("shares one session scan when the Tokens module is hidden", () => {
     const getEntries = vi.fn(() => [makeAssistant(100, 10, 100, 0)]);
     const sessionManager = {
       getBranch: () => [],
@@ -545,7 +556,7 @@ describe("buildStatusLine", () => {
       makeStatusConfig({ tokens: false }),
     );
 
-    expect(getEntries).not.toHaveBeenCalled();
+    expect(getEntries).toHaveBeenCalledOnce();
   });
 
   it("caches cache hit rate until the session leaf changes", () => {
@@ -568,7 +579,7 @@ describe("buildStatusLine", () => {
     expect(getEntries).toHaveBeenCalledTimes(2);
   });
 
-  it("hides persisted cache rate while live usage is not yet in session entries", () => {
+  it("keeps the latest persisted cache rate while live usage is streaming", () => {
     const entries = [makeAssistant(100, 10, 100, 0)];
     const line = buildStatusLine(
       500,
@@ -579,10 +590,10 @@ describe("buildStatusLine", () => {
       config,
       undefined,
       undefined,
-      { input: 10, output: 5, cost: 0.01 },
+      { input: 10, output: 5, cacheRead: 20, cacheWrite: 5, cost: 0.01 },
     );
 
-    expect(line).not.toContain("CH ");
+    expect(line).toContain("Σ 250 tokens · CH 50.0%");
   });
 
   it("keeps the cache suffix within narrow terminal rows", () => {
@@ -604,7 +615,7 @@ describe("buildStatusLine", () => {
     expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
   });
 
-  it("hides cache hit rate when getEntries is unavailable", () => {
+  it("does not substitute branch totals when getEntries is unavailable", () => {
     const sessionManager = {
       getBranch: () => [makeAssistant(100, 10, 100, 0)],
       getLeafId: () => "leaf-no-entries",
@@ -619,7 +630,122 @@ describe("buildStatusLine", () => {
       config,
     );
 
+    expect(line).toContain("Σ 0 tokens");
     expect(line).not.toContain("CH ");
+  });
+
+  it("does not recount Compaction retainedTail usage", () => {
+    const entries = [
+      makeAssistant(10, 1),
+      {
+        type: "compaction",
+        usage: makeUsage(5, 1, 10, 1, 0.2),
+        retainedTail: [{
+          role: "assistant",
+          usage: makeUsage(1000, 1000, 1000, 1000, 10),
+        }],
+      },
+    ];
+    const line = buildStatusLine(
+      500,
+      theme,
+      makeContext(entries),
+      "",
+      "high",
+      config,
+    );
+
+    expect(line).toContain("Σ 28 tokens");
+    expect(line).not.toContain("Σ 4.0k tokens");
+  });
+
+  it("matches Pi full-session totals across every usage-bearing entry type", () => {
+    const assistant = makeAssistant(100, 10, 200, 20);
+    const entries = [
+      assistant,
+      {
+        type: "message",
+        message: {
+          role: "toolResult",
+          usage: makeUsage(10, 1, 20, 2, 0.1),
+        },
+      },
+      {
+        type: "compaction",
+        usage: makeUsage(5, 1, 10, 1, 0.2),
+      },
+      {
+        type: "branch_summary",
+        usage: makeUsage(4, 1, 5, 1, 0.3),
+      },
+    ];
+    const sessionManager = {
+      getBranch: () => [assistant],
+      getEntries: () => entries,
+      getLeafId: () => "leaf-full-session",
+      getSessionId: () => "session-full-session",
+    };
+    const line = buildStatusLine(
+      500,
+      theme,
+      makeContext([assistant], undefined, sessionManager),
+      "",
+      "high",
+      config,
+    );
+
+    expect(line).toContain("Σ 391 tokens · CH 62.5%");
+    expect(line).toContain("$1.85");
+  });
+
+  it("uses the active branch rather than full-session totals for context fallback", () => {
+    const branch = [makeAssistant(100, 0)];
+    const entries = [makeAssistant(1000, 0, 1000, 0)];
+    const sessionManager = {
+      getBranch: () => branch,
+      getEntries: () => entries,
+      getLeafId: () => "leaf-context-fallback",
+      getSessionId: () => "session-context-fallback",
+    };
+    const line = buildStatusLine(
+      500,
+      theme,
+      makeContext(branch, undefined, sessionManager),
+      "",
+      "high",
+      config,
+    );
+
+    expect(line).toContain("Σ 2.0k tokens");
+    expect(line).toContain("10%/1.0k");
+    expect(line).not.toContain("100%/1.0k");
+  });
+
+  it("skips Session and Context reads when their modules are hidden", () => {
+    const getEntries = vi.fn(() => [makeAssistant(100, 0)]);
+    const getContextUsage = vi.fn(() => ({
+      tokens: 100,
+      contextWindow: 1000,
+      percent: 10,
+    }));
+    const sessionManager = {
+      getBranch: () => [],
+      getEntries,
+      getLeafId: () => "leaf-hidden-usage",
+      getSessionId: () => "session-hidden-usage",
+    };
+
+    buildStatusLine(
+      500,
+      theme,
+      makeContext([], getContextUsage, sessionManager),
+      "",
+      "high",
+      makeStatusConfig({ tokens: false, cost: false, context: false }),
+    );
+
+    expect(getEntries).not.toHaveBeenCalled();
+    expect(getContextUsage).not.toHaveBeenCalled();
   });
 
   it("keeps cumulative tokens separate from current context usage", () => {
@@ -743,10 +869,11 @@ describe("buildStatusLine", () => {
   });
 
   it("reuses stats for one leaf, invalidates on leaf changes, and isolates sessions", () => {
-    const getBranch = vi.fn(() => [makeAssistant(10, 20)]);
+    const getEntries = vi.fn(() => [makeAssistant(10, 20)]);
     let leaf = "leaf-a";
     const manager = {
-      getBranch,
+      getBranch: () => [],
+      getEntries,
       getLeafId: () => leaf,
       getSessionId: () => "session-a",
     };
@@ -754,22 +881,23 @@ describe("buildStatusLine", () => {
 
     buildStatusLine(500, theme, ctx, "", "high", config);
     buildStatusLine(500, theme, ctx, "", "high", config);
-    expect(getBranch).toHaveBeenCalledTimes(1);
+    expect(getEntries).toHaveBeenCalledTimes(1);
 
     leaf = "leaf-b";
-    getBranch.mockReturnValue([makeAssistant(200, 0)]);
+    getEntries.mockReturnValue([makeAssistant(200, 0)]);
     const changedLine = buildStatusLine(500, theme, ctx, "", "high", config);
-    expect(getBranch).toHaveBeenCalledTimes(2);
+    expect(getEntries).toHaveBeenCalledTimes(2);
     expect(changedLine).toContain("Σ 200 tokens");
 
-    const otherBranch = vi.fn(() => [makeAssistant(3, 4)]);
+    const otherEntries = vi.fn(() => [makeAssistant(3, 4)]);
     const otherCtx = makeContext([], undefined, {
-      getBranch: otherBranch,
+      getBranch: () => [],
+      getEntries: otherEntries,
       getLeafId: () => "leaf-a",
       getSessionId: () => "session-a",
     });
     buildStatusLine(500, theme, otherCtx, "", "high", config);
-    expect(otherBranch).toHaveBeenCalledTimes(1);
+    expect(otherEntries).toHaveBeenCalledTimes(1);
   });
 });
 

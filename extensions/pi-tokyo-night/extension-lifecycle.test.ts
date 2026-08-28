@@ -105,6 +105,7 @@ function makeFixture(
     modelRegistry: { getApiKeyForProvider: vi.fn(async () => undefined) },
     sessionManager: {
       getBranch: () => [],
+      getEntries() { return this.getBranch(); },
       getLeafId: () => "leaf-1",
       getSessionId: () => sessionId,
       getSessionFile: () => `/sessions/${sessionId}.jsonl`,
@@ -407,6 +408,54 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
+  it("skips live usage redraws when Tokens, Cost, and Context are hidden", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const statusTui = { requestRender: vi.fn(), mode: "regular" as const };
+    fixture.widgets.get("tokyo-status")(statusTui, theme);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+    fixture.customComponent.handleInput("\t");
+    for (let index = 0; index < 5; index++) {
+      fixture.customComponent.handleInput("\x1b[B");
+    }
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\x1b[B");
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\x1b[B");
+    fixture.customComponent.handleInput("\r");
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+    await vi.advanceTimersByTimeAsync(33);
+    statusTui.requestRender.mockClear();
+
+    await fixture.emit("agent_start", {}, fixture.ctx);
+    await fixture.emit(
+      "message_update",
+      {
+        assistantMessageEvent: {
+          type: "text_delta",
+          partial: {
+            usage: {
+              input: 120,
+              output: 34,
+              cacheRead: 40,
+              cacheWrite: 6,
+              cost: { total: 0.03 },
+            },
+          },
+        },
+      },
+      fixture.ctx,
+    );
+    await vi.advanceTimersByTimeAsync(33);
+
+    expect(statusTui.requestRender).not.toHaveBeenCalled();
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
   it("shows partial token and cost usage while an assistant response streams", async () => {
     vi.useFakeTimers();
     const fixture = makeFixture();
@@ -427,6 +476,8 @@ describe("public layout and lifecycle contract", () => {
             usage: {
               input: 120,
               output: 34,
+              cacheRead: 40,
+              cacheWrite: 6,
               cost: { total: 0.03 },
             },
           },
@@ -435,7 +486,7 @@ describe("public layout and lifecycle contract", () => {
       fixture.ctx,
     );
 
-    expect(status.render(500).join("\n")).toContain("Σ 154 tokens");
+    expect(status.render(500).join("\n")).toContain("Σ 200 tokens");
     expect(status.render(500).join("\n")).toContain("$0.03");
     await vi.advanceTimersByTimeAsync(33);
     expect(statusTui.requestRender).toHaveBeenCalledOnce();
@@ -653,6 +704,106 @@ describe("public layout and lifecycle contract", () => {
 
     expect(status.render(500).join("\n")).toContain("Σ 15 tokens");
     expect(status.render(500).join("\n")).not.toContain("Σ 30 tokens");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("reveals the new CH after delayed persistence keeps the same leaf", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    let persisted = false;
+    const branch: any[] = [];
+    fixture.ctx.sessionManager.getLeafId = () => "stable-leaf";
+    fixture.ctx.sessionManager.getBranch = () => persisted ? branch : [];
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      theme,
+    );
+
+    await fixture.emit("agent_start", {}, fixture.ctx);
+    const usage = {
+      input: 10,
+      output: 5,
+      cacheRead: 20,
+      cacheWrite: 0,
+      cost: { total: 0.01 },
+    };
+    await fixture.emit(
+      "message_update",
+      {
+        assistantMessageEvent: {
+          type: "text_delta",
+          partial: { usage },
+        },
+      },
+      fixture.ctx,
+    );
+    await fixture.emit(
+      "message_end",
+      { message: { role: "assistant", usage } },
+      fixture.ctx,
+    );
+    expect(status.render(500).join("\n")).not.toContain("CH ");
+
+    branch.push({
+      type: "message",
+      message: { role: "assistant", usage },
+    });
+    persisted = true;
+
+    const output = status.render(500).join("\n");
+    expect(output).toContain("Σ 35 tokens · CH 66.7%");
+    expect(output).not.toContain("Σ 70 tokens");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("retries CH reconciliation until delayed persistence becomes visible", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    let persisted = false;
+    const branch: any[] = [];
+    fixture.ctx.sessionManager.getLeafId = () => "stable-retry-leaf";
+    fixture.ctx.sessionManager.getBranch = () => persisted ? branch : [];
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const statusTui = { requestRender: vi.fn(), mode: "regular" as const };
+    const status = fixture.widgets.get("tokyo-status")(statusTui, theme);
+
+    await fixture.emit("agent_start", {}, fixture.ctx);
+    const usage = {
+      input: 10,
+      output: 5,
+      cacheRead: 20,
+      cacheWrite: 0,
+      cost: { total: 0.01 },
+    };
+    await fixture.emit(
+      "message_update",
+      {
+        assistantMessageEvent: {
+          type: "text_delta",
+          partial: { usage },
+        },
+      },
+      fixture.ctx,
+    );
+    await fixture.emit(
+      "message_end",
+      { message: { role: "assistant", usage } },
+      fixture.ctx,
+    );
+    await fixture.emit("turn_end", {}, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(1200);
+
+    branch.push({
+      type: "message",
+      message: { role: "assistant", usage },
+    });
+    persisted = true;
+    statusTui.requestRender.mockClear();
+    await vi.advanceTimersByTimeAsync(1000);
+
+    expect(statusTui.requestRender).toHaveBeenCalled();
+    expect(status.render(500).join("\n")).toContain("CH 66.7%");
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 

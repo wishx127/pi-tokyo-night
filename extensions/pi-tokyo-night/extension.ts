@@ -108,6 +108,8 @@ type SessionState = {
   liveUsageBaseline: LiveSessionUsage | undefined;
   liveUsageFinalizing: boolean;
   liveUsageRevision: number;
+  liveUsageReconcileTimeout: ReturnType<typeof setTimeout> | undefined;
+  liveUsageReconcileAttempts: number;
   context: ExtensionContext;
   requestStatusRender: (() => void) | undefined;
 };
@@ -135,6 +137,9 @@ function buildTokyoWorkingFrames(theme: Theme | undefined): string[] {
 }
 
 const CODEX_COUNTDOWN_REFRESH_MS = 30_000;
+const LIVE_USAGE_RECONCILE_BASE_DELAY_MS = 50;
+const LIVE_USAGE_RECONCILE_MAX_DELAY_MS = 800;
+const LIVE_USAGE_RECONCILE_MAX_ATTEMPTS = 20;
 const AUTOMATIC_THEME_QUERY_TIMEOUT_MS = 100;
 const KIMI_POLL_INTERVAL_MS = 60_000;
 const KIMI_RETRY_DELAYS_MS = [60_000, 120_000, 300_000, 900_000] as const;
@@ -163,12 +168,22 @@ function normalizeLiveUsage(value: unknown): LiveSessionUsage | undefined {
   const cost = isRecord(value.cost) ? finiteNonNegative(value.cost.total) : undefined;
   const input = finiteNonNegative(value.input);
   const output = finiteNonNegative(value.output);
-  if (input === undefined && output === undefined && cost === undefined) {
+  const cacheRead = finiteNonNegative(value.cacheRead);
+  const cacheWrite = finiteNonNegative(value.cacheWrite);
+  if (
+    input === undefined &&
+    output === undefined &&
+    cacheRead === undefined &&
+    cacheWrite === undefined &&
+    cost === undefined
+  ) {
     return undefined;
   }
   return {
     input: input ?? 0,
     output: output ?? 0,
+    cacheRead: cacheRead ?? 0,
+    cacheWrite: cacheWrite ?? 0,
     cost: cost ?? 0,
   };
 }
@@ -179,6 +194,8 @@ function sameLiveUsage(
 ): boolean {
   return left?.input === right?.input &&
     left?.output === right?.output &&
+    left?.cacheRead === right?.cacheRead &&
+    left?.cacheWrite === right?.cacheWrite &&
     left?.cost === right?.cost;
 }
 
@@ -346,11 +363,30 @@ export function registerTokyoNightExtension(
   ): boolean =>
     stats.input >= baseline.input + live.input &&
     stats.output >= baseline.output + live.output &&
+    stats.cacheRead >= baseline.cacheRead + live.cacheRead &&
+    stats.cacheWrite >= baseline.cacheWrite + live.cacheWrite &&
     stats.cost >= baseline.cost + live.cost;
 
+  const clearLiveUsageReconcile = (session: SessionState): void => {
+    if (session.liveUsageReconcileTimeout !== undefined) {
+      clearTimeout(session.liveUsageReconcileTimeout);
+    }
+    session.liveUsageReconcileTimeout = undefined;
+    session.liveUsageReconcileAttempts = 0;
+  };
+
   const updateLiveUsage = (session: SessionState, value: unknown): void => {
+    const modules = configManager.get().statusModules;
+    const getContextUsage = (
+      session.context as unknown as { getContextUsage?: () => unknown }
+    ).getContextUsage;
+    const needsLiveUsage = modules.tokens || modules.cost ||
+      (modules.context && typeof getContextUsage !== "function");
+    if (!needsLiveUsage) return;
+
     const next = normalizeLiveUsage(value);
     if (!next) return;
+    clearLiveUsageReconcile(session);
     if (!session.liveUsage) {
       session.liveUsageBaseline = getSessionStats(session.context);
     }
@@ -369,9 +405,14 @@ export function registerTokyoNightExtension(
     const baseline = session.liveUsageBaseline;
     if (!session.liveUsageFinalizing || !live || !baseline) return false;
 
+    // Pi may persist the finalized message without changing the current leaf.
+    // Re-scan while reconciling so CH and full-session totals become visible
+    // immediately instead of waiting for a later cache invalidation event.
+    invalidateSessionStats(session.context);
     const persisted = getSessionStats(session.context);
     if (!usageIncludesLiveValue(persisted, baseline, live)) return false;
 
+    clearLiveUsageReconcile(session);
     session.liveUsage = undefined;
     session.liveUsageBaseline = undefined;
     session.liveUsageFinalizing = false;
@@ -380,11 +421,38 @@ export function registerTokyoNightExtension(
     return true;
   };
 
+  const scheduleLiveUsageReconcile = (session: SessionState): void => {
+    if (
+      session.liveUsageReconcileTimeout !== undefined ||
+      session.liveUsageReconcileAttempts >= LIVE_USAGE_RECONCILE_MAX_ATTEMPTS
+    ) return;
+
+    const delay = Math.min(
+      LIVE_USAGE_RECONCILE_BASE_DELAY_MS *
+        2 ** Math.floor(session.liveUsageReconcileAttempts / 4),
+      LIVE_USAGE_RECONCILE_MAX_DELAY_MS,
+    );
+    session.liveUsageReconcileTimeout = setTimeout(() => {
+      session.liveUsageReconcileTimeout = undefined;
+      if (!isCurrent(session) || !session.liveUsageFinalizing) {
+        session.liveUsageReconcileAttempts = 0;
+        return;
+      }
+      session.liveUsageReconcileAttempts += 1;
+      if (!reconcileLiveUsage(session)) {
+        scheduleLiveUsageReconcile(session);
+      }
+    }, delay);
+    session.liveUsageReconcileTimeout.unref?.();
+  };
+
   const finalizeLiveUsage = (session: SessionState): void => {
+    invalidateSessionStats(session.context);
     if (!session.liveUsage) return;
     session.liveUsageFinalizing = true;
-    invalidateSessionStats(session.context);
-    reconcileLiveUsage(session);
+    if (!reconcileLiveUsage(session)) {
+      scheduleLiveUsageReconcile(session);
+    }
   };
 
   const requestRainRender = (session: SessionState): void => {
@@ -662,6 +730,7 @@ export function registerTokyoNightExtension(
     session.statusRenderThrottleTimeout = undefined;
     if (session.codexCountdownRefreshTimeout !== undefined) clearTimeout(session.codexCountdownRefreshTimeout);
     session.codexCountdownRefreshTimeout = undefined;
+    clearLiveUsageReconcile(session);
   };
 
   const teardownSessionUI = (session: SessionState): void => {
@@ -1013,6 +1082,8 @@ export function registerTokyoNightExtension(
       liveUsageBaseline: undefined,
       liveUsageFinalizing: false,
       liveUsageRevision: 0,
+      liveUsageReconcileTimeout: undefined,
+      liveUsageReconcileAttempts: 0,
       context: ctx,
       requestStatusRender: undefined,
     };

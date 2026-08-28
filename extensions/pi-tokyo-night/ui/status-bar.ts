@@ -51,6 +51,8 @@ const buildLimitModule = (snap: UsageSnapshot | undefined): Module[] =>
 export type LiveSessionUsage = {
   input: number;
   output: number;
+  cacheRead: number;
+  cacheWrite: number;
   cost: number;
 };
 
@@ -61,10 +63,15 @@ type CacheUsage = Pick<
   "input" | "cacheRead" | "cacheWrite"
 >;
 
+type SessionUsageSummary = {
+  stats: SessionStats;
+  cacheHitRate: number | undefined;
+};
+
 type StatsCacheEntry = {
   sessionId: string | undefined;
   leafId: string;
-  stats: SessionStats;
+  summary: SessionUsageSummary;
 };
 
 type ContextUsage = {
@@ -83,16 +90,9 @@ type ContextUsageCacheEntry = {
   usage: ContextUsage | undefined;
 };
 
-type CacheHitRateCacheEntry = {
-  sessionId: string | undefined;
-  leafId: string | null;
-  rate: number | undefined;
-};
-
-// Session branches are immutable between leaf changes. Keep this cache keyed by
-// manager identity so a reused module can never share stats between sessions.
+// Session entries are append-only between leaf changes. Keep this cache keyed
+// by manager identity so a reused module can never share stats between sessions.
 const sessionStatsCache = new WeakMap<object, StatsCacheEntry>();
-const cacheHitRateCache = new WeakMap<object, CacheHitRateCacheEntry>();
 
 // Context usage can change while a leaf is streaming, so this is intentionally
 // time-bounded rather than leaf-only. A one-second sample keeps the status
@@ -175,43 +175,52 @@ function cacheUsage(value: unknown): CacheUsage | undefined {
   };
 }
 
-/** Mirror Pi's native Footer calculation for the latest Assistant request. */
-export function getLatestCacheHitRate(
-  ctx: ExtensionContext,
-): number | undefined {
-  const manager = ctx.sessionManager as unknown as {
-    getEntries?: () => unknown[];
-    getLeafId?: () => string | null;
-    getSessionId?: () => string;
+function sessionUsage(value: unknown): SessionStats | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const usage = value as {
+    input?: unknown;
+    output?: unknown;
+    cacheRead?: unknown;
+    cacheWrite?: unknown;
+    cost?: { total?: unknown };
   };
-  if (typeof manager.getEntries !== "function") return undefined;
-
-  let sessionId: string | undefined;
-  let leafId: string | null | undefined;
-  try {
-    sessionId = typeof manager.getSessionId === "function"
-      ? manager.getSessionId()
-      : undefined;
-    leafId = typeof manager.getLeafId === "function"
-      ? manager.getLeafId()
-      : undefined;
-  } catch {
-    // Scan without caching when host identity methods are unavailable.
-  }
-  const cacheOwner = ctx.sessionManager as unknown as object;
-  const cached = cacheHitRateCache.get(cacheOwner);
   if (
-    leafId !== undefined &&
-    cached !== undefined &&
-    cached.sessionId === sessionId &&
-    cached.leafId === leafId
-  ) return cached.rate;
+    typeof usage.input !== "number" || !Number.isFinite(usage.input) ||
+    typeof usage.output !== "number" || !Number.isFinite(usage.output)
+  ) return undefined;
+  const optionalCount = (candidate: unknown): number =>
+    typeof candidate === "number" && Number.isFinite(candidate)
+      ? candidate
+      : 0;
+  return {
+    input: usage.input,
+    output: usage.output,
+    cacheRead: optionalCount(usage.cacheRead),
+    cacheWrite: optionalCount(usage.cacheWrite),
+    cost: optionalCount(usage.cost?.total),
+  };
+}
 
+function calculateSessionSummary(ctx: ExtensionContext): SessionUsageSummary {
+  const stats: SessionStats = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+  };
   let cacheReported = false;
-  let cacheFieldsValid = true;
+  let latestAssistantCacheValid = false;
   let latestRate: number | undefined;
   try {
-    for (const candidate of manager.getEntries.call(ctx.sessionManager)) {
+    const manager = ctx.sessionManager as unknown as {
+      getEntries?: () => unknown[];
+    };
+    if (typeof manager.getEntries !== "function") {
+      return { stats, cacheHitRate: undefined };
+    }
+    const entries = manager.getEntries();
+    for (const candidate of entries) {
       if (typeof candidate !== "object" || candidate === null) continue;
       const entry = candidate as {
         type?: unknown;
@@ -220,77 +229,64 @@ export function getLatestCacheHitRate(
       };
       const assistant =
         entry.type === "message" && entry.message?.role === "assistant";
-      const nestedUsage =
-        entry.type === "message" && entry.message?.role === "toolResult"
-          ? entry.message.usage
-          : (entry.type === "compaction" || entry.type === "branch_summary")
-            ? entry.usage
-            : undefined;
-      const rawUsage = assistant ? entry.message?.usage : nestedUsage;
+      const rawUsage = entry.type === "message" &&
+          (assistant || entry.message?.role === "toolResult")
+        ? entry.message?.usage
+        : (entry.type === "compaction" || entry.type === "branch_summary")
+          ? entry.usage
+          : undefined;
       if (rawUsage === undefined) continue;
 
-      const usage = cacheUsage(rawUsage);
-      if (!usage) {
-        cacheFieldsValid = false;
-        if (assistant) latestRate = undefined;
+      const totalsUsage = sessionUsage(rawUsage);
+      if (totalsUsage) {
+        stats.input += totalsUsage.input;
+        stats.output += totalsUsage.output;
+        stats.cacheRead += totalsUsage.cacheRead;
+        stats.cacheWrite += totalsUsage.cacheWrite;
+        stats.cost += totalsUsage.cost;
+      }
+      const nativeCacheUsage = cacheUsage(rawUsage);
+      if (assistant) {
+        latestAssistantCacheValid = nativeCacheUsage !== undefined;
+        if (!nativeCacheUsage) {
+          latestRate = undefined;
+          continue;
+        }
+        const promptTokens = nativeCacheUsage.input +
+          nativeCacheUsage.cacheRead +
+          nativeCacheUsage.cacheWrite;
+        latestRate = promptTokens > 0
+          ? (nativeCacheUsage.cacheRead / promptTokens) * 100
+          : undefined;
+      } else if (!nativeCacheUsage) {
         continue;
       }
-      if (assistant) {
-        const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
-        latestRate = promptTokens > 0
-          ? (usage.cacheRead / promptTokens) * 100
-          : undefined;
-      }
-      if (usage.cacheRead > 0 || usage.cacheWrite > 0) {
+      if (nativeCacheUsage.cacheRead > 0 || nativeCacheUsage.cacheWrite > 0) {
         cacheReported = true;
       }
     }
   } catch (error) {
-    handleExtensionError(error, "cache hit rate");
-    return undefined;
+    handleExtensionError(error, "session usage summary");
+    return { stats, cacheHitRate: undefined };
   }
-  const rate = cacheFieldsValid && cacheReported ? latestRate : undefined;
-  if (leafId !== undefined) {
-    cacheHitRateCache.set(cacheOwner, { sessionId, leafId, rate });
-  }
-  return rate;
+  return {
+    stats,
+    cacheHitRate: latestAssistantCacheValid && cacheReported
+      ? latestRate
+      : undefined,
+  };
 }
 
-function calculateSessionStats(ctx: ExtensionContext): SessionStats {
-  let input = 0;
-  let output = 0;
-  let cost = 0;
-  try {
-    for (const e of ctx.sessionManager.getBranch()) {
-      if (e.type === "message" && e.message.role === "assistant") {
-        const m = e.message as AssistantMessage;
-        input += m.usage.input;
-        output += m.usage.output;
-        cost += m.usage.cost.total;
-      }
-    }
-  } catch (err) {
-    handleExtensionError(err, "session stats");
-  }
-  return { input, output, cost };
-}
-
-export function invalidateSessionStats(ctx: ExtensionContext): void {
-  const manager = ctx.sessionManager as unknown as object;
-  sessionStatsCache.delete(manager);
-  cacheHitRateCache.delete(manager);
-}
-
-export function getSessionStats(ctx: ExtensionContext): LiveSessionUsage {
+function getSessionSummary(ctx: ExtensionContext): SessionUsageSummary {
   const manager = ctx.sessionManager as unknown as object;
   const getLeafId = (
     ctx.sessionManager as unknown as { getLeafId?: () => string | null }
   ).getLeafId;
-  if (typeof getLeafId !== "function") return calculateSessionStats(ctx);
+  if (typeof getLeafId !== "function") return calculateSessionSummary(ctx);
 
   try {
     const leafId = getLeafId.call(ctx.sessionManager);
-    if (leafId == null) return calculateSessionStats(ctx);
+    if (leafId == null) return calculateSessionSummary(ctx);
     const getSessionId = (
       ctx.sessionManager as unknown as { getSessionId?: () => string }
     ).getSessionId;
@@ -302,17 +298,48 @@ export function getSessionStats(ctx: ExtensionContext): LiveSessionUsage {
       cached &&
       cached.leafId === leafId &&
       cached.sessionId === sessionId
-    ) {
-      return cached.stats;
-    }
+    ) return cached.summary;
 
-    const stats = calculateSessionStats(ctx);
-    sessionStatsCache.set(manager, { sessionId, leafId, stats });
-    return stats;
-  } catch (err) {
-    handleExtensionError(err, "session stats cache");
-    return calculateSessionStats(ctx);
+    const summary = calculateSessionSummary(ctx);
+    sessionStatsCache.set(manager, { sessionId, leafId, summary });
+    return summary;
+  } catch (error) {
+    handleExtensionError(error, "session usage summary cache");
+    return calculateSessionSummary(ctx);
   }
+}
+
+/** Mirror Pi's native Footer calculation for the latest Assistant request. */
+export function getLatestCacheHitRate(
+  ctx: ExtensionContext,
+): number | undefined {
+  return getSessionSummary(ctx).cacheHitRate;
+}
+
+export function invalidateSessionStats(ctx: ExtensionContext): void {
+  sessionStatsCache.delete(ctx.sessionManager as unknown as object);
+}
+
+export function getSessionStats(ctx: ExtensionContext): LiveSessionUsage {
+  return getSessionSummary(ctx).stats;
+}
+
+function getActiveBranchAssistantTokens(ctx: ExtensionContext): number {
+  let tokens = 0;
+  try {
+    for (const candidate of ctx.sessionManager.getBranch()) {
+      if (
+        candidate.type === "message" &&
+        candidate.message.role === "assistant"
+      ) {
+        const usage = sessionUsage(candidate.message.usage);
+        if (usage) tokens += usage.input + usage.output;
+      }
+    }
+  } catch (error) {
+    handleExtensionError(error, "context fallback usage");
+  }
+  return tokens;
 }
 
 const getModuleBg = (m: Module): TokyoNightBackgroundRole | null => m.bg;
@@ -550,12 +577,20 @@ function buildStatusLayout(
     ...(config.get().statusModules ?? {}),
   };
   const stretchSides = Object.values(statusModules).some((visible) => !visible);
-  const sessionStats = getSessionStats(ctx);
-  const cacheHitRate = statusModules.tokens && liveUsage === undefined
+  const getContextUsage = (
+    ctx as unknown as { getContextUsage?: ContextUsageGetter }
+  ).getContextUsage;
+  const needsSessionStats = statusModules.tokens || statusModules.cost;
+  const sessionStats: LiveSessionUsage = needsSessionStats
+    ? getSessionStats(ctx)
+    : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
+  const cacheHitRate = statusModules.tokens
     ? getLatestCacheHitRate(ctx)
     : undefined;
   const input = sessionStats.input + (liveUsage?.input ?? 0);
   const output = sessionStats.output + (liveUsage?.output ?? 0);
+  const cacheRead = sessionStats.cacheRead + (liveUsage?.cacheRead ?? 0);
+  const cacheWrite = sessionStats.cacheWrite + (liveUsage?.cacheWrite ?? 0);
   const cost = sessionStats.cost + (liveUsage?.cost ?? 0);
 
   const fmt = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`);
@@ -566,18 +601,12 @@ function buildStatusLayout(
 
   const cwd = ctx.cwd;
 
-  const totalTokens = input + output;
+  const totalTokens = input + output + cacheRead + cacheWrite;
   let maxCtx = 128000;
   if (ctx.model?.contextWindow) maxCtx = ctx.model.contextWindow;
-  let pct =
-    totalTokens > 0
-      ? Math.min(100, Math.round((totalTokens / maxCtx) * 100))
-      : 0;
+  let pct = 0;
 
-  const getContextUsage = (
-    ctx as unknown as { getContextUsage?: ContextUsageGetter }
-  ).getContextUsage;
-  if (typeof getContextUsage === "function") {
+  if (statusModules.context && typeof getContextUsage === "function") {
     try {
       const usage = getCachedContextUsage(ctx, getContextUsage);
       if (usage) {
@@ -589,13 +618,17 @@ function buildStatusLayout(
           : usage.percent != null && Number.isFinite(usage.percent)
             ? Math.min(100, Math.max(0, Math.round(usage.percent)))
             : 0;
-      } else {
-        pct = 0;
       }
     } catch (err) {
       handleExtensionError(err, "context usage");
-      pct = 0;
     }
+  } else if (statusModules.context) {
+    const contextTokens = getActiveBranchAssistantTokens(ctx) +
+      (liveUsage?.input ?? 0) +
+      (liveUsage?.output ?? 0);
+    pct = contextTokens > 0
+      ? Math.min(100, Math.round((contextTokens / maxCtx) * 100))
+      : 0;
   }
 
   const barColor = pct >= 50 ? "error" : pct >= 30 ? "warning" : "accent";
