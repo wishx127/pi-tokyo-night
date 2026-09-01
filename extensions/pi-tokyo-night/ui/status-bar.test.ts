@@ -410,13 +410,41 @@ describe("buildStatusLine", () => {
 
   });
 
-  it("shows Pi-native latest cache hit rate with one decimal in Tokens", () => {
-    const entries = [makeAssistant(100, 10, 100, 100)];
+  it("shows Pi-native usage buckets, units, and latest cache hit rate", () => {
+    const entries = [makeAssistant(1_500_000, 198_000, 120_000_000, 500_000)];
     const ctx = makeContext(entries);
 
     const line = buildStatusLine(500, theme, ctx, "", "high", config);
 
-    expect(line).toContain("Σ 310 tokens · CH 33.3%");
+    expect(line).toContain("↑1.5M ↓198k R120M W500k CH98.4%");
+    expect(line).not.toContain("Σ 122198.0k tokens");
+  });
+
+  it("wraps detailed Token buckets instead of replacing them with a total", () => {
+    const entries = [makeAssistant(1_500_000, 198_000, 120_000_000, 500_000)];
+    const lines = buildStatusLines(
+      45,
+      theme,
+      makeContext(entries),
+      "",
+      "high",
+      makeStatusConfig({
+        thinking: false,
+        path: false,
+        git: false,
+        quota: false,
+        cost: false,
+        context: false,
+      }),
+    );
+    const plain = lines.map((line) =>
+      line.replace(/\u001b\[[0-9;]*m/g, "")
+    ).join("\n");
+
+    expect(lines).toHaveLength(2);
+    expect(plain).toContain("test-model");
+    expect(plain).toContain("↑1.5M ↓198k R120M W500k CH98.4%");
+    expect(plain).not.toContain("Σ 122M");
   });
 
   it("hides cache hit rate until Pi reports cache activity", () => {
@@ -430,7 +458,7 @@ describe("buildStatusLine", () => {
       config,
     );
 
-    expect(line).not.toContain("CH ");
+    expect(line).not.toContain("CH");
   });
 
   it("uses the latest Assistant request after cache activity was reported", () => {
@@ -447,7 +475,7 @@ describe("buildStatusLine", () => {
       config,
     );
 
-    expect(line).toContain("Σ 420 tokens · CH 0.0%");
+    expect(line).toContain("↑300 ↓20 R100 CH0.0%");
   });
 
   it("hides cache hit rate when legacy usage omits cache fields", () => {
@@ -475,8 +503,8 @@ describe("buildStatusLine", () => {
       config,
     );
 
-    expect(line).toContain("Σ 420 tokens");
-    expect(line).not.toContain("CH ");
+    expect(line).toContain("↑300 ↓20 R100");
+    expect(line).not.toContain("CH");
   });
 
   it("reads cache hit rate from all session entries rather than the active branch", () => {
@@ -497,7 +525,7 @@ describe("buildStatusLine", () => {
       config,
     );
 
-    expect(line).toContain("Σ 210 tokens · CH 50.0%");
+    expect(line).toContain("↑100 ↓10 R100 CH50.0%");
   });
 
   it("hides cache hit rate when the latest prompt has no tokens", () => {
@@ -514,7 +542,7 @@ describe("buildStatusLine", () => {
       config,
     );
 
-    expect(line).not.toContain("CH ");
+    expect(line).not.toContain("CH");
   });
 
   it("keeps latest Assistant CH when nested legacy usage omits cache fields", () => {
@@ -535,7 +563,7 @@ describe("buildStatusLine", () => {
       config,
     );
 
-    expect(line).toContain("Σ 435 tokens · CH 50.0%");
+    expect(line).toContain("↑210 ↓25 R200 CH50.0%");
   });
 
   it("shares one session scan when the Tokens module is hidden", () => {
@@ -593,7 +621,7 @@ describe("buildStatusLine", () => {
       { input: 10, output: 5, cacheRead: 20, cacheWrite: 5, cost: 0.01 },
     );
 
-    expect(line).toContain("Σ 250 tokens · CH 50.0%");
+    expect(line).toContain("↑110 ↓15 R120 W5 CH50.0%");
   });
 
   it("keeps the cache suffix within narrow terminal rows", () => {
@@ -611,7 +639,7 @@ describe("buildStatusLine", () => {
       line.replace(/\u001b\[[0-9;]*m/g, "")
     ).join("\n");
 
-    expect(plain).toContain("CH 50.0%");
+    expect(plain).toContain("CH50.0%");
     expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
   });
 
@@ -631,7 +659,7 @@ describe("buildStatusLine", () => {
     );
 
     expect(line).toContain("Σ 0 tokens");
-    expect(line).not.toContain("CH ");
+    expect(line).not.toContain("CH");
   });
 
   it("does not recount Compaction retainedTail usage", () => {
@@ -655,8 +683,8 @@ describe("buildStatusLine", () => {
       config,
     );
 
-    expect(line).toContain("Σ 28 tokens");
-    expect(line).not.toContain("Σ 4.0k tokens");
+    expect(line).toContain("↑15 ↓2 R10 W1 CH0.0%");
+    expect(line).not.toContain("↑1.0k");
   });
 
   it("matches Pi full-session totals across every usage-bearing entry type", () => {
@@ -694,7 +722,7 @@ describe("buildStatusLine", () => {
       config,
     );
 
-    expect(line).toContain("Σ 391 tokens · CH 62.5%");
+    expect(line).toContain("↑119 ↓13 R235 W24 CH62.5%");
     expect(line).toContain("$1.85");
   });
 
@@ -716,7 +744,7 @@ describe("buildStatusLine", () => {
       config,
     );
 
-    expect(line).toContain("Σ 2.0k tokens");
+    expect(line).toContain("↑1.0k R1.0k CH50.0%");
     expect(line).toContain("10%/1.0k");
     expect(line).not.toContain("100%/1.0k");
   });
@@ -756,7 +784,7 @@ describe("buildStatusLine", () => {
 
     const line = buildStatusLine(500, theme, ctx, "", "high", config);
 
-    expect(line).toContain("Σ 1.5k tokens");
+    expect(line).toContain("↑1.0k ↓500");
     expect(line).toContain("10%/1.0k");
     expect(line).not.toContain("100%/1.0k");
   });
@@ -887,7 +915,7 @@ describe("buildStatusLine", () => {
     getEntries.mockReturnValue([makeAssistant(200, 0)]);
     const changedLine = buildStatusLine(500, theme, ctx, "", "high", config);
     expect(getEntries).toHaveBeenCalledTimes(2);
-    expect(changedLine).toContain("Σ 200 tokens");
+    expect(changedLine).toContain("↑200");
 
     const otherEntries = vi.fn(() => [makeAssistant(3, 4)]);
     const otherCtx = makeContext([], undefined, {

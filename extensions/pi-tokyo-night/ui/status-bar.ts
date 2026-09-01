@@ -37,6 +37,35 @@ type Module = {
   noEndArrow?: boolean;
 };
 
+/** Mirror Pi's native footer thresholds so large usage switches from k to M. */
+function formatTokenCount(count: number): string {
+  if (count < 1000) return count.toString();
+  if (count < 10_000) return `${(count / 1000).toFixed(1)}k`;
+  if (count < 1_000_000) return `${Math.round(count / 1000)}k`;
+  if (count < 10_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
+  return `${Math.round(count / 1_000_000)}M`;
+}
+
+function buildDetailedTokenUsage(
+  input: number,
+  output: number,
+  cacheRead: number,
+  cacheWrite: number,
+  cacheHitRate: number | undefined,
+  icons: StatusIcons,
+): string {
+  const parts: string[] = [];
+  if (input) parts.push(`↑${formatTokenCount(input)}`);
+  if (output) parts.push(`↓${formatTokenCount(output)}`);
+  if (cacheRead) parts.push(`R${formatTokenCount(cacheRead)}`);
+  if (cacheWrite) parts.push(`W${formatTokenCount(cacheWrite)}`);
+  if (parts.length === 0) return `${icons.tokens} 0 tokens`;
+  if (cacheHitRate !== undefined) {
+    parts.push(`CH${cacheHitRate.toFixed(1)}%`);
+  }
+  return parts.join(" ");
+}
+
 // Shared "LIMIT" module for provider quota (Codex via response headers,
 // Kimi via polled usages API — both render through formatStatus).
 const buildLimitModule = (snap: UsageSnapshot | undefined): Module[] =>
@@ -593,7 +622,6 @@ function buildStatusLayout(
   const cacheWrite = sessionStats.cacheWrite + (liveUsage?.cacheWrite ?? 0);
   const cost = sessionStats.cost + (liveUsage?.cost ?? 0);
 
-  const fmt = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(1)}k`);
   const fmtCost = (c: number) =>
     c < 0.01 ? `${c.toFixed(3)}` : `${c.toFixed(2)}`;
 
@@ -601,7 +629,6 @@ function buildStatusLayout(
 
   const cwd = ctx.cwd;
 
-  const totalTokens = input + output + cacheRead + cacheWrite;
   let maxCtx = 128000;
   if (ctx.model?.contextWindow) maxCtx = ctx.model.contextWindow;
   let pct = 0;
@@ -682,16 +709,19 @@ function buildStatusLayout(
       : undefined,
   );
 
-  const cacheHitLabel = cacheHitRate === undefined
-    ? ""
-    : ` · CH ${cacheHitRate.toFixed(1)}%`;
-
   // Build right modules (provider usage, tokens, cost, progress)
   const rightModules: Module[] = [
     ...(statusModules.quota ? [...codexModule, ...kimiModule] : []),
     ...(statusModules.tokens
       ? [{
-          text: `${icons.tokens} ${fmt(totalTokens)} tokens${cacheHitLabel}`,
+          text: buildDetailedTokenUsage(
+            input,
+            output,
+            cacheRead,
+            cacheWrite,
+            cacheHitRate,
+            icons,
+          ),
           bg: "tokens" as const,
           fg: "statusTokens" as const,
         }]
@@ -705,7 +735,7 @@ function buildStatusLayout(
       : []),
     ...(statusModules.context
       ? [{
-          text: `${progressBar} ${pct}%/${fmt(maxCtx)}`,
+          text: `${progressBar} ${pct}%/${formatTokenCount(maxCtx)}`,
           bg: null,
           fg: "statusContext" as const,
           noEndArrow: true,

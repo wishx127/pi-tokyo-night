@@ -247,6 +247,37 @@ describe("public layout and lifecycle contract", () => {
     }
   });
 
+  it("reserves frame columns when wrapping narrow Token rows", async () => {
+    const fixture = makeFixture();
+    fixture.ctx.sessionManager.getBranch = () => [{
+      type: "message",
+      message: {
+        role: "assistant",
+        usage: {
+          input: 1_500_000,
+          output: 198_000,
+          cacheRead: 120_000_000,
+          cacheWrite: 500_000,
+          cost: { total: 0 },
+        },
+      },
+    }];
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      theme,
+    );
+    const plainLines = status.render(9).map((line: string) =>
+      line.replace(/\u001b\[[0-9;]*m/g, "")
+    );
+    const tokenLine = plainLines.find((line: string) => line.includes("↑"));
+
+    expect(tokenLine).toBeDefined();
+    expect(tokenLine).toMatch(/^│.*\uE0B0│$/);
+    expect(Array.from(tokenLine ?? "")).toHaveLength(9);
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
   it("renders Status as the shared frame bottom segment", () => {
     const lines = buildStatusWidgetLines(20, "status", true);
     const output = lines.join("\n");
@@ -486,7 +517,7 @@ describe("public layout and lifecycle contract", () => {
       fixture.ctx,
     );
 
-    expect(status.render(500).join("\n")).toContain("Σ 200 tokens");
+    expect(status.render(500).join("\n")).toContain("↑120 ↓34 R40 W6");
     expect(status.render(500).join("\n")).toContain("$0.03");
     await vi.advanceTimersByTimeAsync(33);
     expect(statusTui.requestRender).toHaveBeenCalledOnce();
@@ -519,7 +550,7 @@ describe("public layout and lifecycle contract", () => {
       },
       fixture.ctx,
     );
-    expect(status.render(500).join("\n")).toContain("Σ 15 tokens");
+    expect(status.render(500).join("\n")).toContain("↑10 ↓5");
 
     await fixture.emit(
       "message_update",
@@ -533,9 +564,9 @@ describe("public layout and lifecycle contract", () => {
       },
       fixture.ctx,
     );
-    expect(status.render(500).join("\n")).toContain("Σ 30 tokens");
+    expect(status.render(500).join("\n")).toContain("↑10 ↓20");
     expect(status.render(500).join("\n")).toContain("$0.02");
-    expect(status.render(500).join("\n")).not.toContain("Σ 45 tokens");
+    expect(status.render(500).join("\n")).not.toContain("↑20 ↓25");
 
     branch.push({
       type: "message",
@@ -545,7 +576,7 @@ describe("public layout and lifecycle contract", () => {
     // the branch; the finalized stats cache is explicitly invalidated.
     await fixture.emit("agent_end", {}, fixture.ctx);
 
-    expect(status.render(500).join("\n")).toContain("Σ 30 tokens");
+    expect(status.render(500).join("\n")).toContain("↑10 ↓20");
     expect(status.render(500).join("\n")).toContain("$0.02");
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
@@ -569,7 +600,7 @@ describe("public layout and lifecycle contract", () => {
       theme,
     );
 
-    expect(status.render(500).join("\n")).toContain("Σ 200 tokens");
+    expect(status.render(500).join("\n")).toContain("↑100 ↓100");
     await fixture.emit("agent_start", {}, fixture.ctx);
     await fixture.emit(
       "message_update",
@@ -583,7 +614,7 @@ describe("public layout and lifecycle contract", () => {
       },
       fixture.ctx,
     );
-    expect(status.render(500).join("\n")).toContain("Σ 300 tokens");
+    expect(status.render(500).join("\n")).toContain("↑150 ↓150");
 
     await fixture.emit(
       "message_end",
@@ -597,7 +628,7 @@ describe("public layout and lifecycle contract", () => {
     );
     // The final provider usage is authoritative, even when it corrects the
     // larger partial estimate downward.
-    expect(status.render(500).join("\n")).toContain("Σ 230 tokens");
+    expect(status.render(500).join("\n")).toContain("↑120 ↓110");
     expect(status.render(500).join("\n")).toContain("$1.20");
 
     branch.push({
@@ -610,12 +641,12 @@ describe("public layout and lifecycle contract", () => {
     leaf = "leaf-2";
     // The persisted message must reconcile before turn_end as well, so a
     // repaint in that interval cannot add the final usage a second time.
-    expect(status.render(500).join("\n")).toContain("Σ 230 tokens");
+    expect(status.render(500).join("\n")).toContain("↑120 ↓110");
     await fixture.emit("turn_end", {}, fixture.ctx);
 
-    expect(status.render(500).join("\n")).toContain("Σ 230 tokens");
-    expect(status.render(500).join("\n")).not.toContain("Σ 260 tokens");
-    expect(status.render(500).join("\n")).not.toContain("Σ 330 tokens");
+    expect(status.render(500).join("\n")).toContain("↑120 ↓110");
+    expect(status.render(500).join("\n")).not.toContain("↑140 ↓120");
+    expect(status.render(500).join("\n")).not.toContain("↑170 ↓160");
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
@@ -644,7 +675,7 @@ describe("public layout and lifecycle contract", () => {
       fixture.ctx,
     );
 
-    expect(status.render(500).join("\n")).toContain("Σ 20 tokens");
+    expect(status.render(500).join("\n")).toContain("↑12 ↓8");
     expect(status.render(500).join("\n")).toContain("$0.04");
 
     branch.push({
@@ -655,8 +686,8 @@ describe("public layout and lifecycle contract", () => {
       },
     });
     leaf = "leaf-2";
-    expect(status.render(500).join("\n")).toContain("Σ 20 tokens");
-    expect(status.render(500).join("\n")).not.toContain("Σ 40 tokens");
+    expect(status.render(500).join("\n")).toContain("↑12 ↓8");
+    expect(status.render(500).join("\n")).not.toContain("↑24 ↓16");
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
@@ -687,13 +718,13 @@ describe("public layout and lifecycle contract", () => {
       },
       fixture.ctx,
     );
-    expect(status.render(500).join("\n")).toContain("Σ 15 tokens");
+    expect(status.render(500).join("\n")).toContain("↑10 ↓5");
 
     await fixture.emit("message_end", { message: { role: "assistant" } }, fixture.ctx);
 
     // Pi persists the finalized message after extension message_end handlers
     // return. The live value must remain visible during that gap.
-    expect(status.render(500).join("\n")).toContain("Σ 15 tokens");
+    expect(status.render(500).join("\n")).toContain("↑10 ↓5");
 
     branch.push({
       type: "message",
@@ -702,8 +733,8 @@ describe("public layout and lifecycle contract", () => {
     persisted = true;
     leaf = "leaf-2";
 
-    expect(status.render(500).join("\n")).toContain("Σ 15 tokens");
-    expect(status.render(500).join("\n")).not.toContain("Σ 30 tokens");
+    expect(status.render(500).join("\n")).toContain("↑10 ↓5");
+    expect(status.render(500).join("\n")).not.toContain("↑20 ↓10");
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
@@ -743,7 +774,7 @@ describe("public layout and lifecycle contract", () => {
       { message: { role: "assistant", usage } },
       fixture.ctx,
     );
-    expect(status.render(500).join("\n")).not.toContain("CH ");
+    expect(status.render(500).join("\n")).not.toContain("CH");
 
     branch.push({
       type: "message",
@@ -752,8 +783,8 @@ describe("public layout and lifecycle contract", () => {
     persisted = true;
 
     const output = status.render(500).join("\n");
-    expect(output).toContain("Σ 35 tokens · CH 66.7%");
-    expect(output).not.toContain("Σ 70 tokens");
+    expect(output).toContain("↑10 ↓5 R20 CH66.7%");
+    expect(output).not.toContain("↑20 ↓10 R40");
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
@@ -803,7 +834,7 @@ describe("public layout and lifecycle contract", () => {
     await vi.advanceTimersByTimeAsync(1000);
 
     expect(statusTui.requestRender).toHaveBeenCalled();
-    expect(status.render(500).join("\n")).toContain("CH 66.7%");
+    expect(status.render(500).join("\n")).toContain("CH66.7%");
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
@@ -843,8 +874,8 @@ describe("public layout and lifecycle contract", () => {
     leaf = "leaf-2";
     await fixture.emit("turn_start", {}, fixture.ctx);
 
-    expect(status.render(500).join("\n")).toContain("Σ 15 tokens");
-    expect(status.render(500).join("\n")).not.toContain("Σ 30 tokens");
+    expect(status.render(500).join("\n")).toContain("↑10 ↓5");
+    expect(status.render(500).join("\n")).not.toContain("↑20 ↓10");
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 

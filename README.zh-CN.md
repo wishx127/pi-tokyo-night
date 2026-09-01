@@ -62,7 +62,7 @@ pi install npm:@wishx127/pi-tokyo-night
 | 左侧 | 分支       | 当前 Git 分支（非 Git 仓库时隐藏）                                   |
 | 右侧 | Codex 限额 | Codex 配额/重置状态（仅限 SSE + Codex 兼容模型）                      |
 | 右侧 | Kimi 限额  | Kimi Code 5 小时窗口、每周配额与重置倒计时（仅限 `kimi-coding`）       |
-| 右侧 | Tokens     | 全 Session 输入、输出、缓存读写总量，并显示 Pi 最近请求的缓存命中率    |
+| 右侧 | Tokens     | 按 Pi 原生 `↑` 输入 / `↓` 输出 / `R` 缓存读 / `W` 缓存写分项显示全 Session 总量及最近请求 `CH` |
 | 右侧 | 费用       | 会话费用                                                              |
 | 右侧 | 进度       | 带百分比的上下文窗口使用进度条                                        |
 

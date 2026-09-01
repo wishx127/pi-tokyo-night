@@ -46,7 +46,10 @@ import {
   type LiveSessionUsage,
 } from "./ui/status-bar";
 import { StatusRenderCache } from "./ui/status-render-cache";
-import { renderFrameSegment } from "./ui/frame-layout";
+import {
+  getFrameContentWidth,
+  renderFrameSegment,
+} from "./ui/frame-layout";
 import {
   createTokyoNightPalette,
   type TokyoNightThemePalette,
@@ -804,6 +807,10 @@ export function registerTokyoNightExtension(
       reconcileLiveUsage(session, false);
       const outputWidth = safeTerminalWidth(width);
       const config = configManager.get();
+      const statusWidth = getFrameContentWidth(
+        outputWidth,
+        config.editorFrame,
+      );
       const thinkingLevel = pi.getThinkingLevel();
       let leafId: string | null | undefined;
       try { leafId = session.context.sessionManager.getLeafId(); }
@@ -826,7 +833,7 @@ export function registerTokyoNightExtension(
       }, () => {
         void updateBranch(session);
         const lines = buildStatusLines(
-          outputWidth,
+          statusWidth,
           theme,
           session.context,
           session.branch.cachedBranch,
