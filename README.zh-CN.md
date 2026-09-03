@@ -50,21 +50,21 @@ pi install npm:@wishx127/pi-tokyo-night
 
 只有在启用 `codexQuota`，且当前会话使用通过 `transport=sse` 连接的 Codex 兼容模型时，状态栏才会显示 Codex 用量。
 
-只有在启用 `kimiQuota`，且当前会话使用 `kimi-coding` 模型时，状态栏才会显示 Kimi Code 用量（5 小时滚动窗口和每周配额）。
+只有在启用 `kimiQuota`，且当前 `kimi-coding` 模型使用 Kimi 官方 `https://api.kimi.com` 端点时，状态栏才会显示 Kimi Code 用量（5 小时滚动窗口和每周配额）。
 
 ### 状态栏模块
 
 | 位置 | 模块       | 说明                                                                  |
 | ---- | ---------- | --------------------------------------------------------------------- |
 | 左侧 | 模型       | 当前 AI 模型名称                                                      |
-| 左侧 | 思考       | 思考等级（off / minimal / low / medium / high / xhigh）               |
+| 左侧 | 思考       | 思考等级（off / minimal / low / medium / high / xhigh / max）         |
 | 左侧 | 路径       | 缩短后的工作目录                                                      |
 | 左侧 | 分支       | 当前 Git 分支（非 Git 仓库时隐藏）                                   |
 | 右侧 | Codex 限额 | Codex 配额/重置状态（仅限 SSE + Codex 兼容模型）                      |
 | 右侧 | Kimi 限额  | Kimi Code 5 小时窗口、每周配额与重置倒计时（仅限 `kimi-coding`）       |
 | 右侧 | Tokens     | 按 Pi 原生 `↑` 输入 / `↓` 输出 / `R` 缓存读 / `W` 缓存写分项显示全 Session 总量及最近请求 `CH` |
 | 右侧 | 费用       | 会话费用                                                              |
-| 右侧 | 进度       | 带百分比的上下文窗口使用进度条                                        |
+| 右侧 | 进度       | 带百分比的上下文窗口使用进度条（Pi 报告用量未知时显示 `?`）            |
 
 ### Neon Studio
 

@@ -10,7 +10,7 @@ import {
 import {
   formatStatus,
   isCodexModel,
-  isKimiModel,
+  isKimiUsageOriginAllowed,
   type CodexUsageStore,
   type KimiUsageStore,
   type UsageSnapshot,
@@ -631,7 +631,7 @@ function buildStatusLayout(
 
   let maxCtx = 128000;
   if (ctx.model?.contextWindow) maxCtx = ctx.model.contextWindow;
-  let pct = 0;
+  let pct: number | null = 0;
 
   if (statusModules.context && typeof getContextUsage === "function") {
     try {
@@ -644,7 +644,7 @@ function buildStatusLayout(
           ? Math.min(100, Math.max(0, Math.round((usage.tokens / maxCtx) * 100)))
           : usage.percent != null && Number.isFinite(usage.percent)
             ? Math.min(100, Math.max(0, Math.round(usage.percent)))
-            : 0;
+            : null;
       }
     } catch (err) {
       handleExtensionError(err, "context usage");
@@ -658,11 +658,17 @@ function buildStatusLayout(
       : 0;
   }
 
-  const barColor = pct >= 50 ? "error" : pct >= 30 ? "warning" : "accent";
-  const filled = Math.round((pct / 100) * 8);
+  const measuredPct = pct ?? 0;
+  const barColor = measuredPct > 90
+    ? "error"
+    : measuredPct > 70
+      ? "warning"
+      : "accent";
+  const filled = Math.round((measuredPct / 100) * 8);
   const progressBar =
     theme.fg(barColor, icons.gaugeFilled.repeat(filled)) +
     theme.fg("dim", icons.gaugeEmpty.repeat(8 - filled));
+  const contextUsageLabel = pct === null ? "?" : `${pct}%`;
 
   // Build left modules (model, thinking, path, branch) from themed surfaces.
   const leftModules: Module[] = [];
@@ -704,7 +710,7 @@ function buildStatusLayout(
       : undefined,
   );
   const kimiModule = buildLimitModule(
-    config.get().kimiQuota && isKimiModel(ctx.model)
+    config.get().kimiQuota && isKimiUsageOriginAllowed(ctx.model)
       ? kimiUsageStore?.getSnapshot()
       : undefined,
   );
@@ -735,7 +741,7 @@ function buildStatusLayout(
       : []),
     ...(statusModules.context
       ? [{
-          text: `${progressBar} ${pct}%/${formatTokenCount(maxCtx)}`,
+          text: `${progressBar} ${contextUsageLabel}/${formatTokenCount(maxCtx)}`,
           bg: null,
           fg: "statusContext" as const,
           noEndArrow: true,
@@ -833,12 +839,48 @@ export function shortName(id: string): string {
 
 export function shortenPath(p: string): string {
   if (!p) return ".";
-  // Replace home directory with ~
+  // Replace home directory with ~ only at a complete path boundary.
   const home = process.env.HOME || process.env.USERPROFILE || "";
-  if (home && p.startsWith(home)) {
-    p = "~" + p.slice(home.length);
+  let normalized = p.replace(/\\/g, "/");
+  const homePath = home.replace(/\\/g, "/");
+  const normalizedHome = homePath === "/"
+    ? homePath
+    : homePath.replace(/\/+$/, "");
+  const windowsStyle = /^[A-Za-z]:\//.test(normalized) ||
+    normalized.startsWith("//");
+  const comparedPath = windowsStyle ? normalized.toLowerCase() : normalized;
+  const comparedHome = windowsStyle
+    ? normalizedHome.toLowerCase()
+    : normalizedHome;
+  const insideHome = comparedHome === "/"
+    ? comparedPath.startsWith("/")
+    : comparedHome.length > 0 &&
+      (
+        comparedPath === comparedHome ||
+        comparedPath.startsWith(`${comparedHome}/`)
+      );
+  if (insideHome) {
+    if (normalizedHome === "/") {
+      normalized = normalized === "/" ? "~" : `~${normalized}`;
+    } else {
+      normalized = `~${normalized.slice(normalizedHome.length)}`;
+    }
   }
-  const parts = p.replace(/\\/g, "/").split("/");
-  if (parts.length <= 4) return p;
-  return "~/…/" + parts.slice(-2).join("/");
+  const unc = normalized.match(/^\/\/([^/]+)\/([^/]+)(?:\/(.*))?$/);
+  if (unc) {
+    const root = `//${unc[1]}/${unc[2]}`;
+    const segments = (unc[3] ?? "").split("/").filter(Boolean);
+    if (segments.length <= 3) {
+      return segments.length > 0 ? `${root}/${segments.join("/")}` : root;
+    }
+    return `${root}/…/${segments.slice(-2).join("/")}`;
+  }
+
+  const parts = normalized.split("/");
+  if (parts.length <= 4) return normalized;
+  const windowsDrive = normalized.match(/^[A-Za-z]:\//)?.[0];
+  const prefix = normalized.startsWith("~/")
+    ? "~/"
+    : windowsDrive ?? (normalized.startsWith("/") ? "/" : "");
+  return `${prefix}…/${parts.slice(-2).join("/")}`;
 }

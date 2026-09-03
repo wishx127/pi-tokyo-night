@@ -54,7 +54,16 @@ import {
   createTokyoNightPalette,
   type TokyoNightThemePalette,
 } from "./ui/theme-palette";
-import { createCodexUsageStore, createKimiUsageStore, fetchKimiUsage, isCodexModel, isKimiModel, resolveKimiApiKey, type KimiUsageStore } from "./usage";
+import {
+  createCodexUsageStore,
+  createKimiUsageStore,
+  fetchKimiUsage,
+  isCodexModel,
+  isKimiModel,
+  isKimiUsageOriginAllowed,
+  resolveKimiApiKey,
+  type KimiUsageStore,
+} from "./usage";
 
 export type TokyoNightMode = "tui" | "rpc" | "json" | "print";
 
@@ -353,7 +362,8 @@ export function registerTokyoNightExtension(
   const canPollKimi = (session: SessionState, model: Model<any> | undefined): boolean =>
     isCurrent(session) && session.mode === "tui" && session.hasUI &&
     configManager.get().kimiQuota && configManager.get().statusModules.quota &&
-    activeModel === model && isKimiModel(model);
+    session.context.model === model && isKimiModel(model) &&
+    isKimiUsageOriginAllowed(model);
 
   const requestStatusRenderFor = (session: SessionState): void => {
     if (isCurrent(session)) session.requestStatusRender?.();
@@ -647,7 +657,11 @@ export function registerTokyoNightExtension(
   };
 
   const pollKimi = async (session: SessionState, model: Model<any>, pollGeneration: number): Promise<void> => {
-    if (!canPollKimi(session, model) || pollGeneration !== kimiPollGeneration || kimiPollController !== undefined) return;
+    if (pollGeneration !== kimiPollGeneration || kimiPollController !== undefined) return;
+    if (!canPollKimi(session, model)) {
+      if (isCurrent(session)) refreshKimi();
+      return;
+    }
     if (Date.now() < kimiNextPollAt) {
       expireKimiSnapshot(session);
       return;
@@ -682,7 +696,7 @@ export function registerTokyoNightExtension(
   };
   const refreshKimi = (): void => {
     const session = activeSession;
-    const model = activeModel;
+    const model = session?.context.model;
     if (!session || !canPollKimi(session, model)) {
       stopKimiPolling();
       session?.kimiUsageStore.clearSnapshot();

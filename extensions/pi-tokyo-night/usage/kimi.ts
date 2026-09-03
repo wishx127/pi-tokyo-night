@@ -24,7 +24,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type { UsageSnapshot, UsageWindow } from "./types";
 
-const DEFAULT_KIMI_BASE_URL = "https://api.kimi.com/coding/v1";
+const KIMI_USAGE_BASE_URL = "https://api.kimi.com/coding/v1";
+const KIMI_API_ORIGIN = new URL(KIMI_USAGE_BASE_URL).origin;
 const FETCH_TIMEOUT_MS = 8000;
 /** Treat tokens expiring within this margin as already expired. */
 const EXPIRY_MARGIN_MS = 60_000;
@@ -32,6 +33,27 @@ const EXPIRY_MARGIN_MS = 60_000;
 export function isKimiModel(model: Model<any> | undefined): boolean {
   if (!model) return false;
   return model.provider === "kimi-coding";
+}
+
+function httpOrigin(value: string): string | undefined {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" || url.protocol === "http:"
+      ? url.origin
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Limit quota polling to models served by Kimi's official API origin. */
+export function isKimiUsageOriginAllowed(
+  model: Model<any> | undefined,
+): boolean {
+  if (!model || !isKimiModel(model) || typeof model.baseUrl !== "string") {
+    return false;
+  }
+  return httpOrigin(model.baseUrl) === KIMI_API_ORIGIN;
 }
 
 // ── Credential resolution ──────────────────────────────────────────────────
@@ -230,18 +252,13 @@ export async function fetchKimiUsage(
   apiKey: string,
   signal?: AbortSignal,
 ): Promise<KimiUsageResult> {
-  const baseUrl = (process.env.KIMI_CODE_BASE_URL ?? DEFAULT_KIMI_BASE_URL).replace(
-    /\/+$/,
-    "",
-  );
-
   let response: Response;
   try {
     const timeoutSignal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
     const requestSignal = signal
       ? AbortSignal.any([signal, timeoutSignal])
       : timeoutSignal;
-    response = await fetch(`${baseUrl}/usages`, {
+    response = await fetch(`${KIMI_USAGE_BASE_URL}/usages`, {
       headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
       signal: requestSignal,
     });

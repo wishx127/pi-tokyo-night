@@ -50,7 +50,7 @@ After restarting Pi, the extension loads automatically. Use `/tokyo-night` to co
 
 Codex usage is shown in the status bar only when `codexQuota` is enabled and the session is using a Codex-compatible model over `transport=sse`.
 
-Kimi Code usage (5-hour rolling window + weekly quota) is shown in the status bar only when `kimiQuota` is enabled and the session is using a `kimi-coding` model.
+Kimi Code usage (5-hour rolling window + weekly quota) is shown only when `kimiQuota` is enabled and the active `kimi-coding` model uses Kimi's official `https://api.kimi.com` endpoint.
 
 ### Status bar modules
 
@@ -58,14 +58,14 @@ Kimi Code usage (5-hour rolling window + weekly quota) is shown in the status ba
 | Position | Module      | Description                                                                       |
 | -------- | ----------- | --------------------------------------------------------------------------------- |
 | Left     | Model       | Current AI model name                                                             |
-| Left     | Thinking    | Thinking level (off / minimal / low / medium / high / xhigh)                      |
+| Left     | Thinking    | Thinking level (off / minimal / low / medium / high / xhigh / max)                |
 | Left     | Path        | Shortened working directory                                                       |
 | Left     | Branch      | Current Git branch (hidden when not in a repo)                                    |
 | Right    | Codex Limit | Codex quota / reset status (SSE + Codex-compatible models only)                   |
 | Right    | Kimi Limit  | Kimi Code 5h window + weekly quota with reset countdown (kimi-coding models only) |
 | Right    | Tokens      | Pi-native `↑` input / `↓` output / `R` cache-read / `W` cache-write session totals and latest-request `CH` |
 | Right    | Cost        | Session cost                                                                      |
-| Right    | Progress    | Context window usage bar with percentage                                          |
+| Right    | Progress    | Context window usage bar with percentage (`?` while Pi reports usage as unknown)  |
 
 
 ### Neon Studio

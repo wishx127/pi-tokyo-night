@@ -1221,6 +1221,109 @@ describe("public layout and lifecycle contract", () => {
     expect(fixture.ctx.reload).not.toHaveBeenCalled();
   });
 
+  it("does not resolve or send Kimi credentials across origins", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    fixture.ctx.model = {
+      id: "proxied-kimi",
+      provider: "kimi-coding",
+      api: "anthropic-messages",
+      baseUrl: "https://proxy.example.com/coding",
+      contextWindow: 128000,
+    };
+    fixture.ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue(
+      "proxy-key",
+    );
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 500,
+    } as Response);
+
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(
+      fixture.ctx.modelRegistry.getApiKeyForProvider,
+    ).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("stops Kimi polling when the current same-id model changes origin", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    fixture.ctx.model = {
+      id: "kimi-for-coding",
+      provider: "kimi-coding",
+      api: "anthropic-messages",
+      baseUrl: "https://api.kimi.com/coding",
+      contextWindow: 128000,
+    };
+    fixture.ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue(
+      "proxy-key",
+    );
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 500,
+    } as Response);
+
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+
+    fixture.ctx.model = {
+      ...fixture.ctx.model,
+      baseUrl: "https://proxy.example.com/coding",
+    };
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    expect(fetchSpy).toHaveBeenCalledOnce();
+    expect(
+      fixture.ctx.modelRegistry.getApiKeyForProvider,
+    ).toHaveBeenCalledOnce();
+
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("rechecks the current Kimi origin after credential resolution", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    fixture.ctx.model = {
+      id: "kimi-for-coding",
+      provider: "kimi-coding",
+      api: "anthropic-messages",
+      baseUrl: "https://api.kimi.com/coding",
+      contextWindow: 128000,
+    };
+    let resolveCredential: ((value: string) => void) | undefined;
+    fixture.ctx.modelRegistry.getApiKeyForProvider.mockImplementation(
+      () => new Promise<string>((resolve) => {
+        resolveCredential = resolve;
+      }),
+    );
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 500,
+    } as Response);
+
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    expect(
+      fixture.ctx.modelRegistry.getApiKeyForProvider,
+    ).toHaveBeenCalledOnce();
+
+    fixture.ctx.model = {
+      ...fixture.ctx.model,
+      baseUrl: "https://proxy.example.com/coding",
+    };
+    resolveCredential?.("proxy-key");
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
   it("backs off Kimi usage requests after consecutive failures", async () => {
     vi.useFakeTimers();
     const fixture = makeFixture();
@@ -1228,6 +1331,7 @@ describe("public layout and lifecycle contract", () => {
       id: "kimi-for-coding",
       provider: "kimi-coding",
       api: "anthropic-messages",
+      baseUrl: "https://api.kimi.com/coding",
       contextWindow: 128000,
     };
     fixture.ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue("kimi-key");
@@ -1271,6 +1375,7 @@ describe("public layout and lifecycle contract", () => {
       id: "kimi-for-coding",
       provider: "kimi-coding",
       api: "anthropic-messages",
+      baseUrl: "https://api.kimi.com/coding",
       contextWindow: 128000,
     };
 
@@ -1293,6 +1398,7 @@ describe("public layout and lifecycle contract", () => {
       id: "kimi-for-coding",
       provider: "kimi-coding",
       api: "anthropic-messages",
+      baseUrl: "https://api.kimi.com/coding",
       contextWindow: 128000,
     };
     fixture.ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue("kimi-key");
@@ -1343,6 +1449,7 @@ describe("public layout and lifecycle contract", () => {
       id: "kimi-for-coding",
       provider: "kimi-coding",
       api: "anthropic-messages",
+      baseUrl: "https://api.kimi.com/coding",
       contextWindow: 128000,
     };
     fixture.ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue("kimi-key");
@@ -1387,6 +1494,7 @@ describe("public layout and lifecycle contract", () => {
       id: "kimi-for-coding",
       provider: "kimi-coding",
       api: "anthropic-messages",
+      baseUrl: "https://api.kimi.com/coding",
       contextWindow: 128000,
     };
     fixture.ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue("kimi-key");
@@ -1418,6 +1526,7 @@ describe("public layout and lifecycle contract", () => {
       id: "kimi-for-coding",
       provider: "kimi-coding",
       api: "anthropic-messages",
+      baseUrl: "https://api.kimi.com/coding",
       contextWindow: 128000,
     };
     fixture.ctx.modelRegistry.getApiKeyForProvider.mockResolvedValue("kimi-key");
@@ -1464,6 +1573,7 @@ describe("public layout and lifecycle contract", () => {
       id: "kimi-for-coding",
       provider: "kimi-coding",
       api: "anthropic-messages",
+      baseUrl: "https://api.kimi.com/coding",
       contextWindow: 128000,
     };
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);

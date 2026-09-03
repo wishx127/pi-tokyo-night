@@ -5,6 +5,7 @@ import {
   createKimiUsageStore,
   fetchKimiUsage,
   isKimiModel,
+  isKimiUsageOriginAllowed,
   parseKimiUsage,
   resolveKimiApiKey,
 } from "./index";
@@ -36,6 +37,34 @@ describe("isKimiModel", () => {
     expect(isKimiModel(undefined)).toBe(false);
     expect(isKimiModel({ provider: "openai-codex" } as never)).toBe(false);
     expect(isKimiModel({ provider: "kimi-coding" } as never)).toBe(true);
+  });
+});
+
+describe("isKimiUsageOriginAllowed", () => {
+  it("allows only the official Kimi API origin", () => {
+    expect(isKimiUsageOriginAllowed({
+      provider: "kimi-coding",
+      baseUrl: "https://api.kimi.com/coding",
+    } as never)).toBe(true);
+    expect(isKimiUsageOriginAllowed({
+      provider: "kimi-coding",
+      baseUrl: "https://proxy.example.com/models",
+    } as never)).toBe(false);
+  });
+
+  it("rejects missing, malformed, and cross-origin model endpoints", () => {
+    expect(isKimiUsageOriginAllowed({
+      provider: "kimi-coding",
+      baseUrl: "https://proxy.example.com/coding",
+    } as never)).toBe(false);
+    expect(isKimiUsageOriginAllowed({
+      provider: "kimi-coding",
+      baseUrl: "not-a-url",
+    } as never)).toBe(false);
+    expect(isKimiUsageOriginAllowed(
+      { provider: "kimi-coding" } as never,
+    ))
+      .toBe(false);
   });
 });
 

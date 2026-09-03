@@ -9,6 +9,7 @@ export {
   createKimiUsageStore,
   fetchKimiUsage,
   isKimiModel,
+  isKimiUsageOriginAllowed,
   parseKimiUsage,
   resolveKimiApiKey,
   type KimiUsageResult,

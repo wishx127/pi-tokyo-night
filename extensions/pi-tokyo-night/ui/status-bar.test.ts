@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { Theme, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { buildStatusLine, buildStatusLines } from "./status-bar";
+import { buildStatusLine, buildStatusLines, shortenPath } from "./status-bar";
 import { createKimiUsageStore } from "../usage";
 import type { UsageSnapshot } from "../usage";
 
@@ -127,6 +127,81 @@ function makeContext(
     cwd: "/workspace/project",
   } as unknown as ExtensionContext;
 }
+
+describe("shortenPath", () => {
+  it("does not label a long path outside HOME as home", () => {
+    vi.stubEnv("HOME", "/home/alice");
+    try {
+      expect(shortenPath("/opt/work/acme/team/repo")).toBe(
+        "/…/team/repo",
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not treat a sibling path with the same prefix as HOME", () => {
+    vi.stubEnv("HOME", "/home/alice");
+    try {
+      expect(shortenPath("/home/alice-other/projects/acme/team/repo")).toBe(
+        "/…/team/repo",
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("matches Windows HOME paths case-insensitively", () => {
+    vi.stubEnv("HOME", "");
+    vi.stubEnv("USERPROFILE", "C:\\Users\\Alice");
+    try {
+      expect(
+        shortenPath("c:\\users\\ALICE\\projects\\work\\acme\\repo"),
+      ).toBe(
+        "~/…/acme/repo",
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("preserves the drive for long Windows paths outside HOME", () => {
+    vi.stubEnv("HOME", "");
+    vi.stubEnv("USERPROFILE", "C:\\Users\\Alice");
+    try {
+      expect(shortenPath("D:\\work\\acme\\team\\repo")).toBe(
+        "D:/…/team/repo",
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("preserves the server and share of UNC paths", () => {
+    vi.stubEnv("HOME", "C:\\Users\\Alice");
+    try {
+      expect(shortenPath("\\\\server\\share\\project")).toBe(
+        "//server/share/project",
+      );
+      expect(
+        shortenPath("\\\\server\\share\\projects\\acme\\team\\repo"),
+      ).toBe("//server/share/…/team/repo");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("recognizes the filesystem root when it is HOME", () => {
+    vi.stubEnv("HOME", "/");
+    try {
+      expect(shortenPath("/projects/acme/team/repo")).toBe(
+        "~/…/team/repo",
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
 
 describe("buildStatusLine", () => {
   it("keeps status module chrome independent from the active theme", () => {
@@ -789,6 +864,42 @@ describe("buildStatusLine", () => {
     expect(line).not.toContain("100%/1.0k");
   });
 
+  it.each([
+    { percent: 70, expectedColor: "accent" },
+    { percent: 71, expectedColor: "warning" },
+    { percent: 90, expectedColor: "warning" },
+    { percent: 91, expectedColor: "error" },
+  ] as const)("colors $percent% context usage with $expectedColor", ({
+    percent,
+    expectedColor,
+  }) => {
+    const fg = vi.fn((_color: string, text: string) => text);
+    const thresholdTheme = { fg } as unknown as Theme;
+    const ctx = makeContext(
+      [],
+      () => ({ tokens: percent * 10, contextWindow: 1000, percent }),
+    );
+
+    buildStatusLine(500, thresholdTheme, ctx, "", "high", config);
+
+    expect(fg).toHaveBeenCalledWith(
+      expectedColor,
+      expect.stringMatching(/^█+$/),
+    );
+  });
+
+  it("shows unknown context usage instead of treating it as zero", () => {
+    const ctx = makeContext(
+      [],
+      () => ({ tokens: null, contextWindow: 1000, percent: null }),
+    );
+
+    const line = buildStatusLine(500, theme, ctx, "", "high", config);
+
+    expect(line).toContain("?/1.0k");
+    expect(line).not.toContain("0%/1.0k");
+  });
+
   it("falls back to cumulative usage when the context API is unavailable", () => {
     const ctx = makeContext([makeAssistant(1000, 0)]);
 
@@ -939,9 +1050,14 @@ describe("buildStatusLine provider quota modules", () => {
     get: () => ({ codexQuota: false, kimiQuota: false, ...flags }),
   }) as any;
 
-  const ctxWithModel = (provider: string): ExtensionContext => ({
+  const ctxWithModel = (
+    provider: string,
+    baseUrl = provider === "kimi-coding"
+      ? "https://api.kimi.com/coding"
+      : "https://api.example.com",
+  ): ExtensionContext => ({
     ...makeContext([]),
-    model: { id: "quota-model", provider, contextWindow: 1000 },
+    model: { id: "quota-model", provider, baseUrl, contextWindow: 1000 },
   } as unknown as ExtensionContext);
 
   it("renders the Codex limit module from the injected store", () => {
@@ -998,6 +1114,24 @@ describe("buildStatusLine provider quota modules", () => {
     );
 
     expect(line).toContain("LIMIT 5h 75%");
+  });
+
+  it("hides Kimi quota snapshots for custom gateways", () => {
+    const kimiStore = createKimiUsageStore();
+    kimiStore.setSnapshot(quotaSnapshot);
+
+    const line = buildStatusLine(
+      500,
+      theme,
+      ctxWithModel("kimi-coding", "https://proxy.example.com/coding"),
+      "",
+      "high",
+      quotaConfig({ kimiQuota: true }),
+      undefined,
+      kimiStore,
+    );
+
+    expect(line).not.toContain("LIMIT");
   });
 
   it("hides the Kimi module when the model switches away or the snapshot is absent", () => {
