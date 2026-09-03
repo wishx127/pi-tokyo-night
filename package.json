@@ -56,7 +56,7 @@
     "test:watch": "vitest",
     "package:check": "node scripts/package-contract.mjs",
     "check": "vitest run && tsc --noEmit && npm run package:check",
-    "compatibility": "npm run check"
+    "compatibility": "node scripts/pi-compat-check.mjs"
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "0.84.4",

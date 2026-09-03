@@ -42,11 +42,8 @@ jobs:
             version="$REQUESTED_VERSION"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - name: Install the matrix Pi packages
-        run: npm install --no-save --package-lock=false --ignore-scripts @earendil-works/pi-ai@${{ steps.pi_version.outputs.version }} @earendil-works/pi-coding-agent@${{ steps.pi_version.outputs.version }} @earendil-works/pi-tui@${{ steps.pi_version.outputs.version }}
-      - run: npm run typecheck
-      - run: npm test
-      - run: npm run package:check
+      - name: Run the isolated Pi compatibility check
+        run: node scripts/pi-compat-check.mjs "${{ steps.pi_version.outputs.version }}"
 
   smoke:
     name: Pi TUI smoke ${{ matrix.label }}

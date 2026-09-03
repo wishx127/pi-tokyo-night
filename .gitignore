@@ -17,6 +17,7 @@ Thumbs.db
 *.tmp
 *.temp
 *.bak
+.pi-compat-*
 
 # Documents
 docs/
