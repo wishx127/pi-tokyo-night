@@ -36,7 +36,7 @@ Restart Pi, then open `/tokyo-night` to choose Dark, Light, or Automatic and cus
 
 **Powerline status bar** — See the model, thinking level, path, Git branch, provider limits, tokens, cost, and context progress at a glance.
 
-**Neon Studio** — Open `/tokyo-night` to preview Dark and Light themes. Automatic immediately follows the current IDE terminal background and saves the light/dark pair for the next Pi start. You can also customize the frame, rain, quota, icons, and status modules live.
+**Neon Studio** — Open `/tokyo-night` to preview Dark and Light themes. Automatic immediately follows the current IDE terminal background and saves the light/dark pair for the next Pi start. You can also customize the frame, rain, quota, icons, and status modules live, and browse local token trends and model distribution.
 
 ## 🛠 Usage
 
@@ -75,9 +75,9 @@ Open with `/tokyo-night`. Neon Studio uses Pi's standard custom UI area—not an
 | Section    | Settings                                                                 |
 | ---------- | ------------------------------------------------------------------------ |
 | Appearance | Automatic/Dark/Light Theme, Top Panel, Interface Frame, Status Icons    |
-| Status     | Model, Thinking, Path, Git Branch, Provider Limit, Tokens, Cost, Context |
-| Usage      | Codex Limit, Kimi Limit                                                 |
-| Rain       | Rain Mode, Rain Rows; Manual also exposes Rain Tick and Max Rain Drops  |
+| Status     | Model, Thinking, Path, Git Branch, Provider Limit, Codex Limit, Kimi Limit, Tokens, Cost, Context |
+| Usage      | 3/7/30-day or all-conversation local token trends, Top 5 model series, and filterable legend      |
+| Rain       | Rain Mode, Rain Rows; Manual also exposes Rain Tick and Max Rain Drops                            |
 
 Extension settings are persisted in an extension-owned file:
 
@@ -85,6 +85,8 @@ Extension settings are persisted in an extension-owned file:
 - **macOS / Linux:** `~/.pi/agent/extensions/pi-tokyo-night.json`
 
 Existing settings are copied here automatically on first run. Neon Studio applies extension settings and pinned Dark/Light themes live; The file remains available for manual editing, with unspecified status modules enabled by default. Manually edited values are loaded on the next Pi start:
+
+The Usage module reads local Pi session JSONL files on demand and makes no network requests. Its trend and model distribution use directly attributable assistant-message tokens: `input + output + cacheWrite`; cache reads and un-attributable tool/summary usage are excluded. It offers 3/7/30-day and All Conversations ranges, plotting the five largest model series and an Other series when needed—there is no Total chart series. Parsed token metadata is cached by session-file size and mtime; prompt/content text is never cached. Use `←/→` to change the period, `↑/↓` to select a legend row, `Enter`/`Space` to toggle that series; the Y axis remains fixed for the selected period while hidden lines are omitted. The X axis shows start/middle/end dates when space permits, otherwise start/end.
 
 ```json
 {

@@ -25,6 +25,19 @@ export const PI_CORE_PACKAGES = Object.freeze([
   "@earendil-works/pi-coding-agent",
   "@earendil-works/pi-tui",
 ]);
+export const PI_SERVER_PACKAGE = "@earendil-works/pi-server";
+
+/** Pi 0.84+ exposes experimental server exports from the public package. */
+export function getCompatibilityPackages(piVersion) {
+  const [major = 0, minor = 0] = piVersion
+    .split(".")
+    .slice(0, 2)
+    .map((part) => Number.parseInt(part, 10));
+  const needsServerPackage = major > 0 || (major === 0 && minor >= 84);
+  return needsServerPackage
+    ? [...PI_CORE_PACKAGES, PI_SERVER_PACKAGE]
+    : PI_CORE_PACKAGES;
+}
 
 export const COMPATIBILITY_PROJECT_ENTRIES = Object.freeze([
   ".github",
@@ -44,7 +57,7 @@ export function createCompatibilityManifest(piVersion) {
   return {
     private: true,
     dependencies: Object.fromEntries(
-      PI_CORE_PACKAGES.map((packageName) => [packageName, piVersion]),
+      getCompatibilityPackages(piVersion).map((packageName) => [packageName, piVersion]),
     ),
   };
 }
@@ -124,7 +137,7 @@ async function copyProject(targetDirectory) {
 }
 
 async function assertInstalledPiVersions(runtimeRoot, piVersion) {
-  for (const packageName of PI_CORE_PACKAGES) {
+  for (const packageName of getCompatibilityPackages(piVersion)) {
     const installedManifest = JSON.parse(
       await readFile(
         path.join(runtimeRoot, "node_modules", packageName, "package.json"),

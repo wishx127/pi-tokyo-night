@@ -5,6 +5,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import fs from "node:fs";
 import path from "node:path";
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
+import { readUsageHistory } from "./analytics/usage-history";
 import { TokyoConfigManager } from "./core/config";
 import { detectTerminalTheme } from "./core/terminal-theme";
 import {
@@ -1302,6 +1303,7 @@ export function registerTokyoNightExtension(
       };
 
       let studioController: NeonStudioController | null = null;
+      const studioComponent = { current: undefined as NeonStudioComponent | undefined };
       try {
         await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
           previewAutomaticTheme = () => {
@@ -1391,15 +1393,18 @@ export function registerTokyoNightExtension(
           ) {
             previewAutomaticTheme();
           }
-          return new NeonStudioComponent(tui, theme, studioController, {
+          studioComponent.current = new NeonStudioComponent(tui, theme, studioController, {
             renderFullscreenStatus:
               studioSession.resources.renderFullscreenStatus ?? undefined,
             previewThemes,
             getTheme: openingTheme ? () => ctx.ui.theme : undefined,
             getAutomaticTheme: () => automaticPreviewTheme,
+            loadUsageHistory: (signal) => readUsageHistory({ signal }),
           });
+          return studioComponent.current;
         });
       } finally {
+        studioComponent.current?.dispose();
         automaticPreviewRevision += 1;
         automaticPreviewPending = false;
         previewAutomaticTheme = undefined;

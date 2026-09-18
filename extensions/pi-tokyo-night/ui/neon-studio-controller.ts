@@ -39,6 +39,23 @@ export const NEON_STUDIO_STATUS_SETTINGS: ReadonlyArray<{
   { key: "context", label: "Context" },
 ];
 
+export const NEON_STUDIO_QUOTA_SETTINGS: ReadonlyArray<{
+  key: "codexQuota" | "kimiQuota";
+  label: string;
+  description: string;
+}> = [
+  {
+    key: "codexQuota",
+    label: "Codex Limit",
+    description: "Show Codex quota captured from provider response headers",
+  },
+  {
+    key: "kimiQuota",
+    label: "Kimi Limit",
+    description: "Poll and show Kimi Code rolling and weekly quota",
+  },
+];
+
 const CONFIG_SNAPSHOT_KEYS = Object.keys(DEFAULT_CONFIG).filter(
   (key) => key !== "statusModules",
 ) as Array<Exclude<keyof TokyoConfig, "statusModules">>;
@@ -95,26 +112,30 @@ export class NeonStudioController {
     }
     if (section === "status") {
       const setting = NEON_STUDIO_STATUS_SETTINGS[selectedIndex];
-      if (!setting) return false;
-      this.config.setStatusModule(
-        setting.key,
-        !this.config.get().statusModules[setting.key],
+      if (setting) {
+        this.config.setStatusModule(
+          setting.key,
+          !this.config.get().statusModules[setting.key],
+        );
+        this.dependencies.onConfigChange({
+          kind: "status",
+          key: setting.key,
+        });
+        return true;
+      }
+
+      const quotaSetting = NEON_STUDIO_QUOTA_SETTINGS[
+        selectedIndex - NEON_STUDIO_STATUS_SETTINGS.length
+      ];
+      if (!quotaSetting) return false;
+      this.config.set(
+        quotaSetting.key,
+        !this.config.get()[quotaSetting.key],
       );
       this.dependencies.onConfigChange({
-        kind: "status",
-        key: setting.key,
+        kind: "config",
+        key: quotaSetting.key,
       });
-      return true;
-    }
-    if (section === "usage") {
-      const key = selectedIndex === 0
-        ? "codexQuota"
-        : selectedIndex === 1
-          ? "kimiQuota"
-          : undefined;
-      if (!key) return false;
-      this.config.set(key, !this.config.get()[key]);
-      this.dependencies.onConfigChange({ kind: "config", key });
       return true;
     }
     if (section === "rain") {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
+import type { UsageHistory } from "../analytics/usage-history";
 import { TokyoConfigManager } from "../core/config";
 import { NeonStudioComponent } from "./neon-studio";
 import {
@@ -24,6 +25,8 @@ function makeStudio(options: {
   persistedThemeChoice?: NeonStudioThemeChoice;
   getTheme?: () => Theme;
   getAutomaticTheme?: () => Theme | undefined;
+  loadUsageHistory?: (signal: AbortSignal) => Promise<UsageHistory | null>;
+  studioTheme?: Theme;
 } = {}) {
   const config = new TokyoConfigManager();
   const write = vi.spyOn(config, "write").mockReturnValue(true);
@@ -52,11 +55,13 @@ function makeStudio(options: {
     initialThemeChoice: options.initialThemeChoice,
     persistedThemeChoice: options.persistedThemeChoice,
   });
-  const studio = new NeonStudioComponent(tui, theme, controller, {
+  const studioTheme = options.studioTheme ?? theme;
+  const studio = new NeonStudioComponent(tui, studioTheme, controller, {
     renderFullscreenStatus: options.renderFullscreenStatus,
-    previewThemes: options.previewThemes ?? { dark: theme, light: theme },
+    previewThemes: options.previewThemes ?? { dark: studioTheme, light: studioTheme },
     getTheme: options.getTheme,
     getAutomaticTheme: options.getAutomaticTheme,
+    loadUsageHistory: options.loadUsageHistory,
   });
   return {
     config,
@@ -246,7 +251,7 @@ describe("NeonStudioComponent", () => {
     },
   );
 
-  it("renders the four setting sections and the active Appearance settings", () => {
+  it("renders every Studio section and the active Appearance settings", () => {
     const { studio } = makeStudio();
 
     const lines = studio.render(80);
@@ -257,6 +262,7 @@ describe("NeonStudioComponent", () => {
     expect(output).toContain("Status");
     expect(output).toContain("Usage");
     expect(output).toContain("Rain");
+    expect(output).not.toContain("Dashboard");
     expect(output).toContain("Theme");
     expect(output).toContain("Top Panel");
     expect(output).toContain("Interface Frame");
@@ -265,6 +271,349 @@ describe("NeonStudioComponent", () => {
       "Detect current terminal colors now; restart Pi to keep Automatic",
     );
     expect(lines.every((line) => visibleWidth(line) <= 80)).toBe(true);
+  });
+
+  it("uses Usage for historical trends and switches between natural-day ranges", async () => {
+    const now = Date.now();
+    const loadUsageHistory = vi.fn(async (): Promise<UsageHistory> => ({
+      records: [
+        { timestamp: now, provider: "openai", model: "gpt", tokens: 120 },
+        { timestamp: now - 6 * 24 * 60 * 60 * 1000, provider: "anthropic", model: "claude", tokens: 60 },
+      ],
+    }));
+    const { studio } = makeStudio({ loadUsageHistory });
+
+    for (let index = 0; index < 2; index++) studio.handleInput("\t");
+    expect(studio.render(80).join("\n")).toContain("[Usage]");
+    expect(studio.render(80).join("\n")).toContain("Loading historical usage");
+
+    await vi.waitFor(() => expect(loadUsageHistory).toHaveBeenCalledOnce());
+    await vi.waitFor(() => {
+      expect(studio.render(80).join("\n")).toContain("openai/gpt");
+    });
+
+    expect(studio.render(80).join("\n")).toContain("3 Days");
+    studio.handleInput("\x1b[C");
+    expect(studio.render(80).join("\n")).toContain("7 Days");
+  });
+
+  it("keeps provider limit settings in Status instead of Usage", async () => {
+    const loadUsageHistory = vi.fn(async (): Promise<UsageHistory> => ({
+      records: [{
+        timestamp: Date.now(),
+        provider: "openai",
+        model: "gpt",
+        tokens: 10,
+      }],
+    }));
+    const { config, studio } = makeStudio({ loadUsageHistory });
+
+    for (let index = 0; index < 2; index++) studio.handleInput("\t");
+    await vi.waitFor(() => {
+      expect(studio.render(80).join("\n")).toContain("openai/gpt");
+    });
+
+    studio.handleInput("\r");
+    const output = studio.render(80).join("\n");
+
+    expect(output).not.toContain("Codex Limit");
+    expect(output).not.toContain("Kimi Limit");
+    expect(config.get().codexQuota).toBe(false);
+    expect(config.get().kimiQuota).toBe(true);
+  });
+
+  it("labels Escape as exit and closes Usage", () => {
+    const { done, studio } = makeStudio({
+      loadUsageHistory: async () => new Promise(() => {}),
+    });
+
+    for (let index = 0; index < 2; index++) studio.handleInput("\t");
+    const output = studio.render(80).join("\n");
+    expect(output).toContain("Esc exit");
+    expect(output).not.toContain("Esc save");
+
+    studio.handleInput("\x1b");
+    expect(done).toHaveBeenCalledOnce();
+  });
+
+  it("renders readable Y-axis ticks and dashboard labels", async () => {
+    const now = Date.now();
+    const studioTheme = {
+      fg: vi.fn((_role: string, text: string) => text),
+    } as unknown as Theme;
+    const { studio } = makeStudio({
+      studioTheme,
+      loadUsageHistory: async () => ({
+        records: [
+          { timestamp: now, provider: "openai", model: "gpt", tokens: 160 },
+          { timestamp: now, provider: "anthropic", model: "claude", tokens: 40 },
+        ],
+      }),
+    });
+
+    for (let index = 0; index < 2; index++) studio.handleInput("\t");
+    await vi.waitFor(() => {
+      expect(studio.render(100).join("\n")).toContain("openai/gpt");
+    });
+
+    const output = studio.render(100).join("\n");
+    expect(output).toContain("160 ┤");
+    expect(output).toContain("80 ┤");
+    expect(output).toContain("0 ┤");
+    expect(output).not.toContain("╌");
+    expect(output).toContain("Total tokens  200");
+    expect(output).toContain("Calculation: input + output + cache write");
+    expect(output).not.toContain("fresh ·");
+    expect(output).toContain("Model distribution");
+    expect(output).not.toContain("TOKEN PULSE");
+    expect(output).not.toContain("MODEL SERIES");
+    expect(output).not.toContain("TOTAL TOKENS");
+    expect(output).not.toContain("MODEL DISTRIBUTION");
+    expect(output).not.toContain("● Total");
+    expect(output).toContain("▸ ● openai/gpt");
+
+    const modelVisualRoles = new Set(
+      vi.mocked(studioTheme.fg).mock.calls
+        .map(([role]) => role)
+        .filter((role) => ["thinkingLow", "thinkingMedium", "success", "warning"].includes(role)),
+    );
+    expect(modelVisualRoles.size).toBeGreaterThan(0);
+  });
+
+  it("shows Top 5 model series, three date ticks, and filters lines without changing Y scale", async () => {
+    const now = new Date(2026, 2, 10, 12);
+    const records = [100, 90, 80, 70, 60, 50].map((tokens, index) => ({
+      timestamp: now.getTime(),
+      provider: "openai",
+      model: `model-${index + 1}`,
+      tokens,
+    }));
+    const studioTheme = {
+      fg: vi.fn((_role: string, text: string) => text),
+    } as unknown as Theme;
+    const { studio } = makeStudio({
+      studioTheme,
+      loadUsageHistory: async () => ({ collectedAt: now.getTime(), records }),
+    });
+
+    for (let index = 0; index < 2; index++) studio.handleInput("\t");
+    await vi.waitFor(() => {
+      expect(studio.render(100).join("\n")).toContain("openai/model-1");
+    });
+    studio.handleInput("\x1b[C");
+
+    let output = studio.render(100).join("\n");
+    expect(output).toContain("openai/model-5");
+    expect(output).not.toContain("openai/model-6");
+    expect(output).not.toContain("Other");
+    expect(output).toContain(new Date(2026, 2, 4).toLocaleDateString("en-US", { month: "short", day: "numeric" }));
+    expect(output).toContain(new Date(2026, 2, 7).toLocaleDateString("en-US", { month: "short", day: "numeric" }));
+    expect(output).toContain(new Date(2026, 2, 10).toLocaleDateString("en-US", { month: "short", day: "numeric" }));
+    const seriesColors = new Set(
+      vi.mocked(studioTheme.fg).mock.calls
+        .map(([role]) => role)
+        .filter((role) => ["thinkingLow", "syntaxFunction", "success", "warning", "thinkingXhigh"].includes(role)),
+    );
+    expect(seriesColors).toEqual(new Set([
+      "thinkingLow",
+      "syntaxFunction",
+      "success",
+      "warning",
+      "thinkingXhigh",
+    ]));
+
+    const compactOutput = studio.render(26).join("\n");
+    expect(compactOutput).toContain(new Date(2026, 2, 4).toLocaleDateString("en-US", { month: "short", day: "numeric" }));
+    expect(compactOutput).toContain(new Date(2026, 2, 10).toLocaleDateString("en-US", { month: "short", day: "numeric" }));
+    expect(compactOutput).not.toContain(new Date(2026, 2, 7).toLocaleDateString("en-US", { month: "short", day: "numeric" }));
+
+    const narrowOutput = studio.render(20).join("\n");
+    expect(narrowOutput).toContain(new Date(2026, 2, 4).toLocaleDateString("en-US", { month: "short", day: "numeric" }));
+    expect(narrowOutput).toContain(new Date(2026, 2, 10).toLocaleDateString("en-US", { month: "short", day: "numeric" }));
+
+    studio.handleInput("\r");
+    output = studio.render(100).join("\n");
+    expect(output).toContain("○ openai/model-1");
+    expect(output).toContain("100 ┤");
+
+    studio.handleInput("\x1b[B");
+    studio.handleInput("\r");
+    output = studio.render(100).join("\n");
+    expect(output).toContain("○ openai/model-2");
+    expect(output).toContain("100 ┤");
+
+    studio.handleInput("a");
+    studio.handleInput("\x1b[97u");
+    output = studio.render(100).join("\n");
+    expect(output).toContain("100 ┤");
+    expect(output).toContain("○ openai/model-1");
+    expect(output).toContain("○ openai/model-2");
+    expect(output).not.toContain("a all");
+  });
+
+  it("resets hidden Top 5 series when the time range changes", async () => {
+    const now = Date.now();
+    const records = [100, 90, 80, 70, 60, 50].map((tokens, index) => ({
+      timestamp: now,
+      provider: "openai",
+      model: `model-${index + 1}`,
+      tokens,
+    }));
+    const { studio } = makeStudio({
+      loadUsageHistory: async () => ({ collectedAt: now, records }),
+    });
+
+    for (let index = 0; index < 2; index++) studio.handleInput("\t");
+    await vi.waitFor(() => {
+      expect(studio.render(100).join("\n")).toContain("openai/model-1");
+    });
+    studio.handleInput("\r");
+    expect(studio.render(100).join("\n")).toContain("○ openai/model-1");
+
+    studio.handleInput("\x1b[C");
+
+    const output = studio.render(100).join("\n");
+    expect(output).toContain("● openai/model-1");
+    expect(output).not.toContain("Other");
+  });
+
+  it("offers All without a Total chart series", async () => {
+    const now = new Date(2026, 2, 10, 12);
+    const { studio } = makeStudio({
+      loadUsageHistory: async () => ({
+        collectedAt: now.getTime(),
+        records: [
+          { timestamp: new Date(2025, 0, 1, 8).getTime(), provider: "openai", model: "old-model", tokens: 40 },
+          { timestamp: now.getTime(), provider: "openai", model: "new-model", tokens: 60 },
+        ],
+      }),
+    });
+
+    for (let index = 0; index < 2; index++) studio.handleInput("\t");
+    await vi.waitFor(() => {
+      expect(studio.render(100).join("\n")).toContain("new-model");
+    });
+    for (let index = 0; index < 3; index++) studio.handleInput("\x1b[C");
+
+    const output = studio.render(100).join("\n");
+    expect(output).toContain("[All]");
+    expect(output).not.toContain("[All Conversations]");
+    expect(output).toContain("old-model");
+    expect(output).not.toContain("● Total");
+    expect(output).not.toContain("○ Total");
+  });
+
+  it("shows a single All Conversations date label when history is only one day", async () => {
+    const now = new Date(2026, 2, 10, 12);
+    const { studio } = makeStudio({
+      loadUsageHistory: async () => ({
+        collectedAt: now.getTime(),
+        records: [{ timestamp: now.getTime(), provider: "openai", model: "gpt", tokens: 60 }],
+      }),
+    });
+
+    for (let index = 0; index < 2; index++) studio.handleInput("\t");
+    await vi.waitFor(() => {
+      expect(studio.render(100).join("\n")).toContain("gpt");
+    });
+    for (let index = 0; index < 3; index++) studio.handleInput("\x1b[C");
+
+    const label = now.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    const output = studio.render(100).join("\n");
+    expect(output.split(label).length - 1).toBe(1);
+  });
+
+  it("uses the history scan time as its natural-day boundary", async () => {
+    const collectedAt = Date.now() - 10 * 24 * 60 * 60 * 1000;
+    const { studio } = makeStudio({
+      loadUsageHistory: async () => ({
+        collectedAt,
+        records: [{
+          timestamp: collectedAt,
+          provider: "openai",
+          model: "gpt",
+          tokens: 120,
+        }],
+      }),
+    });
+
+    for (let index = 0; index < 2; index++) studio.handleInput("\t");
+    await vi.waitFor(() => {
+      expect(studio.render(80).join("\n")).toContain("openai/gpt");
+    });
+  });
+
+  it("cancels a pending history scan when leaving Usage", () => {
+    let scanSignal: AbortSignal | undefined;
+    const { studio } = makeStudio({
+      loadUsageHistory: (signal) => {
+        scanSignal = signal;
+        return new Promise(() => {});
+      },
+    });
+
+    for (let index = 0; index < 2; index++) studio.handleInput("\t");
+    expect(scanSignal?.aborted).toBe(false);
+
+    studio.handleInput("\t");
+
+    expect(scanSignal?.aborted).toBe(true);
+  });
+
+  it("shows an explicit empty state when the selected Usage period has no usage", async () => {
+    const { studio } = makeStudio({
+      loadUsageHistory: async () => ({ records: [] }),
+    });
+
+    for (let index = 0; index < 2; index++) studio.handleInput("\t");
+    await vi.waitFor(() => {
+      expect(studio.render(80).join("\n")).not.toContain("Loading historical usage");
+    });
+
+    expect(studio.render(80).join("\n")).toContain("No usage data for this period");
+  });
+
+  it("keeps the loaded Usage chart within the terminal width", async () => {
+    const now = Date.now();
+    const { studio } = makeStudio({
+      loadUsageHistory: async () => ({
+        records: [
+          { timestamp: now, provider: "openai", model: "gpt", tokens: 120 },
+          { timestamp: now - 24 * 60 * 60 * 1000, provider: "anthropic", model: "claude", tokens: 40 },
+        ],
+      }),
+    });
+
+    for (let index = 0; index < 2; index++) studio.handleInput("\t");
+    await vi.waitFor(() => {
+      expect(studio.render(80).join("\n")).toContain("openai/gpt");
+    });
+
+    for (const width of [0, 1, 2, 5, 20, 80]) {
+      expect(studio.render(width).every((line) => visibleWidth(line) <= width)).toBe(true);
+    }
+  });
+
+  it("keeps a compact chart axis visible on an extremely narrow terminal", async () => {
+    const { studio } = makeStudio({
+      loadUsageHistory: async () => ({
+        records: [{
+          timestamp: Date.now(),
+          provider: "openai",
+          model: "gpt",
+          tokens: 120,
+        }],
+      }),
+    });
+
+    for (let index = 0; index < 2; index++) studio.handleInput("\t");
+    await vi.waitFor(() => {
+      expect(studio.render(80).join("\n")).toContain("openai/gpt");
+    });
+
+    const lines = studio.render(5);
+    expect(lines.join("\n")).toContain("┤");
+    expect(lines.every((line) => visibleWidth(line) <= 5)).toBe(true);
   });
 
   it("follows the dynamic active Theme ahead of a cached Automatic preview", () => {
@@ -580,12 +929,11 @@ describe("NeonStudioComponent", () => {
     });
   });
 
-  it("previews Kimi Limit changes from the Usage section", () => {
+  it("previews Kimi Limit changes from the Status section", () => {
     const { config, onConfigChange, studio } = makeStudio();
 
     studio.handleInput("\t");
-    studio.handleInput("\t");
-    studio.handleInput("\x1b[B");
+    for (let index = 0; index < 9; index++) studio.handleInput("\x1b[B");
     studio.handleInput("\r");
 
     expect(config.get().kimiQuota).toBe(false);
@@ -596,11 +944,11 @@ describe("NeonStudioComponent", () => {
     });
   });
 
-  it("previews Codex Limit changes from the Usage section", () => {
+  it("previews Codex Limit changes from the Status section", () => {
     const { config, onConfigChange, studio } = makeStudio();
 
     studio.handleInput("\t");
-    studio.handleInput("\t");
+    for (let index = 0; index < 8; index++) studio.handleInput("\x1b[B");
     studio.handleInput("\r");
 
     expect(config.get().codexQuota).toBe(true);
@@ -638,6 +986,8 @@ describe("NeonStudioComponent", () => {
     expect(output).toContain("Path");
     expect(output).toContain("Git Branch");
     expect(output).toContain("Provider Limit");
+    expect(output).toContain("Codex Limit");
+    expect(output).toContain("Kimi Limit");
     expect(output).toContain("Tokens");
     expect(output).toContain("Cost");
     expect(output).toContain("Context");

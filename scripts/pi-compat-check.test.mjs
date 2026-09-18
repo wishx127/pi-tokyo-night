@@ -6,6 +6,7 @@ import {
   PI_CORE_PACKAGES,
   createCompatibilityManifest,
   createRuntimeInstallCommand,
+  getCompatibilityPackages,
 } from "./pi-compat-check.mjs";
 
 const projectRoot = path.resolve(
@@ -20,6 +21,16 @@ describe("Pi compatibility fixture", () => {
       dependencies: Object.fromEntries(
         PI_CORE_PACKAGES.map((packageName) => [packageName, "0.82.0"]),
       ),
+    });
+  });
+
+  it("includes Pi Server when newer Pi releases require its public module graph", () => {
+    expect(getCompatibilityPackages("0.82.0")).toEqual(PI_CORE_PACKAGES);
+    expect(createCompatibilityManifest("0.85.0").dependencies).toEqual({
+      ...Object.fromEntries(
+        PI_CORE_PACKAGES.map((packageName) => [packageName, "0.85.0"]),
+      ),
+      "@earendil-works/pi-server": "0.85.0",
     });
   });
 

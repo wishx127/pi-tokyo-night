@@ -10,6 +10,7 @@ import extension, {
   type PiThemeSettingResult,
   writePiThemeSetting,
 } from "./extension";
+import * as usageHistory from "./analytics/usage-history";
 import { TokyoConfigManager } from "./core/config";
 
 const theme = { name: "existing-theme", fg: (_color: string, text: string) => text } as any;
@@ -412,6 +413,58 @@ describe("public layout and lifecycle contract", () => {
     expect(layout.match(/╰/g)).toHaveLength(1);
     fixture.customComponent.handleInput("\x1b");
     await studio;
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("loads historical usage only after Usage becomes active", async () => {
+    const readUsageHistory = vi.spyOn(usageHistory, "readUsageHistory").mockResolvedValue({
+      records: [{
+        timestamp: Date.now(),
+        provider: "openai",
+        model: "gpt",
+        tokens: 42,
+      }],
+    });
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+    expect(readUsageHistory).not.toHaveBeenCalled();
+
+    for (let index = 0; index < 2; index++) {
+      fixture.customComponent.handleInput("\t");
+    }
+    await vi.waitFor(() => expect(readUsageHistory).toHaveBeenCalledOnce());
+    await vi.waitFor(() => {
+      expect(fixture.customComponent.render(80).join("\n")).toContain("openai/gpt");
+    });
+
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("aborts a Usage history scan when Neon Studio closes", async () => {
+    let scanSignal: AbortSignal | undefined;
+    vi.spyOn(usageHistory, "readUsageHistory").mockImplementation(({ signal } = {}) => {
+      scanSignal = signal;
+      return new Promise(() => {});
+    });
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+    for (let index = 0; index < 2; index++) {
+      fixture.customComponent.handleInput("\t");
+    }
+    await vi.waitFor(() => expect(scanSignal).toBeDefined());
+
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+
+    expect(scanSignal?.aborted).toBe(true);
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
@@ -1583,8 +1636,9 @@ describe("public layout and lifecycle contract", () => {
     const studio = fixture.command.handler("", fixture.ctx);
     await Promise.resolve();
     fixture.customComponent.handleInput("\t");
-    fixture.customComponent.handleInput("\t");
-    fixture.customComponent.handleInput("\x1b[B");
+    for (let index = 0; index < 9; index++) {
+      fixture.customComponent.handleInput("\x1b[B");
+    }
     fixture.customComponent.handleInput("\r");
     await vi.advanceTimersByTimeAsync(33);
 
