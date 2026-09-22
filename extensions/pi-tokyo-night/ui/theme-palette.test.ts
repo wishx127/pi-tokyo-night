@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { createTokyoNightPalette } from "./theme-palette";
 
-function makeTheme(): Theme {
+function makeTheme(name = "tokyo-night-dark"): Theme {
   return {
+    name,
     fg: (color: string, text: string) => `<fg:${color}>${text}</fg:${color}>`,
     bg: (color: string, text: string) => `<bg:${color}>${text}</bg:${color}>`,
   } as unknown as Theme;
@@ -36,6 +37,31 @@ describe("Tokyo Night theme palette", () => {
     );
     expect(palette.fg("statusModel", "model")).toBe(
       "\x1b[38;2;200;200;255mmodel\x1b[39m",
+    );
+  });
+
+  it("uses a subtle silver-to-pale shimmer for dark working text", () => {
+    const palette = createTokyoNightPalette(makeTheme());
+
+    expect(palette.fg("workingText", "Work")).toBe(
+      "\x1b[38;2;169;177;214mWork\x1b[39m",
+    );
+    expect(palette.fg("workingTextShimmer", "ing")).toBe(
+      "\x1b[38;2;210;214;232ming\x1b[39m",
+    );
+    expect(palette.workingPulse("Working", 0.25)).toBe(
+      "\x1b[38;2;179;186;219mWorking\x1b[39m",
+    );
+  });
+
+  it("uses a higher-contrast gray shimmer on the light theme", () => {
+    const palette = createTokyoNightPalette(makeTheme("tokyo-night-light"));
+
+    expect(palette.fg("workingText", "Work")).toBe(
+      "\x1b[38;2;86;95;137mWork\x1b[39m",
+    );
+    expect(palette.fg("workingTextShimmer", "ing")).toBe(
+      "\x1b[38;2;36;40;59ming\x1b[39m",
     );
   });
 

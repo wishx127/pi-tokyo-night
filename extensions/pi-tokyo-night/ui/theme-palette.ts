@@ -13,6 +13,8 @@ export type TokyoNightForegroundRole =
   | "prompt"
   | "workingCyan"
   | "workingPurple"
+  | "workingText"
+  | "workingTextShimmer"
   | "frame"
   | "statusModel"
   | "statusThinking"
@@ -34,6 +36,7 @@ export type TokyoNightBackgroundRole =
 
 export interface TokyoNightThemePalette {
   fg(role: TokyoNightForegroundRole, text: string): string;
+  workingPulse(text: string, intensity: number): string;
   bg(role: TokyoNightBackgroundRole, text: string): string;
   transition(
     from: TokyoNightBackgroundRole | null,
@@ -73,6 +76,17 @@ const STATIC_FOREGROUND_COLORS: Partial<
   statusContext: [255, 200, 200],
 };
 
+const WORKING_TEXT_COLORS = {
+  dark: {
+    base: [169, 177, 214], // #a9b1d6
+    shimmer: [210, 214, 232], // #d2d6e8
+  },
+  light: {
+    base: [86, 95, 137], // #565f89
+    shimmer: [36, 40, 59], // #24283b
+  },
+} as const satisfies Record<"dark" | "light", Record<"base" | "shimmer", RgbColor>>;
+
 const STATIC_BACKGROUND_COLORS: Record<
   TokyoNightBackgroundRole,
   RgbColor
@@ -92,6 +106,15 @@ function renderRgbForeground(color: RgbColor, text: string): string {
 
 function renderRgbBackground(color: RgbColor, text: string): string {
   return `${bgRgb(color)}${text}${RESET_BG}`;
+}
+
+function interpolateRgb(from: RgbColor, to: RgbColor, intensity: number): RgbColor {
+  const amount = Math.max(0, Math.min(1, intensity));
+  return [
+    Math.round(from[0] + (to[0] - from[0]) * amount),
+    Math.round(from[1] + (to[1] - from[1]) * amount),
+    Math.round(from[2] + (to[2] - from[2]) * amount),
+  ];
 }
 
 function renderChromeTransition(
@@ -115,8 +138,19 @@ function renderChromeTransition(
 export function createTokyoNightPalette(
   theme: Theme,
 ): TokyoNightThemePalette {
+  const workingColors = theme.name?.includes("light")
+    ? WORKING_TEXT_COLORS.light
+    : WORKING_TEXT_COLORS.dark;
+
   return {
     fg: (role, text) => {
+      if (role === "workingText") {
+        return renderRgbForeground(workingColors.base, text);
+      }
+      if (role === "workingTextShimmer") {
+        return renderRgbForeground(workingColors.shimmer, text);
+      }
+
       const staticColor = STATIC_FOREGROUND_COLORS[role];
       if (staticColor) return renderRgbForeground(staticColor, text);
 
@@ -126,6 +160,11 @@ export function createTokyoNightPalette(
       }
       return text;
     },
+    workingPulse: (text, intensity) =>
+      renderRgbForeground(
+        interpolateRgb(workingColors.base, workingColors.shimmer, intensity),
+        text,
+      ),
     bg: (role, text) =>
       renderRgbBackground(STATIC_BACKGROUND_COLORS[role], text),
     transition: renderChromeTransition,
@@ -133,6 +172,7 @@ export function createTokyoNightPalette(
 }
 
 /** Stable chrome palette for public frame helpers without a host Theme. */
+// SAFETY: the fallback palette only calls fg; the remaining Theme methods are intentionally unavailable.
 export const DEFAULT_TOKYO_NIGHT_PALETTE = createTokyoNightPalette({
   fg: (_color: string, text: string) => text,
 } as unknown as Theme);

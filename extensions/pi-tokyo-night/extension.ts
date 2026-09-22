@@ -55,6 +55,7 @@ import {
   createTokyoNightPalette,
   type TokyoNightThemePalette,
 } from "./ui/theme-palette";
+import { renderWorkingText } from "./ui/working-shimmer";
 import {
   createCodexUsageStore,
   createKimiUsageStore,
@@ -127,25 +128,16 @@ type SessionState = {
   requestStatusRender: (() => void) | undefined;
 };
 
-const WORKING_MESSAGE_INTERVAL_MS = 100;
+const WORKING_ANIMATION_INTERVAL_MS = 50;
 const WORKING_INDICATOR_INTERVAL_MS = 80;
 const TOKYO_WORKING_GLYPHS = Object.freeze([
-  ["workingCyan", "⠋"],
-  ["workingPurple", "⠙"],
-  ["workingCyan", "⠹"],
-  ["workingPurple", "⠸"],
-  ["workingCyan", "⠼"],
-  ["workingPurple", "⠴"],
-  ["workingCyan", "⠦"],
-  ["workingPurple", "⠧"],
-  ["workingCyan", "⠇"],
-  ["workingPurple", "⠏"],
+  "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
 ] as const);
 
 function buildTokyoWorkingFrames(theme: Theme | undefined): string[] {
   const palette = theme ? createTokyoNightPalette(theme) : undefined;
-  return TOKYO_WORKING_GLYPHS.map(([role, glyph]) =>
-    palette?.fg(role, glyph) ?? glyph
+  return TOKYO_WORKING_GLYPHS.map((glyph) =>
+    palette?.fg("workingText", glyph) ?? glyph
   );
 }
 
@@ -391,6 +383,7 @@ export function registerTokyoNightExtension(
 
   const updateLiveUsage = (session: SessionState, value: unknown): void => {
     const modules = configManager.get().statusModules;
+    // SAFETY: getContextUsage is an optional newer-host capability absent from current ExtensionContext typings.
     const getContextUsage = (
       session.context as unknown as { getContextUsage?: () => unknown }
     ).getContextUsage;
@@ -488,20 +481,31 @@ export function registerTokyoNightExtension(
     session.working.indicatorThemeName = undefined;
   };
   const formatDuration = (milliseconds: number): string => {
-    const seconds = Math.max(0, milliseconds) / 1000;
+    const quantizedMilliseconds = Math.floor(Math.max(0, milliseconds) / 100) * 100;
+    const seconds = quantizedMilliseconds / 1000;
     if (seconds < 60) return `${seconds.toFixed(1)}s`;
     const minutes = Math.floor(seconds / 60);
     return `${minutes}:${Math.floor(seconds % 60).toString().padStart(2, "0")}`;
   };
-  const workingMessage = (working: NativeWorkingState): string => {
+  const workingMessage = (session: SessionState): string => {
+    const { working } = session;
+    const theme = session.ui.theme;
+    const palette = theme ? createTokyoNightPalette(theme) : undefined;
     const tool = working.activeTools.values().next().value as WorkingTool | undefined;
     if (tool) {
+      const elapsedMs = Date.now() - tool.startedAt;
       const extra = working.activeTools.size > 1 ? ` +${working.activeTools.size - 1}` : "";
-      return `Using tools · ${tool.name} ${formatDuration(Date.now() - tool.startedAt)}${extra}`;
+      const message = `Using tools · ${tool.name} ${formatDuration(elapsedMs)}${extra}`;
+      return palette
+        ? renderWorkingText(message, "pulse", elapsedMs, palette)
+        : message;
     }
     const label = working.phase[0].toUpperCase() + working.phase.slice(1);
-    const elapsed = working.phaseStartedAt === undefined ? "0.0s" : formatDuration(Date.now() - working.phaseStartedAt);
-    return `${label} ${elapsed}`;
+    const elapsedMs = working.phaseStartedAt === undefined ? 0 : Date.now() - working.phaseStartedAt;
+    const message = `${label} ${formatDuration(elapsedMs)}`;
+    if (!palette) return message;
+    const animation = working.phase === "waiting" ? "forward" : "reverse";
+    return renderWorkingText(message, animation, elapsedMs, palette);
   };
   const syncWorkingIndicator = (session: SessionState): void => {
     const theme = session.ui.theme;
@@ -527,7 +531,7 @@ export function registerTokyoNightExtension(
   const updateWorking = (session: SessionState): void => {
     if (!isCurrent(session) || session.mode !== "tui" || !session.hasUI) return;
     syncWorkingIndicator(session);
-    try { session.ui.setWorkingMessage(workingMessage(session.working)); }
+    try { session.ui.setWorkingMessage(workingMessage(session)); }
     catch (error) { if (!isStaleExtensionContextError(error)) handleExtensionError(error, "working message update"); }
     try {
       if (configManager.get().panel) session.resources.rainPanel?.requestRender();
@@ -548,7 +552,7 @@ export function registerTokyoNightExtension(
     session.working.timer = setInterval(() => {
       if (!isCurrent(session)) { stopWorking(session); return; }
       updateWorking(session);
-    }, WORKING_MESSAGE_INTERVAL_MS);
+    }, WORKING_ANIMATION_INTERVAL_MS);
     session.working.timer.unref?.();
   };
   const setWorkingPhase = (session: SessionState, phase: WorkingPhase, restart = false): boolean => {

@@ -1141,12 +1141,12 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
     tui.requestRender.mockClear();
     await vi.advanceTimersByTimeAsync(1000);
-    expect(tui.requestRender).toHaveBeenCalledTimes(10);
+    expect(tui.requestRender).toHaveBeenCalledTimes(20);
 
     await fixture.emit("agent_end", { type: "agent_end" }, fixture.ctx);
-    expect(tui.requestRender).toHaveBeenCalledTimes(11);
+    expect(tui.requestRender).toHaveBeenCalledTimes(21);
     await vi.advanceTimersByTimeAsync(130);
-    expect(tui.requestRender).toHaveBeenCalledTimes(12);
+    expect(tui.requestRender).toHaveBeenCalledTimes(22);
 
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
@@ -1168,7 +1168,7 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
     expect(tui.requestRender).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(100);
-    expect(tui.requestRender).toHaveBeenCalledTimes(2);
+    expect(tui.requestRender).toHaveBeenCalledTimes(3);
 
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });

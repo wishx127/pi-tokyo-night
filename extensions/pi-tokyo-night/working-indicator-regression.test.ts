@@ -3,6 +3,9 @@ import extension from "./extension";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { TokyoConfigManager } from "./core/config";
 
+const stripAnsi = (text: string): string =>
+  text.replace(/\u001b\[[0-9;]*m/g, "");
+
 function makeFixture(mode: "tui" | "rpc" | "json" | "print" = "tui") {
   const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
   const ui = {
@@ -46,7 +49,7 @@ describe("working indicator compatibility regression", () => {
     }
   });
 
-  it("reconfigures working indicator chrome when the active theme changes", async () => {
+  it("keeps every spinner frame neutral while following the active theme", async () => {
     vi.useFakeTimers();
     const fixture = makeFixture();
     fixture.ui.theme = {
@@ -58,8 +61,8 @@ describe("working indicator compatibility regression", () => {
     await fixture.emit("agent_start", {}, fixture.ctx);
     expect(fixture.ui.setWorkingIndicator).toHaveBeenCalledOnce();
     const initialFrames = fixture.ui.setWorkingIndicator.mock.calls[0][0].frames as string[];
-    expect(initialFrames[0]).toBe("<dark:thinkingLow>⠋</dark:thinkingLow>");
-    expect(initialFrames[1]).toBe("<dark:thinkingMedium>⠙</dark:thinkingMedium>");
+    expect(initialFrames[0]).toBe("\x1b[38;2;169;177;214m⠋\x1b[39m");
+    expect(initialFrames[1]).toBe("\x1b[38;2;169;177;214m⠙\x1b[39m");
 
     fixture.ui.setWorkingIndicator.mockClear();
     fixture.ui.theme = {
@@ -70,8 +73,8 @@ describe("working indicator compatibility regression", () => {
 
     expect(fixture.ui.setWorkingIndicator).toHaveBeenCalledOnce();
     const refreshedFrames = fixture.ui.setWorkingIndicator.mock.calls[0][0].frames as string[];
-    expect(refreshedFrames[0]).toBe("<light:thinkingLow>⠋</light:thinkingLow>");
-    expect(refreshedFrames[1]).toBe("<light:thinkingMedium>⠙</light:thinkingMedium>");
+    expect(refreshedFrames[0]).toBe("\x1b[38;2;86;95;137m⠋\x1b[39m");
+    expect(refreshedFrames[1]).toBe("\x1b[38;2;86;95;137m⠙\x1b[39m");
     await fixture.emit("session_shutdown", {}, fixture.ctx);
   });
 
@@ -102,7 +105,7 @@ describe("working indicator compatibility regression", () => {
 
     expect(fixture.ui.setWorkingIndicator).toHaveBeenCalledOnce();
     const frames = fixture.ui.setWorkingIndicator.mock.calls[0][0].frames as string[];
-    expect(frames[0]).toBe("<light:thinkingLow>⠋</light:thinkingLow>");
+    expect(frames[0]).toBe("\x1b[38;2;86;95;137m⠋\x1b[39m");
     await fixture.emit("session_shutdown", {}, fixture.ctx);
   });
 
@@ -155,7 +158,7 @@ describe("working indicator compatibility regression", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
-  it("lets Pi animate the full Tokyo spinner every 80ms while elapsed refreshes every 100ms", async () => {
+  it("animates text every 50ms while the spinner stays at 80ms and elapsed changes every 100ms", async () => {
     vi.useFakeTimers();
     const fixture = makeFixture();
     await fixture.emit("session_start", {}, fixture.ctx);
@@ -179,24 +182,102 @@ describe("working indicator compatibility regression", () => {
     await vi.advanceTimersByTimeAsync(1000);
 
     expect(fixture.ui.setWorkingIndicator).not.toHaveBeenCalled();
-    expect(fixture.ui.setWorkingMessage).toHaveBeenCalledTimes(10);
+    expect(fixture.ui.setWorkingMessage).toHaveBeenCalledTimes(20);
     expect(
       fixture.ui.setWorkingMessage.mock.calls.map(
         ([message]: [string]) => message,
       ),
     ).toEqual([
+      "Waiting 0.0s",
+      "Waiting 0.1s",
       "Waiting 0.1s",
       "Waiting 0.2s",
+      "Waiting 0.2s",
+      "Waiting 0.3s",
       "Waiting 0.3s",
       "Waiting 0.4s",
+      "Waiting 0.4s",
+      "Waiting 0.5s",
       "Waiting 0.5s",
       "Waiting 0.6s",
+      "Waiting 0.6s",
+      "Waiting 0.7s",
       "Waiting 0.7s",
       "Waiting 0.8s",
+      "Waiting 0.8s",
+      "Waiting 0.9s",
       "Waiting 0.9s",
       "Waiting 1.0s",
     ]);
 
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("animates complete waiting and thinking messages including the timer", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    fixture.ui.theme = {
+      name: "tokyo-night-dark",
+      fg: vi.fn((color: string, text: string) => `<${color}>${text}</${color}>`),
+    };
+
+    await fixture.emit("session_start", {}, fixture.ctx);
+    await fixture.emit("agent_start", {}, fixture.ctx);
+    fixture.ui.setWorkingMessage.mockClear();
+    await vi.advanceTimersByTimeAsync(950);
+
+    const waitingMessage = fixture.ui.setWorkingMessage.mock.calls.at(-1)?.[0] as string;
+    expect(stripAnsi(waitingMessage)).toBe("Waiting 0.9s");
+    expect(waitingMessage).toContain("\x1b[38;2;210;214;232m0.9\x1b[39m");
+
+    await fixture.emit("message_update", {
+      assistantMessageEvent: { type: "thinking_delta" },
+    }, fixture.ctx);
+    fixture.ui.setWorkingMessage.mockClear();
+    await vi.advanceTimersByTimeAsync(2_800);
+
+    const thinkingMessage = fixture.ui.setWorkingMessage.mock.calls.at(-1)?.[0] as string;
+    expect(stripAnsi(thinkingMessage)).toBe("Thinking 2.8s");
+    expect(thinkingMessage).toContain("\x1b[38;2;210;214;232m 2.\x1b[39m");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("pulses the complete tool message including timer and concurrency count", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    fixture.ui.theme = {
+      name: "tokyo-night-dark",
+      fg: vi.fn((color: string, text: string) => `<${color}>${text}</${color}>`),
+    };
+
+    await fixture.emit("session_start", {}, fixture.ctx);
+    await fixture.emit("agent_start", {}, fixture.ctx);
+    await fixture.emit("tool_execution_start", {
+      toolCallId: "tool-1",
+      toolName: "read",
+    }, fixture.ctx);
+    fixture.ui.setWorkingMessage.mockClear();
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(fixture.ui.setWorkingMessage).toHaveBeenLastCalledWith(
+      "\x1b[38;2;210;214;232mUsing tools · read 0.5s\x1b[39m",
+    );
+
+    await fixture.emit("tool_execution_start", {
+      toolCallId: "tool-2",
+      toolName: "bash",
+    }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(100);
+    const concurrentMessage = fixture.ui.setWorkingMessage.mock.calls.at(-1)?.[0] as string;
+    expect(stripAnsi(concurrentMessage)).toBe(
+      "Using tools · read 0.6s +1",
+    );
+
+    await vi.advanceTimersByTimeAsync(59_500);
+    const minuteMessage = fixture.ui.setWorkingMessage.mock.calls.at(-1)?.[0] as string;
+    expect(stripAnsi(minuteMessage)).toBe(
+      "Using tools · read 1:00 +1",
+    );
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
@@ -210,7 +291,7 @@ describe("working indicator compatibility regression", () => {
 
     await vi.advanceTimersByTimeAsync(500);
 
-    expect(fixture.ui.setWorkingMessage).toHaveBeenCalledTimes(5);
+    expect(fixture.ui.setWorkingMessage).toHaveBeenCalledTimes(10);
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 });
