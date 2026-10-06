@@ -33,6 +33,37 @@ describe("detectTerminalTheme", () => {
     expect(target.queryTerminalBackgroundColor).toHaveBeenCalledWith({ timeoutMs: 80 });
   });
 
+  it("uses the combined terminal color query when the legacy background query is unavailable", async () => {
+    const target = {
+      queryTerminalColors: vi.fn(async () => ({
+        background: { r: 232, g: 233, b: 239 },
+      })),
+    };
+
+    await expect(detectTerminalTheme(target, { timeoutMs: 80, env: {} })).resolves.toEqual({
+      scheme: "light",
+      source: "terminal-background",
+    });
+    expect(target.queryTerminalColors).toHaveBeenCalledWith({ timeoutMs: 80 });
+  });
+
+  it("uses the combined terminal color query when the legacy background query fails", async () => {
+    const target = {
+      queryTerminalBackgroundColor: vi.fn(async () => {
+        throw new Error("legacy query failed");
+      }),
+      queryTerminalColors: vi.fn(async () => ({
+        background: { r: 232, g: 233, b: 239 },
+      })),
+    };
+
+    await expect(detectTerminalTheme(target, { timeoutMs: 80, env: {} })).resolves.toEqual({
+      scheme: "light",
+      source: "terminal-background",
+    });
+    expect(target.queryTerminalColors).toHaveBeenCalledWith({ timeoutMs: 80 });
+  });
+
   it.each([
     ["0;15", "light"],
     ["15;0", "dark"],

@@ -18,9 +18,12 @@ export interface TerminalThemeQueryTarget {
   queryTerminalColorScheme?: (options: {
     timeoutMs: number;
   }) => Promise<TerminalColorScheme | undefined>;
-  queryTerminalBackgroundColor: (options: {
+  queryTerminalBackgroundColor?: (options: {
     timeoutMs: number;
   }) => Promise<RgbColor | undefined>;
+  queryTerminalColors?: (options: {
+    timeoutMs: number;
+  }) => Promise<{ background?: RgbColor }>;
 }
 
 export interface TerminalThemeDetectionOptions {
@@ -97,10 +100,19 @@ export async function detectTerminalTheme(
     // Continue through the terminal background and environment fallbacks.
   }
 
+  let background: RgbColor | undefined;
   try {
-    const background = await target.queryTerminalBackgroundColor({
+    background = await target.queryTerminalBackgroundColor?.({
       timeoutMs: options.timeoutMs,
     });
+  } catch {
+    // Continue through the combined terminal color query.
+  }
+
+  try {
+    background ??= (await target.queryTerminalColors?.({
+      timeoutMs: options.timeoutMs,
+    }))?.background;
     if (background) {
       return {
         scheme: rgbLuminance(background) >= 0.5 ? "light" : "dark",
