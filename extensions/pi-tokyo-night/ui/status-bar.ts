@@ -53,16 +53,19 @@ function buildDetailedTokenUsage(
   cacheWrite: number,
   cacheHitRate: number | undefined,
   icons: StatusIcons,
+  outputTps?: number,
 ): string {
   const parts: string[] = [];
+  const hasUsage = Boolean(input || output || cacheRead || cacheWrite);
+  if (!hasUsage) parts.push(`${icons.tokens} 0 tokens`);
   if (input) parts.push(`↑${formatTokenCount(input)}`);
   if (output) parts.push(`↓${formatTokenCount(output)}`);
   if (cacheRead) parts.push(`R${formatTokenCount(cacheRead)}`);
   if (cacheWrite) parts.push(`W${formatTokenCount(cacheWrite)}`);
-  if (parts.length === 0) return `${icons.tokens} 0 tokens`;
-  if (cacheHitRate !== undefined) {
+  if (hasUsage && cacheHitRate !== undefined) {
     parts.push(`CH${cacheHitRate.toFixed(1)}%`);
   }
+  if (outputTps !== undefined) parts.push(`TPS ${Math.round(outputTps)}`);
   return parts.join(" ");
 }
 
@@ -498,13 +501,25 @@ function buildResponsiveRows(
       continue;
     }
 
+    // Omit TPS before shortening token and cache usage on a narrow row.
+    const textWidth = Math.max(0, width - endArrowWidth - 2);
+    const textWithoutTps = module.bg === "tokens"
+      ? module.text.replace(/ TPS \d+$/, "")
+      : module.text;
+    if (textWithoutTps !== module.text && visibleWidth(textWithoutTps) <= textWidth) {
+      const usageModule: Module = { ...module, text: textWithoutTps };
+      current = [usageModule];
+      currentWidth = getModuleWidth(usageModule);
+      flush();
+      continue;
+    }
+
     // A module that cannot fit on an empty row may be truncated by its own
     // measured text width. The end arrow is always reserved separately.
-    const textWidth = Math.max(0, width - endArrowWidth - 2);
     if (textWidth > 0) {
       const truncatedModule: Module = {
         ...module,
-        text: truncateToWidth(module.text, textWidth),
+        text: truncateToWidth(textWithoutTps, textWidth),
       };
       current = [truncatedModule];
       currentWidth = getModuleWidth(truncatedModule);
@@ -595,6 +610,7 @@ function buildStatusLayout(
   codexUsageStore?: Pick<CodexUsageStore, "getSnapshot">,
   kimiUsageStore?: Pick<KimiUsageStore, "getSnapshot">,
   liveUsage?: LiveSessionUsage,
+  outputTps?: number,
 ): StatusLayout {
   // Use a slightly smaller width to account for potential width miscalculations
   // with Nerd Font glyphs that may be rendered as double-width by the terminal
@@ -727,6 +743,7 @@ function buildStatusLayout(
             cacheWrite,
             cacheHitRate,
             icons,
+            outputTps,
           ),
           bg: "tokens" as const,
           fg: "statusTokens" as const,
@@ -779,6 +796,7 @@ export function buildStatusLine(
   codexUsageStore?: Pick<CodexUsageStore, "getSnapshot">,
   kimiUsageStore?: Pick<KimiUsageStore, "getSnapshot">,
   liveUsage?: LiveSessionUsage,
+  outputTps?: number,
 ): string {
   const layout = buildStatusLayout(
     width,
@@ -790,6 +808,7 @@ export function buildStatusLine(
     codexUsageStore,
     kimiUsageStore,
     liveUsage,
+    outputTps,
   );
   return truncateToWidth(layout.oneLine, width);
 }
@@ -804,6 +823,7 @@ export function buildStatusLines(
   codexUsageStore?: Pick<CodexUsageStore, "getSnapshot">,
   kimiUsageStore?: Pick<KimiUsageStore, "getSnapshot">,
   liveUsage?: LiveSessionUsage,
+  outputTps?: number,
 ): string[] {
   if (!Number.isFinite(width) || width <= 0) return [];
 
@@ -818,6 +838,7 @@ export function buildStatusLines(
     codexUsageStore,
     kimiUsageStore,
     liveUsage,
+    outputTps,
   );
 
   if (visibleWidth(layout.oneLine) <= renderWidth) {

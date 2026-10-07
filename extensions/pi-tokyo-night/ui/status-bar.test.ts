@@ -495,6 +495,54 @@ describe("buildStatusLine", () => {
     expect(line).not.toContain("Σ 122198.0k tokens");
   });
 
+  it("places rounded TPS after cache details in the Tokens module", () => {
+    const line = buildStatusLine(
+      500,
+      theme,
+      makeContext([makeAssistant(120, 34, 40, 6)]),
+      "",
+      "high",
+      makeStatusConfig(),
+      undefined,
+      undefined,
+      undefined,
+      44.4,
+    );
+    const plain = line.replace(/\u001b\[[0-9;]*m/g, "");
+
+    expect(plain).toContain("↑120 ↓34 R40 W6 CH24.1% TPS 44");
+    expect(plain).not.toContain("test-model TPS 44");
+  });
+
+  it("keeps token and cache usage instead of TPS on narrow status rows", () => {
+    const lines = buildStatusLines(
+      40,
+      theme,
+      makeContext([makeAssistant(1_500_000, 198_000, 120_000_000, 500_000)]),
+      "",
+      "high",
+      makeStatusConfig({
+        thinking: false,
+        path: false,
+        git: false,
+        quota: false,
+        cost: false,
+        context: false,
+      }),
+      undefined,
+      undefined,
+      undefined,
+      40,
+    );
+    const plain = lines.map((line) =>
+      line.replace(/\u001b\[[0-9;]*m/g, "")
+    ).join("\n");
+
+    expect(plain).toContain("↑1.5M ↓198k R120M W500k CH98.4%");
+    expect(plain).not.toContain("TPS");
+    expect(lines.every((line) => visibleWidth(line) <= 40)).toBe(true);
+  });
+
   it("wraps detailed Token buckets instead of replacing them with a total", () => {
     const entries = [makeAssistant(1_500_000, 198_000, 120_000_000, 500_000)];
     const lines = buildStatusLines(
