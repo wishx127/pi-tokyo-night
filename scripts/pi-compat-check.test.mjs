@@ -50,8 +50,7 @@ describe("Pi compatibility fixture", () => {
 
   it("routes compatibility workflows through the isolated checker", () => {
     const workflowPaths = [
-      ".github/workflows/compatibility.yml",
-      ".github/workflows/publish.yml",
+      ".github/workflows/pi-checks.yml",
     ];
 
     for (const workflowPath of workflowPaths) {

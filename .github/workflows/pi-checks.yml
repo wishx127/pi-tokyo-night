@@ -1,0 +1,84 @@
+name: Pi checks
+
+on:
+  workflow_call:
+    inputs:
+      run_smoke:
+        required: true
+        type: boolean
+      fail_fast:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    name: Pi ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: ${{ inputs.fail_fast }}
+      matrix:
+        include:
+          - label: minimum
+            version: 0.80.5
+          - label: historical
+            version: 0.82.0
+          - label: latest
+            version: latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Resolve Pi version
+        id: pi_version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ matrix.version }}
+        run: |
+          if [ "$REQUESTED_VERSION" = "latest" ]; then
+            version="$(npm view @earendil-works/pi-coding-agent version)"
+          else
+            version="$REQUESTED_VERSION"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Run the isolated Pi compatibility check
+        run: node scripts/pi-compat-check.mjs "${{ steps.pi_version.outputs.version }}"
+
+  smoke:
+    name: Pi TUI smoke ${{ matrix.label }}
+    if: ${{ inputs.run_smoke }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: ${{ inputs.fail_fast }}
+      matrix:
+        include:
+          - label: minimum
+            version: 0.80.5
+          - label: latest
+            version: latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Resolve Pi version
+        id: pi_version
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ matrix.version }}
+        run: |
+          if [ "$REQUESTED_VERSION" = "latest" ]; then
+            version="$(npm view @earendil-works/pi-coding-agent version)"
+          else
+            version="$REQUESTED_VERSION"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Install packed tarball and run Pi TUI smoke
+        run: node scripts/pi-tui-smoke.mjs
+        env:
+          PI_COMPAT_VERSION: ${{ steps.pi_version.outputs.version }}
