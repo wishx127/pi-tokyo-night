@@ -93,6 +93,12 @@ export class NeonStudioComponent implements Component {
   private dashboardLegendIndex = 0;
   private readonly dashboardHiddenSeries = new Set<string>();
   private dashboardState: DashboardState = { kind: "idle" };
+  private dashboardSummaryCache: {
+    history: UsageHistory;
+    range: DashboardRange;
+    dayStart: number;
+    summary: UsageDashboardSummary;
+  } | undefined;
   private dashboardAbortController: AbortController | undefined;
   private disposed = false;
 
@@ -220,6 +226,7 @@ export class NeonStudioComponent implements Component {
 
   dispose(): void {
     this.cancelDashboardLoad();
+    this.dashboardSummaryCache = undefined;
     this.disposed = true;
   }
 
@@ -383,14 +390,20 @@ export class NeonStudioComponent implements Component {
 
   private getDashboardSummary(): UsageDashboardSummary | undefined {
     if (this.dashboardState.kind !== "ready") return undefined;
-    const collectedAt = this.dashboardState.history.collectedAt;
-    return summarizeUsageHistory(
-      this.dashboardState.history,
-      DASHBOARD_RANGES[this.dashboardRangeIndex]!,
-      typeof collectedAt === "number" && Number.isFinite(collectedAt)
-        ? new Date(collectedAt)
-        : new Date(),
-    );
+    const history = this.dashboardState.history;
+    const range = DASHBOARD_RANGES[this.dashboardRangeIndex]!;
+    const collectedAt = history.collectedAt;
+    const now = typeof collectedAt === "number" && Number.isFinite(collectedAt)
+      ? new Date(collectedAt)
+      : new Date();
+    const dayStart = new Date(now).setHours(0, 0, 0, 0);
+    const cached = this.dashboardSummaryCache;
+    if (cached?.history === history && cached.range === range && cached.dayStart === dayStart) {
+      return cached.summary;
+    }
+    const summary = summarizeUsageHistory(history, range, now);
+    this.dashboardSummaryCache = { history, range, dayStart, summary };
+    return summary;
   }
 
   private getDashboardSeries(summary: UsageDashboardSummary): DashboardSeries[] {

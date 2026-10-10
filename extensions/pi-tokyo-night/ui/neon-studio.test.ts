@@ -17,6 +17,23 @@ const theme = {
 const stripAnsi = (value: string): string =>
   value.replace(/\x1b\[[0-9;]*m/g, "");
 
+function observeUsageRecords(records: UsageHistory["records"]) {
+  let reads = 0;
+  return {
+    records: new Proxy(records, {
+      get(target, property, receiver) {
+        if (
+          property === Symbol.iterator ||
+          (typeof property === "string" && /^\d+$/.test(property))
+        ) reads++;
+        return Reflect.get(target, property, receiver);
+      },
+    }),
+    get reads() { return reads; },
+    reset() { reads = 0; },
+  };
+}
+
 function makeStudio(options: {
   mode?: "regular" | "fullscreen";
   renderFullscreenStatus?: (width: number) => string[];
@@ -295,6 +312,182 @@ describe("NeonStudioComponent", () => {
     expect(studio.render(80).join("\n")).toContain("3 Days");
     studio.handleInput("\x1b[C");
     expect(studio.render(80).join("\n")).toContain("7 Days");
+  });
+
+  it("reuses historical records across rendering and legend interactions", async () => {
+    const now = new Date(2026, 2, 10, 12);
+    const observed = observeUsageRecords([
+      { timestamp: now.getTime(), provider: "openai", model: "gpt", tokens: 100 },
+      { timestamp: now.getTime(), provider: "anthropic", model: "claude", tokens: 50 },
+    ]);
+    let activeTheme = theme;
+    const loadUsageHistory = vi.fn(async () => ({
+      collectedAt: now.getTime(),
+      records: observed.records,
+    }));
+    const { studio } = makeStudio({
+      getTheme: () => activeTheme,
+      loadUsageHistory,
+    });
+    for (let index = 0; index < 2; index++) studio.handleInput("\t");
+    await Promise.resolve();
+
+    const initial = studio.render(100);
+    expect(initial.join("\n")).toContain("Total tokens  150");
+    expect(observed.reads).toBeGreaterThan(0);
+    observed.reset();
+
+    expect(studio.render(100)).toEqual(initial);
+    expect(studio.render(36).every((line) => visibleWidth(line) <= 36)).toBe(true);
+    studio.invalidate();
+    expect(studio.render(100)).toEqual(initial);
+    studio.handleInput("\x1b[B");
+    expect(studio.render(100).join("\n")).toContain("▸ ● anthropic/claude");
+    studio.handleInput("\r");
+    const hidden = studio.render(100).join("\n");
+    expect(hidden).toContain("▸ ○ anthropic/claude");
+    expect(hidden).toContain("Total tokens  150");
+    expect(hidden).toContain("100 ┤");
+    studio.handleInput(" ");
+    expect(studio.render(100).join("\n")).toContain("▸ ● anthropic/claude");
+    studio.handleInput("\x1b[A");
+    expect(studio.render(100).join("\n")).toContain("▸ ● openai/gpt");
+
+    activeTheme = { fg: (_role: string, text: string) => text.toUpperCase() } as Theme;
+    expect(studio.render(100).join("\n")).toContain("TOTAL TOKENS  150");
+    activeTheme = theme;
+    for (let index = 0; index < 4; index++) studio.handleInput("\t");
+    expect(studio.render(100)).toEqual(initial);
+    expect(loadUsageHistory).toHaveBeenCalledOnce();
+    expect(observed.reads).toBe(0);
+    studio.dispose();
+  });
+
+  it("recomputes history when switching ranges and keeps only the latest summary", async () => {
+    const now = new Date(2026, 2, 10, 12);
+    const observed = observeUsageRecords([
+      { timestamp: now.getTime(), provider: "openai", model: "gpt", tokens: 100 },
+      { timestamp: new Date(2026, 2, 4, 12).getTime(), provider: "openai", model: "gpt", tokens: 20 },
+      { timestamp: new Date(2026, 1, 20, 12).getTime(), provider: "openai", model: "gpt", tokens: 30 },
+      { timestamp: new Date(2026, 0, 1, 12).getTime(), provider: "openai", model: "gpt", tokens: 40 },
+    ]);
+    const { studio } = makeStudio({
+      loadUsageHistory: async () => ({ collectedAt: now.getTime(), records: observed.records }),
+    });
+    for (let index = 0; index < 2; index++) studio.handleInput("\t");
+    await Promise.resolve();
+
+    for (const [index, { label, total }] of [
+      { label: "3 Days", total: 100 },
+      { label: "7 Days", total: 120 },
+      { label: "30 Days", total: 150 },
+      { label: "All", total: 190 },
+      { label: "3 Days", total: 100 },
+    ].entries()) {
+      if (index > 0) studio.handleInput("\x1b[C");
+      const output = studio.render(100);
+      expect(output.join("\n")).toContain(`[${label}]`);
+      expect(output.join("\n")).toContain(`Total tokens  ${total}`);
+      expect(observed.reads).toBeGreaterThan(0);
+      observed.reset();
+      expect(studio.render(100)).toEqual(output);
+      expect(observed.reads).toBe(0);
+    }
+    studio.dispose();
+  });
+
+  it.each([undefined, NaN, Infinity, -Infinity])(
+    "refreshes the current-day fallback across midnight for collectedAt=%s",
+    async (collectedAt) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(new Date(2026, 2, 10, 12));
+        const observed = observeUsageRecords([
+          { timestamp: new Date(2026, 2, 8, 12).getTime(), provider: "openai", model: "gpt", tokens: 120 },
+          { timestamp: new Date(2026, 2, 10, 12).getTime(), provider: "openai", model: "gpt", tokens: 60 },
+        ]);
+        const { studio } = makeStudio({
+          loadUsageHistory: async () => ({ collectedAt, records: observed.records }),
+        });
+        for (let index = 0; index < 2; index++) studio.handleInput("\t");
+        await Promise.resolve();
+
+        const initial = studio.render(100);
+        expect(initial.join("\n")).toContain("Total tokens  180");
+        expect(initial.join("\n")).toContain("Mar 8");
+        expect(initial.join("\n")).toContain("Mar 10");
+        expect(observed.reads).toBeGreaterThan(0);
+        observed.reset();
+        vi.setSystemTime(new Date(2026, 2, 10, 23, 59));
+        expect(studio.render(100)).toEqual(initial);
+        expect(observed.reads).toBe(0);
+
+        vi.setSystemTime(new Date(2026, 2, 11, 0, 1));
+        const nextDay = studio.render(100);
+        expect(nextDay.join("\n")).toContain("Total tokens  60");
+        expect(nextDay.join("\n")).toContain("Mar 9");
+        expect(nextDay.join("\n")).toContain("Mar 11");
+        expect(observed.reads).toBeGreaterThan(0);
+        observed.reset();
+        expect(studio.render(100)).toEqual(nextDay);
+        expect(observed.reads).toBe(0);
+        studio.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each([new Date(2026, 2, 10, 12).getTime(), 0])(
+    "keeps the scan-day summary across midnight for collectedAt=%s",
+    async (collectedAt) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(new Date(2026, 2, 10, 23, 59));
+        const observed = observeUsageRecords([
+          { timestamp: collectedAt, provider: "openai", model: "gpt", tokens: 80 },
+        ]);
+        const { studio } = makeStudio({
+          loadUsageHistory: async () => ({ collectedAt, records: observed.records }),
+        });
+        for (let index = 0; index < 2; index++) studio.handleInput("\t");
+        await Promise.resolve();
+
+        const initial = studio.render(100);
+        expect(initial.join("\n")).toContain("Total tokens  80");
+        expect(initial.join("\n")).toContain(new Date(collectedAt).toLocaleDateString("en-US", {
+          month: "short", day: "numeric",
+        }));
+        expect(observed.reads).toBeGreaterThan(0);
+        observed.reset();
+        vi.setSystemTime(new Date(2026, 2, 11, 0, 1));
+        expect(studio.render(100)).toEqual(initial);
+        expect(observed.reads).toBe(0);
+        studio.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("reuses empty history while keeping the empty dashboard and input behavior", async () => {
+    const observed = observeUsageRecords([]);
+    const { studio } = makeStudio({
+      loadUsageHistory: async () => ({ collectedAt: Date.now(), records: observed.records }),
+    });
+    for (let index = 0; index < 2; index++) studio.handleInput("\t");
+    await Promise.resolve();
+    const initial = studio.render(100);
+    expect(initial.join("\n")).toContain("No usage data for this period");
+    expect(observed.reads).toBeGreaterThan(0);
+    observed.reset();
+
+    studio.invalidate();
+    studio.handleInput("\x1b[B");
+    studio.handleInput("\r");
+    expect(studio.render(100)).toEqual(initial);
+    expect(observed.reads).toBe(0);
+    studio.dispose();
   });
 
   it("keeps provider limit settings in Status instead of Usage", async () => {
