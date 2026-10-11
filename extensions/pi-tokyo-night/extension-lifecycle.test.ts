@@ -12,6 +12,7 @@ import extension, {
 } from "./extension";
 import * as usageHistory from "./analytics/usage-history";
 import { TokyoConfigManager } from "./core/config";
+import { createTokyoNightErrorSink, flushConsoleLogWrites } from "./core/console-bridge";
 
 const theme = { name: "existing-theme", fg: (_color: string, text: string) => text } as any;
 const tokyoDarkTheme = { name: "tokyo-night-dark", fg: theme.fg } as any;
@@ -162,8 +163,8 @@ afterEach(() => {
 });
 
 beforeEach(() => {
-  vi.spyOn(TokyoConfigManager.prototype, "read").mockImplementation(() => {});
-  vi.spyOn(TokyoConfigManager.prototype, "write").mockReturnValue(true);
+  vi.spyOn(TokyoConfigManager.prototype, "read").mockResolvedValue(undefined);
+  vi.spyOn(TokyoConfigManager.prototype, "write").mockResolvedValue(true);
 });
 
 describe("Pi theme settings persistence", () => {
@@ -1562,6 +1563,72 @@ describe("public layout and lifecycle contract", () => {
     await studio;
   });
 
+  it("flushes accepted logs before completing session shutdown", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-tokyo-night-flush-"));
+    const logPath = path.join(tempDir, "shutdown.log");
+    const fixture = makeFixture("print");
+    await fixture.emit("session_start", { reason: "start" }, fixture.ctx);
+    const append = fs.promises.appendFile.bind(fs.promises);
+    let release = () => {};
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const appendSpy = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (...args) => {
+      if (args[0] === logPath) await blocked;
+      return append(...args);
+    });
+    createTokyoNightErrorSink({ logFilePath: logPath })(new Error("accepted before shutdown"), "flush regression");
+    await vi.waitFor(() => expect(appendSpy).toHaveBeenCalled());
+    let closed = false;
+    const shutdown = fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx).then(() => { closed = true; });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(closed).toBe(false);
+      release();
+      await shutdown;
+      expect(fs.readFileSync(logPath, "utf-8")).toContain("accepted before shutdown");
+    } finally {
+      release();
+      await shutdown;
+      await flushConsoleLogWrites();
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("waits for an in-flight Studio save before completing session shutdown", async () => {
+    vi.mocked(TokyoConfigManager.prototype.read).mockRestore();
+    vi.mocked(TokyoConfigManager.prototype.write).mockRestore();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-tokyo-night-close-"));
+    vi.stubEnv("PI_CODING_AGENT_DIR", tempDir);
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "start" }, fixture.ctx);
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+    const rename = fs.promises.rename.bind(fs.promises);
+    let release = () => {};
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const renameSpy = vi.spyOn(fs.promises, "rename").mockImplementation(async (...args) => {
+      await blocked;
+      return rename(...args);
+    });
+    fixture.customComponent.handleInput("\x1b");
+    await vi.waitFor(() => expect(renameSpy).toHaveBeenCalledOnce());
+    let closed = false;
+    const shutdown = fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx).then(() => { closed = true; });
+    try {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(closed).toBe(false);
+      release();
+      await shutdown;
+      await studio;
+      expect(renameSpy).toHaveBeenCalledOnce();
+      expect(fixture.writePiThemeSetting).not.toHaveBeenCalled();
+    } finally {
+      release();
+      await shutdown;
+      await studio;
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("restores the opening Theme without saving a stale preview on shutdown", async () => {
     const fixture = makeFixture("tui", "session-1", "tokyo-night-dark");
     const openingTheme = fixture.ui.theme;
@@ -2418,6 +2485,7 @@ describe("public layout and lifecycle contract", () => {
     );
 
     fixture.customComponent.handleInput("\x1b");
+    await vi.waitFor(() => expect(fixture.ui.notify).toHaveBeenCalledWith("settings write failed", "error"));
     expect(fixture.ui.setTheme).toHaveBeenLastCalledWith(theme);
     fixture.customComponent.handleInput("\x1b");
     await studio;
@@ -2441,6 +2509,7 @@ describe("public layout and lifecycle contract", () => {
     fixture.customComponent.handleInput("\r");
     fixture.customComponent.handleInput("\x1b");
 
+    await vi.waitFor(() => expect(fixture.ui.notify).toHaveBeenCalledWith("settings write failed", "error"));
     expect(fixture.ui.setTheme.mock.calls.map(([value]: [unknown]) => value)).toEqual([
       tokyoLightTheme,
       theme,
@@ -2472,6 +2541,7 @@ describe("public layout and lifecycle contract", () => {
     fixture.customComponent.handleInput("\r");
     fixture.customComponent.handleInput("\x1b");
 
+    await vi.waitFor(() => expect(fixture.ui.notify).toHaveBeenCalledWith("fixed apply failed", "error"));
     expect(fixture.writePiThemeSetting.mock.calls.map(
       ([value]: [string | undefined]) => value,
     )).toEqual([
@@ -2503,6 +2573,7 @@ describe("public layout and lifecycle contract", () => {
     fixture.customComponent.handleInput("\r");
     fixture.customComponent.handleInput("\x1b");
 
+    await vi.waitFor(() => expect(fixture.ui.notify).toHaveBeenCalledWith("fixed theme write failed", "error"));
     expect(fixture.writePiThemeSetting).toHaveBeenCalledWith(
       "tokyo-night-light",
     );
@@ -2577,7 +2648,7 @@ describe("public layout and lifecycle contract", () => {
     expect(rain.render(40).length).toBeGreaterThan(0);
     rainTui.requestRender.mockClear();
 
-    vi.mocked(TokyoConfigManager.prototype.write).mockReturnValue(false);
+    vi.mocked(TokyoConfigManager.prototype.write).mockResolvedValue(false);
     await fixture.command.handler("off", fixture.ctx);
     await vi.advanceTimersByTimeAsync(160);
 
@@ -2596,10 +2667,46 @@ describe("public layout and lifecycle contract", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("serializes repeated panel commands through a failed pending disk save", async () => {
+    vi.mocked(TokyoConfigManager.prototype.read).mockRestore();
+    vi.mocked(TokyoConfigManager.prototype.write).mockRestore();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-tokyo-night-panel-"));
+    vi.stubEnv("PI_CODING_AGENT_DIR", tempDir);
+    const fixture = makeFixture();
+    const rename = fs.promises.rename.bind(fs.promises);
+    let release = () => {};
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const renameSpy = vi.spyOn(fs.promises, "rename").mockImplementationOnce(async () => {
+      await blocked;
+      throw Object.assign(new Error("save failed"), { code: "EIO" });
+    }).mockImplementation(rename);
+    let first: Promise<void> | undefined;
+    let second: Promise<void> | undefined;
+    try {
+      await fixture.emit("session_start", { reason: "start" }, fixture.ctx);
+      const rain = fixture.widgets.get("tokyo-rain")({ requestRender: vi.fn() });
+      first = fixture.command.handler("off", fixture.ctx);
+      await vi.waitFor(() => expect(renameSpy).toHaveBeenCalledOnce());
+      second = fixture.command.handler("off", fixture.ctx);
+      release();
+      await Promise.all([first, second]);
+
+      expect(fixture.ui.notify).toHaveBeenCalledWith("Could not save Tokyo Night panel settings.", "error");
+      expect(fixture.ui.notify).toHaveBeenCalledWith("Tokyo Night panel off", "info");
+      expect(JSON.parse(fs.readFileSync(path.join(tempDir, "extensions", "pi-tokyo-night.json"), "utf-8")).panel).toBe(false);
+      expect(rain.render(80)).toEqual([]);
+    } finally {
+      release();
+      await Promise.all([first, second]);
+      await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("reports a panel persistence failure through Pi UI in RPC mode", async () => {
     const fixture = makeFixture("rpc");
     vi.mocked(TokyoConfigManager.prototype.write).mockImplementationOnce(
-      (errorSink) => {
+      async (errorSink) => {
         expect(errorSink).toBe(fixture.errorSink);
         errorSink!(new Error("rename failed"), "writeTokyoConfig");
         return false;
@@ -2623,7 +2730,7 @@ describe("public layout and lifecycle contract", () => {
       const error = vi.spyOn(console, "error").mockImplementation(() => {});
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       vi.mocked(TokyoConfigManager.prototype.write).mockImplementationOnce(
-        (errorSink) => {
+        async (errorSink) => {
           expect(errorSink).toBe(fixture.errorSink);
           errorSink!(new Error("rename failed"), "writeTokyoConfig");
           return false;
@@ -2702,6 +2809,282 @@ describe("public layout and lifecycle contract", () => {
 
     expect(fixture.ui.setWorkingMessage).not.toHaveBeenCalled();
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("cancels a pending session start when its shutdown arrives before registration", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    const start = fixture.emit("session_start", { reason: "start" }, fixture.ctx);
+    const stop = fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+    await Promise.all([start, stop]);
+    expect(fixture.widgets.size).toBe(0);
+    expect(fixture.ui.setWidget).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps a pending replacement startup when another session shuts down late", async () => {
+    vi.mocked(TokyoConfigManager.prototype.read).mockRestore();
+    vi.mocked(TokyoConfigManager.prototype.write).mockRestore();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-tokyo-night-replace-"));
+    vi.stubEnv("PI_CODING_AGENT_DIR", tempDir);
+    const fixture = makeFixture("tui", "first");
+    const replacement = makeFixture("tui", "second");
+    try {
+      await fixture.emit("session_start", { reason: "start" }, fixture.ctx);
+      const started = fixture.emit("session_start", { reason: "replace" }, replacement.ctx);
+      const oldShutdown = fixture.emit("session_shutdown", { reason: "replace" }, fixture.ctx);
+      await Promise.all([started, oldShutdown]);
+
+      expect(replacement.widgets.size).toBe(2);
+      expect(replacement.ui.getEditorComponent()).toBeDefined();
+    } finally {
+      await fixture.emit("session_shutdown", { reason: "quit" }, replacement.ctx);
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([true, false])(
+    "waits for a pending Studio save before replacing the session (save succeeds: %s)",
+    async (saveSucceeds) => {
+      vi.mocked(TokyoConfigManager.prototype.read).mockRestore();
+      vi.mocked(TokyoConfigManager.prototype.write).mockRestore();
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-tokyo-night-studio-replace-"));
+      vi.stubEnv("PI_CODING_AGENT_DIR", tempDir);
+      const fixture = makeFixture("tui", "first", "tokyo-night-dark");
+      const replacement = makeFixture("tui", "second", "tokyo-night-dark");
+      const rename = fs.promises.rename.bind(fs.promises);
+      let release = () => {};
+      const blocked = new Promise<void>((resolve) => { release = resolve; });
+      let studio: Promise<void> | undefined;
+      let started: Promise<void> | undefined;
+      let oldShutdown: Promise<void> | undefined;
+      try {
+        await fixture.emit("session_start", { reason: "start" }, fixture.ctx);
+        studio = fixture.command.handler("", fixture.ctx);
+        await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+        fixture.customComponent.handleInput("\r");
+        fixture.customComponent.handleInput("\x1b[B");
+        fixture.customComponent.handleInput("\r");
+        const renameSpy = vi.spyOn(fs.promises, "rename").mockImplementationOnce(async (...args) => {
+          await blocked;
+          if (!saveSucceeds) throw Object.assign(new Error("save failed"), { code: "EIO" });
+          return rename(...args);
+        }).mockImplementation(rename);
+        fixture.customComponent.handleInput("\x1b");
+        await vi.waitFor(() => expect(renameSpy).toHaveBeenCalledOnce());
+
+        started = fixture.emit("session_start", { reason: "replace" }, replacement.ctx);
+        oldShutdown = fixture.emit("session_shutdown", { reason: "replace" }, fixture.ctx);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(replacement.widgets.size).toBe(0);
+        release();
+        await Promise.all([studio, started, oldShutdown]);
+
+        expect(fixture.writePiThemeSetting).not.toHaveBeenCalled();
+        expect(renameSpy).toHaveBeenCalledOnce();
+        const rain = replacement.widgets.get("tokyo-rain")({ requestRender: vi.fn() });
+        if (saveSucceeds) expect(rain.render(80)).toEqual([]);
+        else expect(rain.render(80).length).toBeGreaterThan(0);
+        expect(replacement.ui.notify).not.toHaveBeenCalledWith(
+          expect.stringContaining("Could not save"),
+          "error",
+        );
+      } finally {
+        release();
+        await Promise.allSettled([
+          studio, started, oldShutdown,
+          fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx),
+          fixture.emit("session_shutdown", { reason: "quit" }, replacement.ctx),
+        ]);
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["session_start", "session_shutdown"] as const)(
+    "keeps %s waiting when a panel save is queued behind the save it already awaits",
+    async (transitionEvent) => {
+      vi.mocked(TokyoConfigManager.prototype.read).mockRestore();
+      vi.mocked(TokyoConfigManager.prototype.write).mockRestore();
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-tokyo-night-panel-tail-"));
+      vi.stubEnv("PI_CODING_AGENT_DIR", tempDir);
+      const fixture = makeFixture("tui", "first");
+      const replacement = makeFixture("tui", "second");
+      const rename = fs.promises.rename.bind(fs.promises);
+      let releaseFirst = () => {};
+      let releaseSecond = () => {};
+      const firstBlocked = new Promise<void>((resolve) => { releaseFirst = resolve; });
+      const secondBlocked = new Promise<void>((resolve) => { releaseSecond = resolve; });
+      const renameSpy = vi.spyOn(fs.promises, "rename")
+        .mockImplementationOnce(async (...args) => {
+          await firstBlocked;
+          return rename(...args);
+        })
+        .mockImplementationOnce(async () => {
+          await secondBlocked;
+          throw Object.assign(new Error("second save failed"), { code: "EIO" });
+        })
+        .mockImplementation(rename);
+      let firstSave: Promise<void> | undefined;
+      let secondSave: Promise<void> | undefined;
+      let transition: Promise<void> | undefined;
+      try {
+        await fixture.emit("session_start", { reason: "start" }, fixture.ctx);
+        firstSave = fixture.command.handler("off", fixture.ctx);
+        await vi.waitFor(() => expect(renameSpy).toHaveBeenCalledOnce());
+        let transitionFinished = false;
+        transition = fixture.emit(
+          transitionEvent,
+          { reason: "replace" },
+          transitionEvent === "session_start" ? replacement.ctx : fixture.ctx,
+        ).then(() => { transitionFinished = true; });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        secondSave = fixture.command.handler("on", fixture.ctx);
+        releaseFirst();
+        await vi.waitFor(() => expect(renameSpy).toHaveBeenCalledTimes(2));
+        await new Promise<void>((resolve) => setImmediate(resolve));
+
+        expect(transitionFinished).toBe(false);
+        if (transitionEvent === "session_start") expect(replacement.widgets.size).toBe(0);
+        releaseSecond();
+        await Promise.all([firstSave, secondSave, transition]);
+      } finally {
+        releaseFirst();
+        releaseSecond();
+        await Promise.allSettled([
+          firstSave, secondSave, transition,
+          fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx),
+          fixture.emit("session_shutdown", { reason: "quit" }, replacement.ctx),
+        ]);
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("saves panel commands after a retired Studio rolls back an unsaved frame preview", async () => {
+    vi.mocked(TokyoConfigManager.prototype.read).mockRestore();
+    vi.mocked(TokyoConfigManager.prototype.write).mockRestore();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-tokyo-night-studio-panel-"));
+    vi.stubEnv("PI_CODING_AGENT_DIR", tempDir);
+    const fixture = makeFixture("tui", "first", "tokyo-night-dark");
+    const rename = fs.promises.rename.bind(fs.promises);
+    let release = () => {};
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const renameSpy = vi.spyOn(fs.promises, "rename").mockImplementationOnce(async () => {
+      await blocked;
+      throw Object.assign(new Error("Studio save failed"), { code: "EIO" });
+    }).mockImplementation(rename);
+    let studio: Promise<void> | undefined;
+    let shutdown: Promise<void> | undefined;
+    let panelCommand: Promise<void> | undefined;
+    try {
+      await fixture.emit("session_start", { reason: "start" }, fixture.ctx);
+      studio = fixture.command.handler("", fixture.ctx);
+      await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+      fixture.customComponent.handleInput("\x1b[B");
+      fixture.customComponent.handleInput("\x1b[B");
+      fixture.customComponent.handleInput("\r");
+      expect(fixture.customComponent.render(80).join("\n")).toContain("Interface Frame: Off");
+
+      shutdown = fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+      await vi.waitFor(() => expect(renameSpy).toHaveBeenCalledOnce());
+      panelCommand = fixture.command.handler("off", fixture.ctx);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      release();
+      await Promise.all([studio, shutdown, panelCommand]);
+
+      const saved = new TokyoConfigManager();
+      await saved.read(fixture.errorSink);
+      expect(saved.get().panel).toBe(false);
+      expect(saved.get().editorFrame).toBe(true);
+      expect(renameSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      release();
+      await Promise.allSettled([
+        studio, shutdown, panelCommand,
+        fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx),
+      ]);
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("waits for config migration before installing interactive resources", async () => {
+    vi.mocked(TokyoConfigManager.prototype.read).mockRestore();
+    vi.mocked(TokyoConfigManager.prototype.write).mockRestore();
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-tokyo-night-start-"));
+    vi.stubEnv("PI_CODING_AGENT_DIR", tempDir);
+    fs.writeFileSync(path.join(tempDir, "settings.json"), JSON.stringify({ "pi-tokyo-night": { panel: false } }));
+    const fixture = makeFixture();
+    const rename = fs.promises.rename.bind(fs.promises);
+    let release = () => {};
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const renameSpy = vi.spyOn(fs.promises, "rename").mockImplementation(async (...args) => {
+      await blocked;
+      return rename(...args);
+    });
+    const started = fixture.emit("session_start", { reason: "start" }, fixture.ctx);
+    try {
+      await vi.waitFor(() => expect(renameSpy).toHaveBeenCalledOnce());
+      expect(fixture.widgets.size).toBe(0);
+      release();
+      await started;
+      expect(fixture.widgets.get("tokyo-rain")({ requestRender: vi.fn() }).render(80)).toEqual([]);
+    } finally {
+      release();
+      await started;
+      await vi.waitFor(() => expect(fs.existsSync(path.join(tempDir, "extensions", "pi-tokyo-night.json"))).toBe(true));
+      await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("releases old rain and footer resources when the replacement uses another UI", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture("tui", "first");
+    const replacement = makeFixture("tui", "second");
+    await fixture.emit("session_start", { reason: "start" }, fixture.ctx);
+    const oldTui = { requestRender: vi.fn(), mode: "regular" };
+    const oldPanel = fixture.widgets.get("tokyo-rain")(oldTui, theme);
+    const unsubscribe = vi.fn();
+    let oldBranchListener = () => {};
+    const footer = fixture.footerFactory(oldTui, theme, {
+      getGitBranch: () => "main",
+      onBranchChange: (listener: () => void) => {
+        oldBranchListener = listener;
+        return unsubscribe;
+      },
+    });
+    await vi.advanceTimersByTimeAsync(33);
+    expect(vi.getTimerCount()).toBe(1);
+    fixture.ui.setWidget.mockClear();
+    fixture.ui.setFooter.mockClear();
+    fixture.ui.setEditorComponent.mockClear();
+    fixture.ui.setWorkingMessage.mockClear();
+
+    await fixture.emit("session_start", { reason: "replace" }, replacement.ctx);
+
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(oldPanel.render(80)).toEqual([]);
+    expect(vi.getTimerCount()).toBe(1);
+    expect(fixture.ui.setWidget).not.toHaveBeenCalled();
+    expect(fixture.ui.setFooter).not.toHaveBeenCalled();
+    expect(fixture.ui.setEditorComponent).not.toHaveBeenCalled();
+    expect(fixture.ui.setWorkingMessage).not.toHaveBeenCalled();
+    const newTui = { requestRender: vi.fn(), mode: "regular" };
+    const newPanel = replacement.widgets.get("tokyo-rain")(newTui, theme);
+    expect(newPanel.render(80).length).toBeGreaterThan(0);
+    oldTui.requestRender.mockClear();
+    newTui.requestRender.mockClear();
+    oldPanel.requestRender(true);
+    oldBranchListener();
+    await vi.advanceTimersByTimeAsync(160);
+    expect(oldTui.requestRender).not.toHaveBeenCalled();
+    expect(newTui.requestRender).toHaveBeenCalled();
+    footer.dispose();
+    await fixture.emit("session_shutdown", { reason: "replace" }, fixture.ctx);
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    await fixture.emit("session_shutdown", { reason: "quit" }, replacement.ctx);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("does not let a late old shutdown clear replacement resources", async () => {

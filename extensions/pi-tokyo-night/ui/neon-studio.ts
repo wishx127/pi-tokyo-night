@@ -110,6 +110,7 @@ export class NeonStudioComponent implements Component {
   ) {}
 
   handleInput(data: string): void {
+    if (this.disposed) return;
     if (matchesKey(data, "tab")) {
       const previousSection = SECTIONS[this.sectionIndex].id;
       this.sectionIndex = (this.sectionIndex + 1) % SECTIONS.length;
@@ -163,7 +164,7 @@ export class NeonStudioComponent implements Component {
         return;
       }
       if (!matchesKey(data, "escape")) return;
-      if (!this.controller.saveAndClose()) this.tui.requestRender();
+      this.saveAndClose();
       return;
     }
 
@@ -189,7 +190,16 @@ export class NeonStudioComponent implements Component {
       return;
     }
     if (!matchesKey(data, "escape")) return;
-    if (!this.controller.saveAndClose()) this.tui.requestRender();
+    this.saveAndClose();
+  }
+
+  private saveAndClose(): void {
+    const redraw = (): void => {
+      if (!this.disposed) this.tui.requestRender();
+    };
+    void this.controller.saveAndClose().then((saved) => {
+      if (!saved) redraw();
+    }, redraw);
   }
 
   render(width: number): string[] {

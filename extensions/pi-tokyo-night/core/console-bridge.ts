@@ -8,7 +8,14 @@ export const TOKYO_NIGHT_LOG_FILE = "pi-tokyo-night.log";
 export const TOKYO_NIGHT_LOG_MAX_BYTES = 1024 * 1024;
 
 const TOKYO_NIGHT_LOG_RETAIN_BYTES = TOKYO_NIGHT_LOG_MAX_BYTES / 2;
+const TOKYO_NIGHT_LOG_BATCH_BYTES = 64 * 1024;
+// At most 1 MiB waits in memory and at most 1 MiB is being written. The
+// record limit includes both queues; oversized records are written alone.
+const TOKYO_NIGHT_LOG_MAX_PENDING_BYTES = TOKYO_NIGHT_LOG_MAX_BYTES;
+const TOKYO_NIGHT_LOG_MAX_ENTRIES = 2_048;
+const TOKYO_NIGHT_LOG_MAX_PATHS = 128;
 const GLOBAL_BRIDGE_KEY = Symbol.for("pi-tokyo-night.console-log-bridge");
+const GLOBAL_WRITER_KEY = Symbol.for("pi-tokyo-night.console-log-writer");
 
 const CONSOLE_METHODS = [
   ["log", "LOG"],
@@ -51,9 +58,60 @@ interface GlobalBridgeState {
   latestOwner: symbol | undefined;
 }
 
-let fileWriteTail = Promise.resolve();
-const preparedLogDirectories = new Set<string>();
-const disabledLogFiles = new Set<string>();
+interface PendingLogEntry {
+  sequence: number;
+  filePath: string;
+  line: string;
+  bytes: number;
+}
+
+interface LogFlushWaiter {
+  sequence: number;
+  resolve(): void;
+}
+
+interface DroppedLogEntries {
+  filePath: string;
+  firstSequence: number;
+  count: number;
+  crossFileCount?: number;
+}
+
+interface LogWriteBatch {
+  entries: PendingLogEntry[];
+  dropped?: DroppedLogEntries;
+}
+
+interface LogWriterState {
+  pending: Map<number, PendingLogEntry>;
+  pendingBytes: number;
+  inFlight: LogWriteBatch | undefined;
+  dropped: Map<string, DroppedLogEntries>;
+  lastSequence: number;
+  scheduled: ReturnType<typeof setImmediate> | undefined;
+  draining: boolean;
+  preparedDirectories: Set<string>;
+  disabledFiles: Set<string>;
+  flushWaiters: Set<LogFlushWaiter>;
+}
+
+function getLogWriterState(): LogWriterState {
+  const globalObject = globalThis as typeof globalThis & {
+    [GLOBAL_WRITER_KEY]?: LogWriterState;
+  };
+  return globalObject[GLOBAL_WRITER_KEY] ??= {
+    pending: new Map(),
+    pendingBytes: 0,
+    inFlight: undefined,
+    dropped: new Map(),
+    lastSequence: 0,
+    scheduled: undefined,
+    draining: false,
+    preparedDirectories: new Set(),
+    disabledFiles: new Set(),
+    flushWaiters: new Set(),
+  };
+}
 
 export function getTokyoNightLogPath(agentDir = getAgentDir()): string {
   return path.join(agentDir, TOKYO_NIGHT_LOG_FILE);
@@ -156,28 +214,210 @@ async function appendBoundedLogLine(filePath: string, line: string): Promise<voi
   await replaceLogFile(filePath, `${retained}${trimMarker}${boundedLine}`);
 }
 
-function appendLogLine(filePath: string, line: string): void {
-  if (disabledLogFiles.has(filePath)) return;
+function rememberRecentPath(paths: Set<string>, value: string): void {
+  paths.delete(value);
+  paths.add(value);
+  if (paths.size > TOKYO_NIGHT_LOG_MAX_PATHS) paths.delete(paths.values().next().value!);
+}
 
-  const previous = fileWriteTail;
-  fileWriteTail = previous
-    .then(async () => {
-      const directory = path.dirname(filePath);
-      if (!preparedLogDirectories.has(directory)) {
-        await fs.promises.mkdir(directory, { recursive: true });
-        preparedLogDirectories.add(directory);
-      }
-      await appendBoundedLogLine(filePath, line);
-    })
-    .catch(() => {
-      // Disable a failing sink for the rest of this process. Never fall back
-      // to console here: that would reintroduce raw terminal output.
-      disabledLogFiles.add(filePath);
+function hasRecentPath(paths: Set<string>, value: string): boolean {
+  if (!paths.has(value)) return false;
+  rememberRecentPath(paths, value);
+  return true;
+}
+
+function appendLogLine(filePath: string, line: string): void {
+  const state = getLogWriterState();
+  if (hasRecentPath(state.disabledFiles, filePath)) return;
+  const sequence = ++state.lastSequence;
+  const boundedLine = limitLogEntry(line, TOKYO_NIGHT_LOG_MAX_PENDING_BYTES);
+  const bytes = Buffer.byteLength(boundedLine, "utf8");
+  const entry = { sequence, filePath, line: boundedLine, bytes };
+  while (
+    state.pendingBytes + bytes > TOKYO_NIGHT_LOG_MAX_PENDING_BYTES ||
+    state.pending.size + (state.inFlight?.entries.length ?? 0) >= TOKYO_NIGHT_LOG_MAX_ENTRIES
+  ) {
+    const oldest = state.pending.values().next().value;
+    if (!oldest) {
+      recordDroppedLogEntry(state, entry);
+      scheduleLogDrain(state);
+      return;
+    }
+    state.pending.delete(oldest.sequence);
+    state.pendingBytes -= oldest.bytes;
+    recordDroppedLogEntry(state, oldest);
+  }
+  state.pending.set(sequence, entry);
+  state.pendingBytes += bytes;
+  scheduleLogDrain(state);
+}
+
+function recordDroppedLogEntry(state: LogWriterState, entry: PendingLogEntry): void {
+  const dropped = state.dropped.get(entry.filePath);
+  if (dropped) {
+    dropped.count++;
+    dropped.firstSequence = Math.min(dropped.firstSequence, entry.sequence);
+  } else if (state.dropped.size >= TOKYO_NIGHT_LOG_MAX_PATHS) {
+    let oldest: DroppedLogEntries | undefined;
+    for (const existing of state.dropped.values()) {
+      if (!oldest || existing.firstSequence < oldest.firstSequence) oldest = existing;
+    }
+    // Keep the total loss count without retaining every overflow file path.
+    oldest!.count++;
+    oldest!.crossFileCount = (oldest!.crossFileCount ?? 0) + 1;
+    oldest!.firstSequence = Math.min(oldest!.firstSequence, entry.sequence);
+  } else {
+    state.dropped.set(entry.filePath, {
+      filePath: entry.filePath,
+      firstSequence: entry.sequence,
+      count: 1,
     });
+  }
+}
+
+function settleLogFlushWaiters(state: LogWriterState): void {
+  const firstPending = state.pending.values().next().value;
+  for (const waiter of state.flushWaiters) {
+    if (
+      (firstPending && firstPending.sequence <= waiter.sequence) ||
+      (state.inFlight?.entries[0] && state.inFlight.entries[0].sequence <= waiter.sequence) ||
+      (state.inFlight?.dropped && state.inFlight.dropped.firstSequence <= waiter.sequence) ||
+      Array.from(state.dropped.values()).some((entry) => entry.firstSequence <= waiter.sequence)
+    ) continue;
+    state.flushWaiters.delete(waiter);
+    waiter.resolve();
+  }
+}
+
+function takeNextLogWrite(state: LogWriterState): LogWriteBatch | undefined {
+  const firstPending = state.pending.values().next().value;
+  let firstDropped: DroppedLogEntries | undefined;
+  for (const dropped of state.dropped.values()) {
+    if (!firstDropped || dropped.firstSequence < firstDropped.firstSequence) firstDropped = dropped;
+  }
+  if (firstDropped && (!firstPending || firstDropped.firstSequence < firstPending.sequence)) {
+    state.dropped.delete(firstDropped.filePath);
+    return { entries: [], dropped: firstDropped };
+  }
+  return firstPending ? { entries: takeLogBatch(state) } : undefined;
+}
+
+function takeLogBatch(state: LogWriterState): PendingLogEntry[] {
+  const first = state.pending.values().next().value;
+  if (!first) return [];
+  let flushBoundary = Infinity;
+  for (const waiter of state.flushWaiters) {
+    if (waiter.sequence >= first.sequence) flushBoundary = Math.min(flushBoundary, waiter.sequence);
+  }
+  const entries: PendingLogEntry[] = [];
+  let bytes = 0;
+  for (const entry of state.pending.values()) {
+    if (
+      entry.filePath !== first.filePath ||
+      entry.sequence > flushBoundary ||
+      (entries.length > 0 && bytes + entry.bytes > TOKYO_NIGHT_LOG_BATCH_BYTES)
+    ) break;
+    entries.push(entry);
+    bytes += entry.bytes;
+    state.pending.delete(entry.sequence);
+    state.pendingBytes -= entry.bytes;
+    if (bytes >= TOKYO_NIGHT_LOG_BATCH_BYTES) break;
+  }
+  return entries;
+}
+
+function discardPendingLogFile(state: LogWriterState, filePath: string): void {
+  let crossFileCount = 0;
+  let firstSequence = Infinity;
+  for (const dropped of [state.inFlight?.dropped, state.dropped.get(filePath)]) {
+    if (dropped?.filePath !== filePath || !dropped.crossFileCount) continue;
+    crossFileCount += dropped.crossFileCount;
+    firstSequence = Math.min(firstSequence, dropped.firstSequence);
+  }
+  for (const entry of state.pending.values()) {
+    if (entry.filePath !== filePath) continue;
+    state.pending.delete(entry.sequence);
+    state.pendingBytes -= entry.bytes;
+  }
+  state.dropped.delete(filePath);
+  if (crossFileCount === 0) return;
+
+  let recipient: DroppedLogEntries | undefined;
+  for (const dropped of state.dropped.values()) {
+    if (state.disabledFiles.has(dropped.filePath)) continue;
+    if (!recipient || dropped.firstSequence < recipient.firstSequence) recipient = dropped;
+  }
+  if (!recipient && state.dropped.size < TOKYO_NIGHT_LOG_MAX_PATHS) {
+    for (const entry of state.pending.values()) {
+      if (state.disabledFiles.has(entry.filePath)) continue;
+      recipient = { filePath: entry.filePath, firstSequence, count: 0 };
+      state.dropped.set(entry.filePath, recipient);
+      break;
+    }
+  }
+  if (!recipient) return;
+  // A failed anchor owns only its local losses; other files still need a notice.
+  recipient.count += crossFileCount;
+  recipient.crossFileCount = (recipient.crossFileCount ?? 0) + crossFileCount;
+  recipient.firstSequence = Math.min(recipient.firstSequence, firstSequence);
+}
+
+async function drainLogWrites(state: LogWriterState): Promise<void> {
+  while (state.pending.size > 0 || state.dropped.size > 0) {
+    const batch = takeNextLogWrite(state)!;
+    const filePath = batch.dropped?.filePath ?? batch.entries[0]!.filePath;
+    state.inFlight = batch;
+    try {
+      if (hasRecentPath(state.disabledFiles, filePath)) {
+        discardPendingLogFile(state, filePath);
+        continue;
+      }
+      const directory = path.dirname(filePath);
+      if (!hasRecentPath(state.preparedDirectories, directory)) {
+        await fs.promises.mkdir(directory, { recursive: true });
+        rememberRecentPath(state.preparedDirectories, directory);
+      }
+      // Ordinary batches fit below the retained half-file. A larger entry is
+      // written alone so the file limiter never truncates later batch entries.
+      const droppedScope = batch.dropped?.crossFileCount
+        ? ` across log files (${batch.dropped.crossFileCount} from other log files)`
+        : "";
+      const content = batch.dropped
+        ? `[${new Date().toISOString()}] WARN ${EXT_PREFIX} dropped ${batch.dropped.count} oldest pending log entries${droppedScope} due to queue limit.\n`
+        : batch.entries.length === 1
+          ? batch.entries[0]!.line
+          : batch.entries.map((entry) => entry.line).join("");
+      await appendBoundedLogLine(filePath, content);
+    } catch {
+      // Never fall back to console: that would reintroduce raw TUI output.
+      rememberRecentPath(state.disabledFiles, filePath);
+      discardPendingLogFile(state, filePath);
+    } finally {
+      state.inFlight = undefined;
+      settleLogFlushWaiters(state);
+    }
+  }
+}
+
+function scheduleLogDrain(state: LogWriterState): void {
+  if (state.scheduled || state.draining) return;
+  state.scheduled = setImmediate(() => {
+    state.scheduled = undefined;
+    state.draining = true;
+    void drainLogWrites(state).finally(() => {
+      state.draining = false;
+      settleLogFlushWaiters(state);
+      if (state.pending.size > 0 || state.dropped.size > 0) scheduleLogDrain(state);
+    });
+  });
 }
 
 export async function flushConsoleLogWrites(): Promise<void> {
-  await fileWriteTail;
+  const state = getLogWriterState();
+  await new Promise<void>((resolve) => {
+    state.flushWaiters.add({ sequence: state.lastSequence, resolve });
+    settleLogFlushWaiters(state);
+  });
 }
 
 export function createTokyoNightErrorSink(

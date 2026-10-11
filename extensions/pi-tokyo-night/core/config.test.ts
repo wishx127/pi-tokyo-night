@@ -38,7 +38,7 @@ describe("TokyoConfigManager validation", () => {
     expect(new TokyoConfigManager().get()).toEqual(originalDefaults);
   });
 
-  it("falls back to defaults for invalid persisted values", () => {
+  it("falls back to defaults for invalid persisted values", async () => {
     fs.writeFileSync(
       path.join(tempDir, "settings.json"),
       JSON.stringify({
@@ -56,7 +56,7 @@ describe("TokyoConfigManager validation", () => {
     );
 
     const manager = new TokyoConfigManager();
-    manager.read();
+    await manager.read();
 
     expect(manager.get()).toEqual(DEFAULT_CONFIG);
   });
@@ -158,7 +158,7 @@ describe("TokyoConfigManager validation", () => {
     });
   });
 
-  it("defaults, validates, and persists the status icon mode", () => {
+  it("defaults, validates, and persists the status icon mode", async () => {
     const manager = new TokyoConfigManager();
 
     expect(manager.get().iconMode).toBe("nerd");
@@ -168,9 +168,9 @@ describe("TokyoConfigManager validation", () => {
     manager.set("iconMode", "auto" as unknown as "nerd");
     expect(manager.get().iconMode).toBe("nerd");
 
-    expect(manager.write()).toBe(true);
+    expect(await manager.write()).toBe(true);
     const reader = new TokyoConfigManager();
-    reader.read();
+    await reader.read();
     expect(reader.get().iconMode).toBe("nerd");
   });
 
@@ -191,7 +191,7 @@ describe("TokyoConfigManager validation", () => {
     expect(SETTINGS.some((setting) => setting.id === "statusModules")).toBe(false);
   });
 
-  it("loads file-based status module visibility with true defaults", () => {
+  it("loads file-based status module visibility with true defaults", async () => {
     fs.writeFileSync(
       path.join(tempDir, "settings.json"),
       JSON.stringify({
@@ -206,7 +206,7 @@ describe("TokyoConfigManager validation", () => {
     );
 
     const manager = new TokyoConfigManager();
-    manager.read();
+    await manager.read();
 
     expect(manager.get().statusModules).toEqual({
       model: false,
@@ -222,7 +222,130 @@ describe("TokyoConfigManager validation", () => {
 });
 
 describe("TokyoConfigManager persistence", () => {
-  it("migrates legacy settings into the dedicated file without deleting the legacy key", () => {
+  it("reads the committed configuration after an already pending save", async () => {
+    const configPath = path.join(tempDir, "extensions", "pi-tokyo-night.json");
+    fs.mkdirSync(path.dirname(configPath), { recursive: true });
+    fs.writeFileSync(configPath, JSON.stringify({ panel: true }));
+    let releaseSave!: () => void;
+    const released = new Promise<void>((resolve) => { releaseSave = resolve; });
+    let observeSave!: () => void;
+    const started = new Promise<void>((resolve) => { observeSave = resolve; });
+    const rename = fs.promises.rename;
+    vi.spyOn(fs.promises, "rename").mockImplementationOnce(async (from, to) => {
+      observeSave();
+      await released;
+      await rename(from, to);
+    });
+    const manager = new TokyoConfigManager();
+    manager.set("panel", false);
+    const save = manager.write();
+    await started;
+    const read = manager.read();
+    releaseSave();
+    await save;
+    await read;
+
+    expect(manager.get().panel).toBe(false);
+  });
+
+  it("persists overlapping save requests in order using their opening snapshots", async () => {
+    vi.spyOn(fs.promises, "mkdir").mockImplementation(async (directory, options) =>
+      fs.mkdirSync(directory, options as fs.MakeDirectoryOptions & { recursive: true }),
+    );
+    vi.spyOn(fs.promises, "writeFile").mockImplementation(async (file, content, options) => {
+      fs.writeFileSync(file as fs.PathOrFileDescriptor, content as string, options as fs.WriteFileOptions);
+    });
+    let releaseFirst!: () => void;
+    const firstRelease = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let observeFirst!: () => void;
+    const firstStarted = new Promise<void>((resolve) => { observeFirst = resolve; });
+    vi.spyOn(fs.promises, "rename")
+      .mockImplementationOnce(async (from, to) => {
+        observeFirst();
+        await firstRelease;
+        fs.renameSync(from, to);
+      })
+      .mockImplementation(async (from, to) => { fs.renameSync(from, to); });
+    const manager = new TokyoConfigManager();
+    manager.set("panel", false);
+    const first = manager.write();
+    await firstStarted;
+    manager.set("panel", true);
+    manager.set("rainRows", 7);
+    const second = manager.write();
+    manager.set("rainRows", 9);
+    getAgentDir.mockReturnValue(path.join(tempDir, "later-agent"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    releaseFirst();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+    expect(JSON.parse(fs.readFileSync(
+      path.join(tempDir, "extensions", "pi-tokyo-night.json"), "utf8",
+    ))).toMatchObject({ panel: true, rainRows: 7 });
+  });
+
+  it("continues with a queued save after the previous save fails", async () => {
+    vi.spyOn(fs.promises, "rename").mockRejectedValueOnce(new Error("rename failed"));
+    const sink = vi.fn();
+    const manager = new TokyoConfigManager();
+    manager.set("panel", false);
+    const first = manager.write(sink);
+    manager.set("rainRows", 7);
+    const second = manager.write(sink);
+
+    await expect(Promise.all([first, second])).resolves.toEqual([false, true]);
+    expect(sink).toHaveBeenCalledOnce();
+    expect(JSON.parse(fs.readFileSync(
+      path.join(tempDir, "extensions", "pi-tokyo-night.json"), "utf8",
+    ))).toMatchObject({ panel: false, rainRows: 7 });
+    expect(fs.readdirSync(path.join(tempDir, "extensions")).filter((file) => file.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it.each(["save", "migration"] as const)("keeps the main thread responsive while retrying a Windows %s", async (operation) => {
+    const manager = new TokyoConfigManager();
+    manager.set("panel", false);
+    if (operation === "migration") {
+      fs.writeFileSync(path.join(tempDir, "settings.json"), JSON.stringify({
+        "pi-tokyo-night": { panel: false },
+      }));
+    }
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", {
+      configurable: true,
+      value: "win32",
+    });
+    let observeRetry!: () => void;
+    const retryStarted = new Promise<void>((resolve) => { observeRetry = resolve; });
+    vi.spyOn(fs.promises, "rename")
+      .mockImplementationOnce(async () => {
+        observeRetry();
+        const error = new Error("sharing violation") as NodeJS.ErrnoException;
+        error.code = "EPERM";
+        throw error;
+      })
+      .mockImplementation(async (from, to) => { fs.renameSync(from, to); });
+
+    try {
+      let completed = false;
+      const save = operation === "save" ? manager.write() : manager.read();
+      expect(save).toBeInstanceOf(Promise);
+      void Promise.resolve(save).then(() => { completed = true; });
+      await retryStarted;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(completed).toBe(false);
+      await expect(save).resolves.toBe(operation === "save" ? true : undefined);
+      expect(JSON.parse(fs.readFileSync(
+        path.join(tempDir, "extensions", "pi-tokyo-night.json"), "utf8",
+      ))).toMatchObject({ panel: false });
+    } finally {
+      Object.defineProperty(process, "platform", {
+        configurable: true,
+        value: originalPlatform,
+      });
+    }
+  });
+
+  it("migrates legacy settings into the dedicated file without deleting the legacy key", async () => {
     const settingsPath = path.join(tempDir, "settings.json");
     const legacySettings = {
       theme: "tokyo-night-dark",
@@ -235,7 +358,7 @@ describe("TokyoConfigManager persistence", () => {
     fs.writeFileSync(settingsPath, JSON.stringify(legacySettings));
 
     const manager = new TokyoConfigManager();
-    manager.read();
+    await manager.read();
 
     const expectedConfig = {
       ...DEFAULT_CONFIG,
@@ -261,19 +384,19 @@ describe("TokyoConfigManager persistence", () => {
     );
   });
 
-  it("keeps legacy config in memory and cleans temporary files when migration persistence fails", () => {
+  it("keeps legacy config in memory and cleans temporary files when migration persistence fails", async () => {
     const settingsPath = path.join(tempDir, "settings.json");
     const legacySettings = {
       "pi-tokyo-night": { panel: false },
     };
     fs.writeFileSync(settingsPath, JSON.stringify(legacySettings));
-    vi.spyOn(fs, "renameSync").mockImplementation(() => {
+    vi.spyOn(fs.promises, "rename").mockImplementation(() => {
       throw new Error("rename failed");
     });
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const manager = new TokyoConfigManager();
-    manager.read();
+    await manager.read();
 
     const configDirectory = path.join(tempDir, "extensions");
     expect(manager.get()).toEqual({
@@ -297,20 +420,20 @@ describe("TokyoConfigManager persistence", () => {
     );
   });
 
-  it("reports migration persistence failures through an injected sink exactly once", () => {
+  it("reports migration persistence failures through an injected sink exactly once", async () => {
     const settingsPath = path.join(tempDir, "settings.json");
     fs.writeFileSync(
       settingsPath,
       JSON.stringify({ "pi-tokyo-night": { panel: false } }),
     );
-    vi.spyOn(fs, "renameSync").mockImplementation(() => {
+    vi.spyOn(fs.promises, "rename").mockImplementation(() => {
       throw new Error("rename failed");
     });
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const sink = vi.fn();
 
     const manager = new TokyoConfigManager();
-    manager.read(sink);
+    await manager.read(sink);
 
     expect(sink).toHaveBeenCalledOnce();
     expect(sink).toHaveBeenCalledWith(
@@ -320,24 +443,24 @@ describe("TokyoConfigManager persistence", () => {
     expect(consoleError).not.toHaveBeenCalled();
   });
 
-  it("silently falls back to defaults when both config sources are missing", () => {
+  it("silently falls back to defaults when both config sources are missing", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
     const manager = new TokyoConfigManager();
     manager.set("panel", false);
 
-    manager.read();
+    await manager.read();
 
     expect(error).not.toHaveBeenCalled();
     expect(manager.get()).toEqual(DEFAULT_CONFIG);
   });
 
-  it("creates the dedicated config file without creating settings.json", () => {
+  it("creates the dedicated config file without creating settings.json", async () => {
     const agentDir = path.join(tempDir, "nested", "agent");
     getAgentDir.mockReturnValue(agentDir);
     const manager = new TokyoConfigManager();
     manager.set("panel", false);
 
-    expect(manager.write()).toBe(true);
+    expect(await manager.write()).toBe(true);
 
     const configPath = path.join(
       agentDir,
@@ -351,14 +474,14 @@ describe("TokyoConfigManager persistence", () => {
     expect(fs.existsSync(path.join(agentDir, "settings.json"))).toBe(false);
   });
 
-  it("round-trips status module changes made by Neon Studio", () => {
+  it("round-trips status module changes made by Neon Studio", async () => {
     const writer = new TokyoConfigManager();
     writer.setStatusModule("model", false);
     writer.setStatusModule("cost", false);
-    expect(writer.write()).toBe(true);
+    expect(await writer.write()).toBe(true);
 
     const reader = new TokyoConfigManager();
-    reader.read();
+    await reader.read();
 
     expect(reader.get().statusModules).toEqual({
       ...DEFAULT_CONFIG.statusModules,
@@ -367,19 +490,19 @@ describe("TokyoConfigManager persistence", () => {
     });
   });
 
-  it("round-trips the kimiQuota toggle through write/read", () => {
+  it("round-trips the kimiQuota toggle through write/read", async () => {
     const writer = new TokyoConfigManager();
     writer.set("kimiQuota", false);
-    expect(writer.write()).toBe(true);
+    expect(await writer.write()).toBe(true);
 
     const reader = new TokyoConfigManager();
-    reader.read();
+    await reader.read();
 
     expect(reader.get().kimiQuota).toBe(false);
     expect(reader.get()).toEqual({ ...DEFAULT_CONFIG, kimiQuota: false });
   });
 
-  it("migrates existing dedicated configs without rainMode to manual", () => {
+  it("migrates existing dedicated configs without rainMode to manual", async () => {
     const configPath = path.join(
       tempDir,
       "extensions",
@@ -393,7 +516,7 @@ describe("TokyoConfigManager persistence", () => {
     }));
 
     const manager = new TokyoConfigManager();
-    manager.read();
+    await manager.read();
 
     expect(manager.get()).toMatchObject({
       rainMode: "manual",
@@ -402,17 +525,17 @@ describe("TokyoConfigManager persistence", () => {
     });
   });
 
-  it("persists explicit auto rain mode", () => {
+  it("persists explicit auto rain mode", async () => {
     const writer = new TokyoConfigManager();
     writer.set("rainMode", "auto");
-    expect(writer.write()).toBe(true);
+    expect(await writer.write()).toBe(true);
 
     const reader = new TokyoConfigManager();
-    reader.read();
+    await reader.read();
     expect(reader.get().rainMode).toBe("auto");
   });
 
-  it("prefers the dedicated config over stale legacy settings", () => {
+  it("prefers the dedicated config over stale legacy settings", async () => {
     const configPath = path.join(
       tempDir,
       "extensions",
@@ -426,7 +549,7 @@ describe("TokyoConfigManager persistence", () => {
     );
 
     const manager = new TokyoConfigManager();
-    manager.read();
+    await manager.read();
 
     expect(manager.get()).toEqual({
       ...DEFAULT_CONFIG,
@@ -435,7 +558,7 @@ describe("TokyoConfigManager persistence", () => {
     });
   });
 
-  it("loads partial status module visibility from the dedicated config", () => {
+  it("loads partial status module visibility from the dedicated config", async () => {
     const configPath = path.join(
       tempDir,
       "extensions",
@@ -448,7 +571,7 @@ describe("TokyoConfigManager persistence", () => {
     );
 
     const manager = new TokyoConfigManager();
-    manager.read();
+    await manager.read();
 
     expect(manager.get().statusModules).toEqual({
       ...DEFAULT_CONFIG.statusModules,
@@ -457,7 +580,7 @@ describe("TokyoConfigManager persistence", () => {
     });
   });
 
-  it("does not replace a damaged dedicated config with stale legacy settings", () => {
+  it("does not replace a damaged dedicated config with stale legacy settings", async () => {
     const configPath = path.join(
       tempDir,
       "extensions",
@@ -472,20 +595,20 @@ describe("TokyoConfigManager persistence", () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
     const manager = new TokyoConfigManager();
-    manager.read();
+    await manager.read();
 
     expect(manager.get()).toEqual(DEFAULT_CONFIG);
     expect(error).toHaveBeenCalled();
   });
 
-  it("never modifies unrelated top-level settings", () => {
+  it("never modifies unrelated top-level settings", async () => {
     const settingsPath = path.join(tempDir, "settings.json");
     const settings = { theme: "custom", nested: { enabled: true } };
     fs.writeFileSync(settingsPath, JSON.stringify(settings));
     const manager = new TokyoConfigManager();
     manager.set("codexQuota", true);
 
-    expect(manager.write()).toBe(true);
+    expect(await manager.write()).toBe(true);
 
     expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toEqual(settings);
     expect(
@@ -498,13 +621,13 @@ describe("TokyoConfigManager persistence", () => {
     ).toEqual({ ...DEFAULT_CONFIG, codexQuota: true });
   });
 
-  it("resets to defaults when legacy settings have no extension node", () => {
+  it("resets to defaults when legacy settings have no extension node", async () => {
     const settingsPath = path.join(tempDir, "settings.json");
     const manager = new TokyoConfigManager();
     manager.set("panel", false);
     fs.writeFileSync(settingsPath, JSON.stringify({ theme: "custom" }));
 
-    manager.read();
+    await manager.read();
 
     expect(manager.get()).toEqual(DEFAULT_CONFIG);
     expect(
@@ -514,18 +637,18 @@ describe("TokyoConfigManager persistence", () => {
     ).toBe(false);
   });
 
-  it("resets to defaults when legacy settings are damaged", () => {
+  it("resets to defaults when legacy settings are damaged", async () => {
     fs.writeFileSync(path.join(tempDir, "settings.json"), "{not json");
     vi.spyOn(console, "error").mockImplementation(() => {});
     const manager = new TokyoConfigManager();
     manager.set("panel", false);
 
-    manager.read();
+    await manager.read();
 
     expect(manager.get()).toEqual(DEFAULT_CONFIG);
   });
 
-  it("retries a transient Windows rename failure", () => {
+  it("retries a transient Windows rename failure", async () => {
     const manager = new TokyoConfigManager();
     manager.set("panel", false);
     const originalPlatform = process.platform;
@@ -535,18 +658,18 @@ describe("TokyoConfigManager persistence", () => {
     });
 
     try {
-      const rename = vi.spyOn(fs, "renameSync")
+      const rename = vi.spyOn(fs.promises, "rename")
         .mockImplementationOnce(() => {
           const error = new Error("sharing violation") as NodeJS.ErrnoException;
           error.code = "EPERM";
           throw error;
         })
-        .mockImplementationOnce((from, to) => {
+        .mockImplementationOnce(async (from, to) => {
           fs.copyFileSync(from, to);
           fs.unlinkSync(from);
         });
 
-      expect(manager.write()).toBe(true);
+      expect(await manager.write()).toBe(true);
       expect(rename).toHaveBeenCalledTimes(2);
       expect(
         JSON.parse(
@@ -564,16 +687,16 @@ describe("TokyoConfigManager persistence", () => {
     }
   });
 
-  it("reports write failures through an injected sink without using console", () => {
+  it("reports write failures through an injected sink without using console", async () => {
     const manager = new TokyoConfigManager();
     manager.set("panel", false);
-    vi.spyOn(fs, "renameSync").mockImplementation(() => {
+    vi.spyOn(fs.promises, "rename").mockImplementation(() => {
       throw new Error("rename failed");
     });
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const sink = vi.fn();
 
-    expect(manager.write(sink)).toBe(false);
+    expect(await manager.write(sink)).toBe(false);
     expect(sink).toHaveBeenCalledOnce();
     expect(sink).toHaveBeenCalledWith(
       expect.objectContaining({ message: "rename failed" }),
@@ -582,7 +705,7 @@ describe("TokyoConfigManager persistence", () => {
     expect(consoleError).not.toHaveBeenCalled();
   });
 
-  it("returns false and preserves the original file when atomic rename fails", () => {
+  it("returns false and preserves the original file when atomic rename fails", async () => {
     const configPath = path.join(
       tempDir,
       "extensions",
@@ -593,12 +716,12 @@ describe("TokyoConfigManager persistence", () => {
     fs.writeFileSync(configPath, JSON.stringify(original));
     const manager = new TokyoConfigManager();
     manager.set("panel", false);
-    vi.spyOn(fs, "renameSync").mockImplementation(() => {
+    vi.spyOn(fs.promises, "rename").mockImplementation(() => {
       throw new Error("rename failed");
     });
     vi.spyOn(console, "error").mockImplementation(() => {});
 
-    expect(manager.write()).toBe(false);
+    expect(await manager.write()).toBe(false);
     expect(JSON.parse(fs.readFileSync(configPath, "utf8"))).toEqual(original);
   });
 });

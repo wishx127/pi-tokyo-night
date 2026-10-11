@@ -1,5 +1,8 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { visibleWidth, type TUI } from "@earendil-works/pi-tui";
 import type { UsageHistory } from "../analytics/usage-history";
 import { TokyoConfigManager } from "../core/config";
@@ -9,6 +12,12 @@ import {
   type NeonStudioThemeChoice,
   type NeonStudioThemeResult,
 } from "./neon-studio-controller";
+
+const { getAgentDir } = vi.hoisted(() => ({ getAgentDir: vi.fn() }));
+vi.mock("@earendil-works/pi-coding-agent", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@earendil-works/pi-coding-agent")>(),
+  getAgentDir,
+}));
 
 const theme = {
   fg: (_color: string, text: string) => text,
@@ -46,7 +55,7 @@ function makeStudio(options: {
   studioTheme?: Theme;
 } = {}) {
   const config = new TokyoConfigManager();
-  const write = vi.spyOn(config, "write").mockReturnValue(true);
+  const write = vi.spyOn(config, "write").mockResolvedValue(true);
   const tui = {
     requestRender: vi.fn(),
     mode: options.mode,
@@ -96,8 +105,156 @@ function makeStudio(options: {
   };
 }
 
+function makePersistingStudio() {
+  const config = new TokyoConfigManager();
+  const tui = { requestRender: vi.fn() } as unknown as TUI;
+  const done = vi.fn();
+  const notify = vi.fn();
+  const errorSink = vi.fn();
+  const onConfigChange = vi.fn();
+  const saveTheme = vi.fn((): NeonStudioThemeResult => ({ success: true }));
+  const restoreTheme = vi.fn((): NeonStudioThemeResult => ({ success: true }));
+  const controller = new NeonStudioController({
+    config, done, notify, errorSink, onConfigChange,
+    previewTheme: () => ({ success: true }),
+    saveTheme, restoreTheme,
+    initialThemeChoice: "dark",
+    persistedThemeChoice: "dark",
+  });
+  const studio = new NeonStudioComponent(tui, theme, controller);
+  return { config, controller, done, notify, errorSink, onConfigChange, saveTheme, restoreTheme, studio, tui };
+}
+
+describe("Neon Studio asynchronous persistence", () => {
+  let agentDirectory: string;
+  beforeEach(() => {
+    agentDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-tokyo-night-studio-"));
+    getAgentDir.mockReturnValue(agentDirectory);
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(agentDirectory, { recursive: true, force: true });
+  });
+
+  it("upgrades a pending close to force-close without another save or a theme commit", async () => {
+    let releaseSave!: () => void;
+    const released = new Promise<void>((resolve) => { releaseSave = resolve; });
+    let observeSave!: () => void;
+    const started = new Promise<void>((resolve) => { observeSave = resolve; });
+    const rename = fs.promises.rename;
+    vi.spyOn(fs.promises, "rename").mockImplementationOnce(async (from, to) => {
+      observeSave();
+      await released;
+      await rename(from, to);
+    });
+    const { config, controller, done, saveTheme, restoreTheme } = makePersistingStudio();
+    controller.changeSetting("appearance", 0);
+    controller.changeSetting("appearance", 1);
+    const close = controller.saveAndClose();
+    await started;
+    try {
+      expect(done).not.toHaveBeenCalled();
+      expect(saveTheme).not.toHaveBeenCalled();
+      expect(controller.changeSetting("rain", 0)).toBe(false);
+      expect(controller.saveAndClose()).toBe(close);
+      expect(controller.pendingClose).toBe(close);
+      const forced = controller.forceClose();
+      releaseSave();
+      await forced;
+      await close;
+      expect(done).toHaveBeenCalledOnce();
+      expect(saveTheme).not.toHaveBeenCalled();
+      expect(restoreTheme).toHaveBeenCalledOnce();
+      expect(config.get().panel).toBe(false);
+      expect(JSON.parse(fs.readFileSync(
+        path.join(agentDirectory, "extensions", "pi-tokyo-night.json"), "utf8",
+      ))).toMatchObject({ panel: false });
+      await controller.forceClose();
+      await expect(controller.saveAndClose()).resolves.toBe(true);
+      expect(done).toHaveBeenCalledOnce();
+      expect(fs.promises.rename).toHaveBeenCalledOnce();
+    } finally {
+      releaseSave();
+      await close;
+      await config.read();
+    }
+  });
+
+  it("keeps Studio open after a failed save and lets the user retry", async () => {
+    vi.spyOn(fs.promises, "rename").mockRejectedValueOnce(new Error("rename failed"));
+    const { controller, done, notify, errorSink, studio, tui } = makePersistingStudio();
+    studio.handleInput("\x1b");
+    await expect(controller.saveAndClose()).resolves.toBe(false);
+    expect(done).not.toHaveBeenCalled();
+    expect(errorSink).toHaveBeenCalledOnce();
+    expect(notify).toHaveBeenCalledWith(
+      "Could not save Tokyo Night settings. Neon Studio remains open.", "error",
+    );
+    expect(tui.requestRender).toHaveBeenCalledOnce();
+    expect(controller.changeSetting("appearance", 1)).toBe(true);
+
+    studio.handleInput("\x1b");
+    await expect(controller.saveAndClose()).resolves.toBe(true);
+    expect(done).toHaveBeenCalledOnce();
+    expect(JSON.parse(fs.readFileSync(
+      path.join(agentDirectory, "extensions", "pi-tokyo-night.json"), "utf8",
+    ))).toMatchObject({ panel: false });
+  });
+
+  it("force-closes when a failed save notification queues shutdown before close completion", async () => {
+    const rename = vi.spyOn(fs.promises, "rename")
+      .mockRejectedValueOnce(new Error("rename failed"));
+    const { config, controller, done, notify, saveTheme, restoreTheme } = makePersistingStudio();
+    const openingConfig = config.get();
+    controller.changeSetting("appearance", 1);
+    let forced: Promise<void> | undefined;
+    notify.mockImplementationOnce(() => {
+      queueMicrotask(() => { forced = controller.forceClose(); });
+    });
+
+    await expect(controller.saveAndClose()).resolves.toBe(false);
+    expect(forced).toBeDefined();
+    await forced;
+
+    expect(done).toHaveBeenCalledOnce();
+    expect(config.get()).toEqual(openingConfig);
+    expect(rename).toHaveBeenCalledOnce();
+    expect(restoreTheme).toHaveBeenCalledOnce();
+    expect(saveTheme).not.toHaveBeenCalled();
+    expect(notify).toHaveBeenCalledOnce();
+    expect(fs.readdirSync(path.join(agentDirectory, "extensions"))).toEqual([]);
+    await controller.forceClose();
+    await expect(controller.saveAndClose()).resolves.toBe(false);
+    expect(done).toHaveBeenCalledOnce();
+    expect(rename).toHaveBeenCalledOnce();
+  });
+
+  it("does not redraw a disposed Studio when its pending save fails", async () => {
+    let releaseSave!: () => void;
+    const released = new Promise<void>((resolve) => { releaseSave = resolve; });
+    let observeSave!: () => void;
+    const started = new Promise<void>((resolve) => { observeSave = resolve; });
+    vi.spyOn(fs.promises, "rename").mockImplementationOnce(async () => {
+      observeSave();
+      await released;
+      throw new Error("rename failed");
+    });
+    const { controller, done, studio, tui } = makePersistingStudio();
+    studio.handleInput("\x1b");
+    const close = controller.saveAndClose();
+    await started;
+    studio.dispose();
+    releaseSave();
+    await expect(close).resolves.toBe(false);
+    studio.handleInput("\t");
+
+    expect(done).not.toHaveBeenCalled();
+    expect(tui.requestRender).not.toHaveBeenCalled();
+  });
+});
+
 describe("NeonStudioComponent", () => {
-  it("force-closes after a failed save and reapplies changed runtime settings from the opening snapshot", () => {
+  it("force-closes after a failed save and reapplies changed runtime settings from the opening snapshot", async () => {
     const { config, controller, done, onConfigChange, write } = makeStudio();
     const openingConfig = config.get();
     const restoredEvents: Array<{ change: unknown; snapshot: unknown }> = [];
@@ -113,9 +270,9 @@ describe("NeonStudioComponent", () => {
     onConfigChange.mockClear();
     restoredEvents.length = 0;
 
-    write.mockReturnValue(false);
+    write.mockResolvedValue(false);
 
-    controller.forceClose();
+    await controller.forceClose();
 
     expect(done).toHaveBeenCalledOnce();
     expect(config.get()).toEqual(openingConfig);
@@ -130,21 +287,21 @@ describe("NeonStudioComponent", () => {
     }
   });
 
-  it("delegates force-close rollback even when the selected choice did not change", () => {
+  it("delegates force-close rollback even when the selected choice did not change", async () => {
     const { controller, restoreTheme } = makeStudio({
       initialThemeChoice: "automatic",
       persistedThemeChoice: "automatic",
     });
 
-    controller.forceClose();
+    await controller.forceClose();
 
     expect(restoreTheme).toHaveBeenCalledOnce();
   });
 
-  it("force-closes during shutdown without saving the theme when config persistence fails", () => {
+  it("force-closes during shutdown without saving the theme when config persistence fails", async () => {
     const { controller, done, notify, restoreTheme, saveTheme, studio, write } = makeStudio();
     studio.handleInput("\r");
-    write.mockReturnValue(false);
+    write.mockResolvedValue(false);
     saveTheme.mockImplementation(() => {
       throw new Error("theme save failed");
     });
@@ -152,25 +309,25 @@ describe("NeonStudioComponent", () => {
       throw new Error("stale notify");
     });
 
-    expect(() => controller.forceClose()).not.toThrow();
+    await expect(controller.forceClose()).resolves.toBeUndefined();
 
     expect(saveTheme).not.toHaveBeenCalled();
     expect(restoreTheme).toHaveBeenCalledOnce();
     expect(done).toHaveBeenCalledOnce();
   });
 
-  it("restores the opening Theme instead of committing a preview when force-closed", () => {
+  it("restores the opening Theme instead of committing a preview when force-closed", async () => {
     const { controller, done, restoreTheme, saveTheme, studio } = makeStudio();
     studio.handleInput("\r");
 
-    controller.forceClose();
+    await controller.forceClose();
 
     expect(restoreTheme).toHaveBeenCalledOnce();
     expect(saveTheme).not.toHaveBeenCalled();
     expect(done).toHaveBeenCalledOnce();
   });
 
-  it("restores a temporary opening Theme even when the preview matches the persisted choice", () => {
+  it("restores a temporary opening Theme even when the preview matches the persisted choice", async () => {
     const { controller, restoreTheme, saveTheme, studio } = makeStudio({
       initialThemeChoice: "light",
       persistedThemeChoice: "dark",
@@ -178,23 +335,24 @@ describe("NeonStudioComponent", () => {
     studio.handleInput("\r");
     studio.handleInput("\r");
 
-    controller.forceClose();
+    await controller.forceClose();
 
     expect(restoreTheme).toHaveBeenCalledOnce();
     expect(saveTheme).not.toHaveBeenCalled();
   });
 
-  it("stays open and restores the opening Theme when configuration persistence fails", () => {
+  it("stays open and restores the opening Theme when configuration persistence fails", async () => {
     const { done, errorSink, notify, restoreTheme, studio, tui, write } = makeStudio();
     studio.handleInput("\r");
     vi.mocked(tui.requestRender).mockClear();
-    write.mockImplementationOnce((sink) => {
+    write.mockImplementationOnce(async (sink) => {
       expect(sink).toBe(errorSink);
       sink!(new Error("rename failed"), "writeTokyoConfig");
       return false;
     });
 
     studio.handleInput("\x1b");
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(errorSink).toHaveBeenCalledOnce();
     expect(done).not.toHaveBeenCalled();
@@ -515,7 +673,7 @@ describe("NeonStudioComponent", () => {
     expect(config.get().kimiQuota).toBe(true);
   });
 
-  it("labels Escape as exit and closes Usage", () => {
+  it("labels Escape as exit and closes Usage", async () => {
     const { done, studio } = makeStudio({
       loadUsageHistory: async () => new Promise(() => {}),
     });
@@ -526,6 +684,7 @@ describe("NeonStudioComponent", () => {
     expect(output).not.toContain("Esc save");
 
     studio.handleInput("\x1b");
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(done).toHaveBeenCalledOnce();
   });
 
@@ -920,22 +1079,24 @@ describe("NeonStudioComponent", () => {
     expect(notify).toHaveBeenCalledWith("preview failed", "error");
   });
 
-  it("does not save a theme when the selection was not changed", () => {
+  it("does not save a theme when the selection was not changed", async () => {
     const { done, saveTheme, studio } = makeStudio();
 
     studio.handleInput("\x1b");
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(saveTheme).not.toHaveBeenCalled();
     expect(done).toHaveBeenCalledOnce();
   });
 
-  it("restores the opening Theme when its close-time save fails", () => {
+  it("restores the opening Theme when its close-time save fails", async () => {
     const { done, notify, restoreTheme, saveTheme, studio, tui } = makeStudio();
     saveTheme.mockReturnValue({ success: false, error: "theme save failed" });
 
     studio.handleInput("\r");
     vi.mocked(tui.requestRender).mockClear();
     studio.handleInput("\x1b");
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(done).not.toHaveBeenCalled();
     expect(restoreTheme).toHaveBeenCalledOnce();
@@ -943,7 +1104,7 @@ describe("NeonStudioComponent", () => {
     expect(tui.requestRender).toHaveBeenCalledOnce();
   });
 
-  it("previews Dark locally and commits it only when Escape saves", () => {
+  it("previews Dark locally and commits it only when Escape saves", async () => {
     const darkTheme = {
       fg: vi.fn((_color: string, text: string) => `dark:${text}`),
     } as unknown as Theme;
@@ -963,6 +1124,7 @@ describe("NeonStudioComponent", () => {
     expect(saveTheme).not.toHaveBeenCalled();
 
     studio.handleInput("\x1b");
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(write).toHaveBeenCalledOnce();
     expect(saveTheme).toHaveBeenCalledWith("dark");

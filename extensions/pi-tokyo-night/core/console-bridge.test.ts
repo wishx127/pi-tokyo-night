@@ -7,6 +7,7 @@ import {
   vi,
 } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import * as PiTui from "@earendil-works/pi-tui";
@@ -43,6 +44,12 @@ function makeConsole(): FakeConsole {
     warn: vi.fn() as ConsoleSpy,
     error: vi.fn() as ConsoleSpy,
   };
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
 }
 
 function makeTerminal() {
@@ -226,6 +233,652 @@ describe("Tokyo Night TUI console bridge", () => {
     }
   });
 
+  it("batches a console burst while preserving every entry in order", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "pi-tokyo-night-batch-"));
+    const logPath = path.join(tempRoot, "agent", "pi-tokyo-night.log");
+    const target = makeConsole();
+    const bridge = createConsoleLogBridge({ console: target, logFilePath: logPath });
+    const append = vi.spyOn(fs.promises, "appendFile");
+    const inspect = vi.spyOn(fs.promises, "stat");
+
+    try {
+      bridge.setInteractive(true);
+      for (let index = 0; index < 1_000; index++) target.info(`burst-${index}`);
+      await flushConsoleLogWrites();
+
+      const content = await readFile(logPath, "utf8");
+      expect(content.match(/INFO burst-\d+/g)).toEqual(
+        Array.from({ length: 1_000 }, (_, index) => `INFO burst-${index}`),
+      );
+      expect(append.mock.calls.length).toBeLessThanOrEqual(3);
+      expect(inspect.mock.calls.length).toBeLessThanOrEqual(3);
+    } finally {
+      bridge.dispose();
+      append.mockRestore();
+      inspect.mockRestore();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("flushes its call-time records without waiting for later writes", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "pi-tokyo-night-flush-"));
+    const logPath = path.join(tempRoot, "pi-tokyo-night.log");
+    const target = makeConsole();
+    const bridge = createConsoleLogBridge({ console: target, logFilePath: logPath });
+    const firstStarted = deferred();
+    const releaseFirst = deferred();
+    const laterStarted = deferred();
+    const releaseLater = deferred();
+    const originalAppend = fs.promises.appendFile;
+    const append = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (...args) => {
+      if (args[0] === logPath && String(args[1]).includes("before-flush")) {
+        firstStarted.resolve();
+        await releaseFirst.promise;
+      } else if (args[0] === logPath) {
+        laterStarted.resolve();
+        await releaseLater.promise;
+      }
+      return Reflect.apply(originalAppend, fs.promises, args);
+    });
+
+    try {
+      bridge.setInteractive(true);
+      target.info("before-flush");
+      await firstStarted.promise;
+      const earlyFlush = flushConsoleLogWrites();
+      target.info("after-flush");
+      releaseFirst.resolve();
+      await laterStarted.promise;
+
+      expect(await Promise.race([
+        earlyFlush.then(() => true),
+        new Promise<boolean>((resolve) => setImmediate(() => resolve(false))),
+      ])).toBe(true);
+      expect(await readFile(logPath, "utf8")).toContain("before-flush");
+      releaseLater.resolve();
+      await flushConsoleLogWrites();
+      expect(await readFile(logPath, "utf8")).toContain("after-flush");
+    } finally {
+      releaseFirst.resolve();
+      releaseLater.resolve();
+      await flushConsoleLogWrites();
+      bridge.dispose();
+      append.mockRestore();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps later records outside a flush barrier before the scheduled batch starts", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "pi-tokyo-night-scheduled-flush-"));
+    const logPath = path.join(tempRoot, "pi-tokyo-night.log");
+    const target = makeConsole();
+    const bridge = createConsoleLogBridge({ console: target, logFilePath: logPath });
+    const releaseLater = deferred();
+    let laterStarted = false;
+    const originalAppend = fs.promises.appendFile;
+    const append = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (...args) => {
+      if (args[0] === logPath && String(args[1]).includes("after-scheduled-flush")) {
+        laterStarted = true;
+        await releaseLater.promise;
+      }
+      return Reflect.apply(originalAppend, fs.promises, args);
+    });
+
+    try {
+      bridge.setInteractive(true);
+      target.info("before-scheduled-flush");
+      const earlyFlush = flushConsoleLogWrites();
+      target.info("after-scheduled-flush");
+      await vi.waitFor(() => expect(laterStarted).toBe(true));
+      expect(await Promise.race([
+        earlyFlush.then(() => true),
+        new Promise<boolean>((resolve) => setImmediate(() => resolve(false))),
+      ])).toBe(true);
+      expect(await readFile(logPath, "utf8")).toContain("before-scheduled-flush");
+      releaseLater.resolve();
+      await flushConsoleLogWrites();
+    } finally {
+      releaseLater.resolve();
+      await flushConsoleLogWrites();
+      bridge.dispose();
+      append.mockRestore();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("shares the writer with an error sink loaded by a replacement module", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "pi-tokyo-night-reload-log-"));
+    const logPath = path.join(tempRoot, "pi-tokyo-night.log");
+    const target = makeConsole();
+    const bridge = createConsoleLogBridge({ console: target, logFilePath: logPath });
+    const started = deferred();
+    const release = deferred();
+    const originalAppend = fs.promises.appendFile;
+    const originalMkdir = fs.promises.mkdir;
+    const originalStat = fs.promises.stat;
+    await writeFile(logPath, "", "utf8");
+    const metadata = await stat(logPath);
+    const prepare = vi.spyOn(fs.promises, "mkdir").mockImplementation(async (...args) => {
+      if (args[0] === tempRoot) return undefined;
+      return Reflect.apply(originalMkdir, fs.promises, args);
+    });
+    const inspect = vi.spyOn(fs.promises, "stat").mockImplementation(async (...args) => {
+      if (args[0] === logPath) return metadata;
+      return Reflect.apply(originalStat, fs.promises, args);
+    });
+    const append = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (...args) => {
+      if (args[0] === logPath && String(args[1]).includes("old-module")) {
+        started.resolve();
+        await release.promise;
+      }
+      return Reflect.apply(originalAppend, fs.promises, args);
+    });
+
+    try {
+      bridge.setInteractive(true);
+      target.info("old-module");
+      await started.promise;
+      vi.resetModules();
+      const replacement = await import("./console-bridge");
+      const sink = replacement.createTokyoNightErrorSink({ logFilePath: logPath });
+      sink("replacement-module", "reload");
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(append).toHaveBeenCalledTimes(1);
+
+      release.resolve();
+      await replacement.flushConsoleLogWrites();
+      const content = await readFile(logPath, "utf8");
+      expect(content).toContain("old-module");
+      expect(content).toContain("replacement-module");
+      expect(content.indexOf("old-module")).toBeLessThan(content.indexOf("replacement-module"));
+    } finally {
+      release.resolve();
+      await flushConsoleLogWrites();
+      bridge.dispose();
+      append.mockRestore();
+      inspect.mockRestore();
+      prepare.mockRestore();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("drops the oldest pending entries at the count limit and reports the exact total", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "pi-tokyo-night-count-"));
+    const logPath = path.join(tempRoot, "pi-tokyo-night.log");
+    const target = makeConsole();
+    const bridge = createConsoleLogBridge({ console: target, logFilePath: logPath });
+
+    try {
+      bridge.setInteractive(true);
+      for (let index = 0; index < 3_000; index++) target.info(`bounded-${index}`);
+      await flushConsoleLogWrites();
+
+      const content = await readFile(logPath, "utf8");
+      expect(content.includes("dropped 952 oldest pending log entries due to queue limit")).toBe(true);
+      expect(content.match(/INFO bounded-\d+/g)).toEqual(
+        Array.from({ length: 2_048 }, (_, index) => `INFO bounded-${index + 952}`),
+      );
+      target.info("after-overload");
+      await flushConsoleLogWrites();
+      expect(await readFile(logPath, "utf8")).toContain("after-overload");
+    } finally {
+      bridge.dispose();
+      await flushConsoleLogWrites();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds pending bytes during an in-flight write and keeps the newest large entries", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "pi-tokyo-night-pending-bytes-"));
+    const logPath = path.join(tempRoot, "pi-tokyo-night.log");
+    const target = makeConsole();
+    const bridge = createConsoleLogBridge({ console: target, logFilePath: logPath });
+    const started = deferred();
+    const release = deferred();
+    const originalAppend = fs.promises.appendFile;
+    const append = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (...args) => {
+      if (args[0] === logPath && String(args[1]).includes("in-flight-entry")) {
+        started.resolve();
+        await release.promise;
+      }
+      return Reflect.apply(originalAppend, fs.promises, args);
+    });
+
+    try {
+      bridge.setInteractive(true);
+      target.info("in-flight-entry", "a".repeat(512 * 1024));
+      await started.promise;
+      for (const name of ["queued-oldest", "queued-middle", "queued-newest"]) {
+        target.info(name, "雨".repeat(130 * 1024));
+      }
+      expect(append).toHaveBeenCalledTimes(1);
+      release.resolve();
+      await flushConsoleLogWrites();
+
+      const content = await readFile(logPath, "utf8");
+      expect(content.includes("dropped 1 oldest pending log entries due to queue limit")).toBe(true);
+      expect(content.includes("queued-oldest")).toBe(false);
+      expect(content.includes("queued-middle")).toBe(true);
+      expect(content.includes("queued-newest")).toBe(true);
+      expect(content.includes("�")).toBe(false);
+      expect((await stat(logPath)).size).toBeLessThanOrEqual(TOKYO_NIGHT_LOG_MAX_BYTES);
+    } finally {
+      release.resolve();
+      await flushConsoleLogWrites();
+      bridge.dispose();
+      append.mockRestore();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves new drop counts during a notice write and flushes dropped call-time records", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "pi-tokyo-night-drop-flush-"));
+    const logPath = path.join(tempRoot, "pi-tokyo-night.log");
+    const target = makeConsole();
+    const bridge = createConsoleLogBridge({ console: target, logFilePath: logPath });
+    const releaseFirstNotice = deferred();
+    const releaseSecondNotice = deferred();
+    const releaseLaterEntries = deferred();
+    let noticeWrites = 0;
+    let laterEntriesStarted = false;
+    const originalAppend = fs.promises.appendFile;
+    const append = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (...args) => {
+      if (args[0] === logPath && String(args[1]).includes("due to queue limit")) {
+        noticeWrites++;
+        await (noticeWrites === 1 ? releaseFirstNotice.promise : releaseSecondNotice.promise);
+      } else if (args[0] === logPath && String(args[1]).includes("new-burst-")) {
+        laterEntriesStarted = true;
+        await releaseLaterEntries.promise;
+      }
+      return Reflect.apply(originalAppend, fs.promises, args);
+    });
+
+    try {
+      bridge.setInteractive(true);
+      for (let index = 0; index < 3_000; index++) target.info(`old-burst-${index}`);
+      await vi.waitFor(() => expect(noticeWrites).toBe(1));
+      const earlyFlush = flushConsoleLogWrites();
+      for (let index = 0; index < 3_000; index++) target.info(`new-burst-${index}`);
+      releaseFirstNotice.resolve();
+      await vi.waitFor(() => expect(noticeWrites).toBe(2));
+
+      expect(await Promise.race([
+        earlyFlush.then(() => true),
+        new Promise<boolean>((resolve) => setImmediate(() => resolve(false))),
+      ])).toBe(false);
+      releaseSecondNotice.resolve();
+      await vi.waitFor(() => expect(laterEntriesStarted).toBe(true));
+      expect(await Promise.race([
+        earlyFlush.then(() => true),
+        new Promise<boolean>((resolve) => setImmediate(() => resolve(false))),
+      ])).toBe(true);
+
+      releaseLaterEntries.resolve();
+      await flushConsoleLogWrites();
+      const content = await readFile(logPath, "utf8");
+      expect(content.match(/dropped \d+ oldest pending log entries/g)).toEqual([
+        "dropped 952 oldest pending log entries",
+        "dropped 3000 oldest pending log entries",
+      ]);
+      expect(content).not.toContain("old-burst-");
+      expect(content.match(/INFO new-burst-\d+/g)).toHaveLength(2_048);
+    } finally {
+      releaseFirstNotice.resolve();
+      releaseSecondNotice.resolve();
+      releaseLaterEntries.resolve();
+      await flushConsoleLogWrites();
+      bridge.dispose();
+      append.mockRestore();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("counts in-flight records against the entry limit", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "pi-tokyo-night-active-count-"));
+    const logPath = path.join(tempRoot, "pi-tokyo-night.log");
+    const target = makeConsole();
+    const bridge = createConsoleLogBridge({ console: target, logFilePath: logPath });
+    const started = deferred();
+    const release = deferred();
+    const originalAppend = fs.promises.appendFile;
+    const append = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (...args) => {
+      if (args[0] === logPath && String(args[1]).includes("active-record")) {
+        started.resolve();
+        await release.promise;
+      }
+      return Reflect.apply(originalAppend, fs.promises, args);
+    });
+
+    try {
+      bridge.setInteractive(true);
+      target.info("active-record");
+      await started.promise;
+      for (let index = 0; index < 3_000; index++) target.info(`waiting-${index}`);
+      release.resolve();
+      await flushConsoleLogWrites();
+
+      const content = await readFile(logPath, "utf8");
+      expect(content.includes("dropped 953 oldest pending log entries due to queue limit")).toBe(true);
+      expect(content).toContain("active-record");
+      expect(content.match(/INFO waiting-\d+/g)).toEqual(
+        Array.from({ length: 2_047 }, (_, index) => `INFO waiting-${index + 953}`),
+      );
+    } finally {
+      release.resolve();
+      await flushConsoleLogWrites();
+      bridge.dispose();
+      append.mockRestore();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds an oversized entry before its write and preserves subsequent batched entries", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "pi-tokyo-night-active-utf8-"));
+    const logPath = path.join(tempRoot, "pi-tokyo-night.log");
+    const target = makeConsole();
+    const bridge = createConsoleLogBridge({ console: target, logFilePath: logPath });
+    const release = deferred();
+    let activeBytes = 0;
+    const originalAppend = fs.promises.appendFile;
+    const append = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (...args) => {
+      if (args[0] === logPath && String(args[1]).includes("oversized-active")) {
+        activeBytes = Buffer.byteLength(String(args[1]), "utf8");
+        await release.promise;
+      }
+      return Reflect.apply(originalAppend, fs.promises, args);
+    });
+
+    try {
+      bridge.setInteractive(true);
+      target.error("oversized-active", "雨".repeat(400 * 1024));
+      await vi.waitFor(() => expect(activeBytes).toBeGreaterThan(0));
+      expect(activeBytes).toBeLessThanOrEqual(TOKYO_NIGHT_LOG_MAX_BYTES);
+      for (let index = 0; index < 5; index++) target.info(`after-large-${index}`);
+      release.resolve();
+      await flushConsoleLogWrites();
+
+      const content = await readFile(logPath, "utf8");
+      expect(content.match(/INFO after-large-\d+/g)).toEqual(
+        Array.from({ length: 5 }, (_, index) => `INFO after-large-${index}`),
+      );
+      expect(content.includes("log entry truncated")).toBe(true);
+      expect(content.includes("�")).toBe(false);
+      expect(content.includes("due to queue limit")).toBe(false);
+      expect((await stat(logPath)).size).toBeLessThanOrEqual(TOKYO_NIGHT_LOG_MAX_BYTES);
+    } finally {
+      release.resolve();
+      await flushConsoleLogWrites();
+      bridge.dispose();
+      append.mockRestore();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("disables a failed file and keeps other default console and error sinks ordered", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "pi-tokyo-night-failed-queue-"));
+    const failedPath = path.join(tempRoot, "failed.log");
+    const healthyPath = path.join(tempRoot, "healthy.log");
+    const firstTarget = makeConsole();
+    const secondTarget = makeConsole();
+    const originalFirstError = firstTarget.error;
+    const originalSecondError = secondTarget.error;
+    const firstBridge = createConsoleLogBridge({ console: firstTarget, logFilePath: healthyPath });
+    const secondBridge = createConsoleLogBridge({ console: secondTarget, logFilePath: healthyPath });
+    const failed = createTokyoNightErrorSink({ logFilePath: failedPath });
+    const healthy = createTokyoNightErrorSink({ logFilePath: healthyPath });
+    const originalAppend = fs.promises.appendFile;
+    const append = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (...args) => {
+      if (args[0] === failedPath) throw new Error("disk unavailable");
+      return Reflect.apply(originalAppend, fs.promises, args);
+    });
+
+    try {
+      firstBridge.setInteractive(true);
+      secondBridge.setInteractive(true);
+      for (let index = 0; index < 5; index++) failed(`failed-${index}`, "queued");
+      firstTarget.info("healthy-first");
+      for (let index = 5; index < 10; index++) failed(`failed-${index}`, "queued");
+      healthy("healthy-middle", "direct");
+      secondTarget.info("healthy-last");
+      await flushConsoleLogWrites();
+      failed("after-disable", "queued");
+      await flushConsoleLogWrites();
+
+      const content = await readFile(healthyPath, "utf8");
+      expect(content.match(/healthy-(first|middle|last)/g)).toEqual([
+        "healthy-first", "healthy-middle", "healthy-last",
+      ]);
+      expect(append.mock.calls.filter((args) => args[0] === failedPath)).toHaveLength(1);
+      expect(originalFirstError).not.toHaveBeenCalled();
+      expect(originalSecondError).not.toHaveBeenCalled();
+    } finally {
+      await flushConsoleLogWrites();
+      firstBridge.dispose();
+      secondBridge.dispose();
+      append.mockRestore();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("bounds notices across many log files while reporting every discarded entry", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "pi-tokyo-night-many-log-files-"));
+    const append = vi.spyOn(fs.promises, "appendFile");
+    try {
+      for (let index = 0; index < 3_000; index++) {
+        const sink = createTokyoNightErrorSink({ logFilePath: path.join(tempRoot, `${index}.log`) });
+        sink(`many-files-${index}`, "bounded");
+      }
+      await flushConsoleLogWrites();
+
+      const notices = append.mock.calls
+        .map((args) => String(args[1]))
+        .filter((content) => content.includes("due to queue limit"));
+      expect(notices).toHaveLength(128);
+      expect(notices.reduce((total, content) =>
+        total + Number(/dropped (\d+) oldest pending log entries/.exec(content)?.[1] ?? 0), 0,
+      )).toBe(952);
+      expect(notices.filter((content) => content.includes("across log files"))).toHaveLength(1);
+      expect(notices.find((content) => content.includes("across log files")))
+        .toContain("dropped 825 oldest pending log entries across log files (824 from other log files)");
+      expect(notices.filter((content) => !content.includes("across log files"))
+        .every((content) => content.includes("dropped 1 oldest pending log entries"))).toBe(true);
+      expect(append.mock.calls.filter((args) => String(args[1]).includes("ERROR"))).toHaveLength(2_048);
+    } finally {
+      await flushConsoleLogWrites();
+      append.mockRestore();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  }, 20_000);
+
+  it.each(["in-flight", "queued"] as const)(
+    "preserves cross-file drop counts when the failed anchor owns the %s notice",
+    async (noticeLocation) => {
+      const tempRoot = await mkdtemp(path.join(os.tmpdir(), "pi-tokyo-night-drop-anchor-"));
+      const heldPath = path.join(tempRoot, "held.log");
+      const failedPath = path.join(tempRoot, "0.log");
+      const heldStarted = deferred();
+      const releaseHeld = deferred();
+      const noticeStarted = deferred();
+      const releaseNotice = deferred();
+      const outputs: string[] = [];
+      const inspect = vi.spyOn(fs.promises, "stat").mockResolvedValue({ size: 0 } as fs.Stats);
+      const append = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (...args) => {
+        const content = String(args[1]);
+        if (args[0] === heldPath) {
+          heldStarted.resolve();
+          await releaseHeld.promise;
+        }
+        if (args[0] === failedPath && content.includes("due to queue limit")) {
+          noticeStarted.resolve();
+          await releaseNotice.promise;
+          throw Object.assign(new Error("anchor unavailable"), { code: "EIO" });
+        }
+        outputs.push(content);
+      });
+      try {
+        if (noticeLocation === "in-flight") {
+          createTokyoNightErrorSink({ logFilePath: heldPath })("held", "bounded");
+          await heldStarted.promise;
+          for (let index = 0; index < 5_000; index++) {
+            createTokyoNightErrorSink({ logFilePath: path.join(tempRoot, `${index}.log`) })("tiny", "bounded");
+          }
+          releaseHeld.resolve();
+          await noticeStarted.promise;
+        } else {
+          const failed = createTokyoNightErrorSink({ logFilePath: failedPath });
+          for (let index = 0; index < 3_000; index++) failed("old", "bounded");
+          await noticeStarted.promise;
+          for (let index = 1; index <= 5_000; index++) {
+            createTokyoNightErrorSink({ logFilePath: path.join(tempRoot, `${index}.log`) })("tiny", "bounded");
+          }
+        }
+        releaseNotice.resolve();
+        await flushConsoleLogWrites();
+
+        const notices = outputs.filter((content) => content.includes("due to queue limit"));
+        const reportedDrops = notices.reduce((total, content) =>
+          total + Number(/dropped (\d+) oldest pending log entries/.exec(content)?.[1] ?? 0), 0,
+        );
+        expect(reportedDrops).toBe(2_952);
+        expect(notices.length).toBeLessThanOrEqual(128);
+        expect(append.mock.calls.filter((args) => args[0] === failedPath)).toHaveLength(1);
+      } finally {
+        releaseHeld.resolve();
+        releaseNotice.resolve();
+        await flushConsoleLogWrites();
+        append.mockRestore();
+        inspect.mockRestore();
+        await rm(tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("moves cross-file drops to a pending healthy file while preserving an earlier flush boundary", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "pi-tokyo-night-drop-recipient-"));
+    const heldPath = path.join(tempRoot, "held.log");
+    const failedPaths = new Set(Array.from({ length: 128 }, (_, index) => path.join(tempRoot, `${index}.log`)));
+    const heldStarted = deferred();
+    const releaseHeld = deferred();
+    const noticeStarted = deferred();
+    const releaseNotice = deferred();
+    const laterStarted = deferred();
+    const releaseLater = deferred();
+    const outputs: string[] = [];
+    const inspect = vi.spyOn(fs.promises, "stat").mockResolvedValue({ size: 0 } as fs.Stats);
+    const append = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (...args) => {
+      const filePath = String(args[0]);
+      const content = String(args[1]);
+      if (filePath === heldPath) {
+        heldStarted.resolve();
+        await releaseHeld.promise;
+      } else if (failedPaths.has(filePath)) {
+        throw Object.assign(new Error("anchor unavailable"), { code: "EIO" });
+      } else if (content.includes("due to queue limit")) {
+        noticeStarted.resolve();
+        await releaseNotice.promise;
+      } else if (content.includes("newer-entry")) {
+        laterStarted.resolve();
+        await releaseLater.promise;
+      }
+      outputs.push(content);
+    });
+    try {
+      createTokyoNightErrorSink({ logFilePath: heldPath })("held", "bounded");
+      await heldStarted.promise;
+      for (const filePath of failedPaths) createTokyoNightErrorSink({ logFilePath: filePath })("old", "bounded");
+      const earlyFlush = flushConsoleLogWrites();
+      for (let index = 128; index < 5_128; index++) {
+        createTokyoNightErrorSink({ logFilePath: path.join(tempRoot, `${index}.log`) })("newer-entry", "bounded");
+      }
+      releaseHeld.resolve();
+      await noticeStarted.promise;
+
+      expect(await Promise.race([
+        earlyFlush.then(() => true),
+        new Promise<boolean>((resolve) => setImmediate(() => resolve(false))),
+      ])).toBe(false);
+      releaseNotice.resolve();
+      await laterStarted.promise;
+      expect(await Promise.race([
+        earlyFlush.then(() => true),
+        new Promise<boolean>((resolve) => setImmediate(() => resolve(false))),
+      ])).toBe(true);
+      releaseLater.resolve();
+      await flushConsoleLogWrites();
+
+      const notices = outputs.filter((content) => content.includes("due to queue limit"));
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toContain("dropped 2953 oldest pending log entries across log files (2953 from other log files)");
+      expect(append.mock.calls.filter((args) => failedPaths.has(String(args[0])))).toHaveLength(128);
+    } finally {
+      releaseHeld.resolve();
+      releaseNotice.resolve();
+      releaseLater.resolve();
+      await flushConsoleLogWrites();
+      append.mockRestore();
+      inspect.mockRestore();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("retries a failed file after enough newer failed paths replace its metadata", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "pi-tokyo-night-failed-paths-"));
+    const firstPath = path.join(tempRoot, "first.log");
+    let firstAttempts = 0;
+    const originalAppend = fs.promises.appendFile;
+    const append = vi.spyOn(fs.promises, "appendFile").mockImplementation(async (...args) => {
+      if (args[0] !== firstPath || ++firstAttempts === 1) throw new Error("temporary failure");
+      return Reflect.apply(originalAppend, fs.promises, args);
+    });
+    try {
+      const first = createTokyoNightErrorSink({ logFilePath: firstPath });
+      first("initial-failure", "bounded");
+      await flushConsoleLogWrites();
+      for (let index = 0; index < 128; index++) {
+        const sink = createTokyoNightErrorSink({ logFilePath: path.join(tempRoot, `${index}.log`) });
+        sink("newer-failure", "bounded");
+      }
+      await flushConsoleLogWrites();
+      first("retry-after-eviction", "bounded");
+      await flushConsoleLogWrites();
+
+      expect(firstAttempts).toBe(2);
+      expect(await readFile(firstPath, "utf8")).toContain("retry-after-eviction");
+      const recentPath = path.join(tempRoot, "127.log");
+      createTokyoNightErrorSink({ logFilePath: recentPath })("still-disabled", "bounded");
+      await flushConsoleLogWrites();
+      expect(append.mock.calls.filter((args) => args[0] === recentPath)).toHaveLength(1);
+    } finally {
+      await flushConsoleLogWrites();
+      append.mockRestore();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("recreates an old log directory after its prepared metadata is replaced", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "pi-tokyo-night-log-directories-"));
+    const firstDirectory = path.join(tempRoot, "0");
+    const firstPath = path.join(firstDirectory, "log.txt");
+    const prepare = vi.spyOn(fs.promises, "mkdir");
+    try {
+      for (let index = 0; index < 130; index++) {
+        const sink = createTokyoNightErrorSink({ logFilePath: path.join(tempRoot, `${index}`, "log.txt") });
+        sink("directory-entry", "bounded");
+      }
+      await flushConsoleLogWrites();
+      await rm(firstDirectory, { recursive: true, force: true });
+      createTokyoNightErrorSink({ logFilePath: firstPath })("recreated-directory", "bounded");
+      await flushConsoleLogWrites();
+
+      expect(prepare.mock.calls.filter((args) => args[0] === firstDirectory)).toHaveLength(2);
+      expect(await readFile(firstPath, "utf8")).toContain("recreated-directory");
+    } finally {
+      await flushConsoleLogWrites();
+      prepare.mockRestore();
+      await rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("caps the log at 1 MiB and retains recent entries after discarding the oldest half", async () => {
     const tempRoot = await mkdtemp(path.join(os.tmpdir(), "pi-tokyo-night-cap-"));
     const logPath = path.join(tempRoot, "agent", "pi-tokyo-night.log");
@@ -237,6 +890,7 @@ describe("Tokyo Night TUI console bridge", () => {
       bridge.setInteractive(true);
       target.info("oldest-entry", payload);
       target.info("second-entry", payload);
+      await flushConsoleLogWrites();
       target.info("third-entry", payload);
       target.info("newest-entry", payload);
       await flushConsoleLogWrites();
@@ -498,7 +1152,7 @@ async function shutdownIntegrationFixture(fixture: IntegrationFixture): Promise<
 describe("Tokyo Night console bridge session integration", () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    vi.spyOn(TokyoConfigManager.prototype, "read").mockImplementation(() => {});
+    vi.spyOn(TokyoConfigManager.prototype, "read").mockImplementation(async () => {});
   });
 
   afterEach(() => {

@@ -15,6 +15,12 @@ export interface NeonStudioThemeResult {
   error?: string;
 }
 
+interface NeonStudioCloseResult {
+  saved: boolean;
+  configSaved: boolean;
+  closeAttempted: boolean;
+}
+
 export type NeonStudioConfigChange =
   | {
       kind: "config";
@@ -80,6 +86,8 @@ export interface NeonStudioControllerDependencies {
 /** Owns Neon Studio's live configuration and close-time persistence contract. */
 export class NeonStudioController {
   private closing = false;
+  private forceClosing = false;
+  private closePromise: Promise<boolean> | undefined;
   private readonly openingConfig: Readonly<TokyoConfig>;
   private readonly persistedTheme: NeonStudioThemeChoice | undefined;
   private selectedTheme: NeonStudioThemeChoice;
@@ -102,11 +110,16 @@ export class NeonStudioController {
     return this.selectedTheme;
   }
 
+  get pendingClose(): Promise<boolean> | undefined {
+    return this.closePromise;
+  }
+
   changeSetting(
     section: NeonStudioSection,
     selectedIndex: number,
     direction = 1,
   ): boolean {
+    if (this.closing) return false;
     if (section === "appearance") {
       return this.changeAppearance(selectedIndex, direction);
     }
@@ -144,40 +157,62 @@ export class NeonStudioController {
     return false;
   }
 
-  saveAndClose(): boolean {
+  saveAndClose(): Promise<boolean> {
     return this.close(false);
   }
 
-  forceClose(): void {
-    this.close(true);
+  forceClose(): Promise<void> {
+    return this.close(true).then(() => {});
   }
 
-  private close(force: boolean): boolean {
-    if (this.closing) return false;
-
+  private close(force: boolean): Promise<boolean> {
+    if (force) this.forceClosing = true;
+    if (this.closePromise) return this.closePromise;
     this.closing = true;
+    const reopen = (): void => {
+      if (this.forceClosing) return;
+      this.closing = false;
+      this.closePromise = undefined;
+    };
+    const pending = this.persistAndClose().then((result) => {
+      if (!result.closeAttempted && this.forceClosing) {
+        if (!result.configSaved) this.restoreOpeningConfig();
+        try {
+          this.dependencies.done();
+        } catch {
+          return false;
+        }
+      }
+      if (!result.saved) reopen();
+      return result.saved;
+    }, (error) => {
+      reopen();
+      throw error;
+    });
+    this.closePromise = pending;
+    return pending;
+  }
+
+  private async persistAndClose(): Promise<NeonStudioCloseResult> {
     let configSaved = false;
     try {
-      configSaved = this.config.write(this.dependencies.errorSink);
+      configSaved = await this.config.write(this.dependencies.errorSink);
     } catch {
       configSaved = false;
     }
     if (!configSaved) {
       this.restoreThemePreview();
       this.safeNotify(
-        force
+        this.forceClosing
           ? "Could not save Tokyo Night settings before Neon Studio closed."
           : "Could not save Tokyo Night settings. Neon Studio remains open.",
       );
-      if (!force) {
-        this.closing = false;
-        return false;
-      }
+      if (!this.forceClosing) return { saved: false, configSaved, closeAttempted: false };
       this.restoreOpeningConfig();
     }
 
     let themeResult: NeonStudioThemeResult = { success: true };
-    if (force) {
+    if (this.forceClosing) {
       if (configSaved) this.restoreThemePreview();
     } else if (
       configSaved &&
@@ -199,23 +234,19 @@ export class NeonStudioController {
       this.restoreThemePreview();
       this.safeNotify(
         themeResult.error ??
-          (force
+          (this.forceClosing
             ? "Could not save the Tokyo Night theme before Neon Studio closed."
             : "Could not save the Tokyo Night theme. Neon Studio remains open."),
       );
-      if (!force) {
-        this.closing = false;
-        return false;
-      }
+      if (!this.forceClosing) return { saved: false, configSaved, closeAttempted: false };
     }
 
     try {
       this.dependencies.done();
     } catch {
-      if (!force) this.closing = false;
-      return false;
+      return { saved: false, configSaved, closeAttempted: true };
     }
-    return configSaved && themeResult.success;
+    return { saved: configSaved && themeResult.success, configSaved, closeAttempted: true };
   }
 
   private restoreOpeningConfig(): void {

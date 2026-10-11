@@ -191,22 +191,21 @@ function isRetryableRenameError(error: unknown): boolean {
   return error.code === "EPERM" || error.code === "EACCES" || error.code === "EBUSY";
 }
 
-function waitSync(milliseconds: number): void {
-  const signal = new Int32Array(new SharedArrayBuffer(4));
-  Atomics.wait(signal, 0, 0, milliseconds);
+function wait(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-function renameConfigFile(source: string, destination: string): void {
+async function renameConfigFile(source: string, destination: string): Promise<void> {
   for (let attempt = 0; ; attempt++) {
     try {
-      fs.renameSync(source, destination);
+      await fs.promises.rename(source, destination);
       return;
     } catch (error) {
       const delay = WINDOWS_RENAME_RETRY_DELAYS_MS[attempt];
       if (process.platform !== "win32" || delay === undefined || !isRetryableRenameError(error)) {
         throw error;
       }
-      waitSync(delay);
+      await wait(delay);
     }
   }
 }
@@ -289,6 +288,7 @@ function buildConfig(saved: Record<string, unknown>): Readonly<TokyoConfig> {
  */
 export class TokyoConfigManager {
   private config: Readonly<TokyoConfig> = freezeConfig({ ...DEFAULT_CONFIG });
+  private writeTail: Promise<void> = Promise.resolve();
 
   /** Get the immutable config snapshot. Callers may read properties directly. */
   get(): Readonly<TokyoConfig> {
@@ -325,7 +325,8 @@ export class TokyoConfigManager {
   }
 
   /** Read the extension-owned config file. Falls back to defaults on error. */
-  read(errorSink: ExtensionErrorSink = handleExtensionError): void {
+  async read(errorSink: ExtensionErrorSink = handleExtensionError): Promise<void> {
+    await this.writeTail;
     try {
       const content = fs.readFileSync(getTokyoConfigPath(), "utf-8");
       const saved: unknown = JSON.parse(content);
@@ -335,7 +336,7 @@ export class TokyoConfigManager {
       this.config = buildConfig(saved);
     } catch (err) {
       if (isMissingFileError(err)) {
-        this.readLegacyAndMigrate(errorSink);
+        await this.readLegacyAndMigrate(errorSink);
         return;
       }
       errorSink(err, "readTokyoConfig");
@@ -343,7 +344,7 @@ export class TokyoConfigManager {
     }
   }
 
-  private readLegacyAndMigrate(errorSink: ExtensionErrorSink): void {
+  private async readLegacyAndMigrate(errorSink: ExtensionErrorSink): Promise<void> {
     try {
       const settingsPath = path.join(getAgentDir(), "settings.json");
       const content = fs.readFileSync(settingsPath, "utf-8");
@@ -360,7 +361,7 @@ export class TokyoConfigManager {
 
       this.config = buildConfig(saved);
       if (
-        !this.writeWithErrorContext("migrateLegacyTokyoConfig", errorSink)
+        !await this.writeWithErrorContext("migrateLegacyTokyoConfig", errorSink)
       ) return;
     } catch (err) {
       if (!isMissingFileError(err)) {
@@ -371,34 +372,55 @@ export class TokyoConfigManager {
   }
 
   /** Persist current config to the extension-owned config file. */
-  write(errorSink: ExtensionErrorSink = handleExtensionError): boolean {
+  write(errorSink: ExtensionErrorSink = handleExtensionError): Promise<boolean> {
     return this.writeWithErrorContext("writeTokyoConfig", errorSink);
   }
 
   private writeWithErrorContext(
     errorContext: string,
     errorSink: ExtensionErrorSink,
-  ): boolean {
+  ): Promise<boolean> {
+    const snapshot = this.config;
+    let configPath: string;
+    try {
+      configPath = getTokyoConfigPath();
+    } catch (error) {
+      errorSink(error, errorContext);
+      return Promise.resolve(false);
+    }
+    const save = this.writeTail.then(() =>
+      this.persistSnapshot(snapshot, configPath, errorContext, errorSink),
+    );
+    this.writeTail = save.then(() => {}, () => {});
+    return save;
+  }
+
+  private async persistSnapshot(
+    snapshot: Readonly<TokyoConfig>,
+    configPath: string,
+    errorContext: string,
+    errorSink: ExtensionErrorSink,
+  ): Promise<boolean> {
     let temporaryPath: string | undefined;
     try {
-      const configPath = getTokyoConfigPath();
-      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      const content = JSON.stringify(snapshot, null, 2);
+      await fs.promises.mkdir(path.dirname(configPath), { recursive: true });
 
       temporaryPath = `${configPath}.${process.pid}.${Date.now()}.${Math.random()
         .toString(36)
         .slice(2)}.tmp`;
-      fs.writeFileSync(
+      await fs.promises.writeFile(
         temporaryPath,
-        JSON.stringify(this.config, null, 2),
+        content,
         "utf-8",
       );
-      renameConfigFile(temporaryPath, configPath);
+      await renameConfigFile(temporaryPath, configPath);
       temporaryPath = undefined;
       return true;
     } catch (err) {
       if (temporaryPath) {
         try {
-          fs.unlinkSync(temporaryPath);
+          await fs.promises.unlink(temporaryPath);
         } catch {
           // Best-effort cleanup must not mask the persistence error.
         }

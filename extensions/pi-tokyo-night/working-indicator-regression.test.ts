@@ -31,7 +31,7 @@ function makeFixture(mode: "tui" | "rpc" | "json" | "print" = "tui") {
   };
 }
 
-beforeEach(() => vi.spyOn(TokyoConfigManager.prototype, "read").mockImplementation(() => {}));
+beforeEach(() => vi.spyOn(TokyoConfigManager.prototype, "read").mockResolvedValue(undefined));
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("working indicator compatibility regression", () => {

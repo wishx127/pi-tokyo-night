@@ -10,6 +10,7 @@ import { TokyoConfigManager } from "./core/config";
 import { detectTerminalTheme } from "./core/terminal-theme";
 import {
   createTokyoNightErrorSink,
+  flushConsoleLogWrites,
   installConsoleLogBridge,
   type ConsoleLogBridge,
 } from "./core/console-bridge";
@@ -315,6 +316,7 @@ export function registerTokyoNightExtension(
   const installBridge = dependencies.installConsoleLogBridge ?? installConsoleLogBridge;
   let consoleLogBridge: ConsoleLogBridge | undefined;
   let consoleBridgeOwnerIdentity: string | undefined;
+  let consoleBridgeOwnerRevision = 0;
   const errorSink = dependencies.errorSink ?? createTokyoNightErrorSink();
   const sessionsByIdentity = new Map<string, SessionState>();
   let activeSession: SessionState | null = null;
@@ -323,6 +325,9 @@ export function registerTokyoNightExtension(
     controller: NeonStudioController;
   } | null = null;
   let generation = 0;
+  let panelSaveTail: Promise<void> | undefined;
+  let sessionRetirement = Promise.resolve();
+  let startingSession: { identityKey: string; generation: number } | undefined;
   let activeModel: Model<any> | undefined;
   let modelRegistry: { getApiKeyForProvider(provider: string): Promise<string | undefined> } | null = null;
   let kimiPollTimer: ReturnType<typeof setInterval> | undefined;
@@ -339,6 +344,13 @@ export function registerTokyoNightExtension(
   let compatibilityWarningShown = false;
 
   const isInteractive = (ctx: ExtensionContext): boolean => ctx.mode === "tui" && ctx.hasUI;
+  const waitForPanelSaves = async (): Promise<void> => {
+    while (panelSaveTail) {
+      const pending = panelSaveTail;
+      await pending;
+      if (panelSaveTail === pending) return;
+    }
+  };
   const identityOf = (ctx: ExtensionContext): string =>
     `id:${ctx.sessionManager.getSessionId()}|file:${ctx.sessionManager.getSessionFile() ?? ""}`;
   const isCurrent = (session: SessionState): boolean =>
@@ -782,64 +794,76 @@ export function registerTokyoNightExtension(
     clearLiveUsageReconcile(session);
   };
 
-  const teardownSessionUI = (session: SessionState): void => {
+  const teardownSessionUI = (session: SessionState, clearUI: boolean): void => {
     const resources = session.resources;
-    resources.rainManager?.stop();
-    resources.rainPanel?.dispose();
-    resources.editor?.dispose();
+    const { rainManager, rainPanel, editor, editorFactory, footerOwned, footerSubscription } = resources;
     resources.editor = null;
+    resources.editorFactory = null;
     resources.rainPanel = null;
     resources.rainManager = null;
     resources.statusTui = null;
     resources.renderFullscreenStatus = null;
-    if (resources.footerOwned) {
+    resources.footerSubscription = null;
+    resources.footerOwned = false;
+    session.footerData = null;
+    rainManager?.stop();
+    rainPanel?.dispose();
+    editor?.dispose();
+    try { footerSubscription?.dispose(); }
+    catch (error) { handleExtensionError(error, "footer subscription teardown"); }
+
+    const canClearUI = () => clearUI && session.mode === "tui" && session.hasUI && !activeSession;
+    if (!canClearUI()) return;
+    if (footerOwned) {
       try { session.ui.setFooter(undefined); }
       catch (error) { if (!isStaleExtensionContextError(error)) handleExtensionError(error, "footer teardown"); }
     }
-    resources.footerSubscription?.dispose();
-    resources.footerSubscription = null;
-    resources.footerOwned = false;
 
     try {
-      session.ui.setWidget("tokyo-rain", undefined);
-      session.ui.setWidget("tokyo-status", undefined);
+      if (canClearUI()) session.ui.setWidget("tokyo-rain", undefined);
+      if (canClearUI()) session.ui.setWidget("tokyo-status", undefined);
     } catch (error) {
       if (!isStaleExtensionContextError(error)) handleExtensionError(error, "widget teardown");
     }
     try {
-      if (session.ui.getEditorComponent() === resources.editorFactory) session.ui.setEditorComponent(undefined);
+      if (canClearUI() && session.ui.getEditorComponent() === editorFactory) session.ui.setEditorComponent(undefined);
     } catch (error) {
       if (!isStaleExtensionContextError(error)) handleExtensionError(error, "editor teardown");
     }
-    restoreWorkingUi(session);
+    if (canClearUI()) restoreWorkingUi(session);
     try {
-      session.ui.setWorkingVisible(true);
+      if (canClearUI()) session.ui.setWorkingVisible(true);
     } catch (error) {
       if (!isStaleExtensionContextError(error)) handleExtensionError(error, "working teardown");
     }
   };
 
-  const retireSession = (session: SessionState, clearUI: boolean): void => {
-    if (session.disposed) return;
+  const retireSession = (session: SessionState, clearUI: boolean): Promise<void> => {
+    if (session.disposed) return sessionRetirement;
     session.disposed = true;
     clearSessionTimers(session);
     if (activeSession === session) {
       activeSession = null;
       stopKimiPolling();
     }
+    if (sessionsByIdentity.get(session.identityKey) === session) sessionsByIdentity.delete(session.identityKey);
+    teardownSessionUI(session, clearUI);
+    let closing: Promise<void> | undefined;
     if (activeNeonStudio?.session === session) {
       const studio = activeNeonStudio;
       activeNeonStudio = null;
       try {
-        studio.controller.forceClose();
+        closing = studio.controller.forceClose().catch((error) => {
+          if (!isStaleExtensionContextError(error)) handleExtensionError(error, "Neon Studio teardown");
+        });
       } catch (error) {
         if (!isStaleExtensionContextError(error)) {
           handleExtensionError(error, "Neon Studio teardown");
         }
       }
     }
-    if (clearUI && session.mode === "tui" && session.hasUI) teardownSessionUI(session);
-    if (sessionsByIdentity.get(session.identityKey) === session) sessionsByIdentity.delete(session.identityKey);
+    sessionRetirement = Promise.all([sessionRetirement, closing]).then(() => {});
+    return sessionRetirement;
   };
 
   const createSessionResources = (session: SessionState): void => {
@@ -1108,6 +1132,7 @@ export function registerTokyoNightExtension(
 
   pi.on("session_start", async (_event, ctx) => {
     const identityKey = identityOf(ctx);
+    consoleBridgeOwnerRevision += 1;
     if (isInteractive(ctx)) {
       consoleLogBridge ??= installBridge();
       consoleLogBridge.setInteractive(true);
@@ -1126,14 +1151,21 @@ export function registerTokyoNightExtension(
       }
       return;
     }
+    const startGeneration = ++generation;
+    startingSession = { identityKey, generation: startGeneration };
+    const sessionUI = ctx.ui;
     const previous = activeSession;
-    if (previous) retireSession(previous, previous.ui === ctx.ui);
+    if (previous) retireSession(previous, previous.ui === sessionUI);
     const duplicate = sessionsByIdentity.get(identityKey);
-    if (duplicate) retireSession(duplicate, duplicate.ui === ctx.ui);
+    if (duplicate) retireSession(duplicate, duplicate.ui === sessionUI);
+    await sessionRetirement;
+    await waitForPanelSaves();
+    if (startGeneration !== generation) return;
+    startingSession = undefined;
 
     const session: SessionState = {
-      generation: ++generation,
-      ui: ctx.ui,
+      generation: startGeneration,
+      ui: sessionUI,
       mode: ctx.mode,
       hasUI: ctx.hasUI,
       cwd: ctx.cwd,
@@ -1151,7 +1183,7 @@ export function registerTokyoNightExtension(
         timer: undefined,
         indicatorConfigured: false,
         indicatorThemeName: undefined,
-        setIndicator: resolveWorkingIndicatorSetter(ctx.ui),
+        setIndicator: resolveWorkingIndicatorSetter(sessionUI),
       },
       rainActivity: "idle",
       kimiUsageStore: createKimiUsageStore(),
@@ -1171,7 +1203,8 @@ export function registerTokyoNightExtension(
     };
     activeSession = session;
     sessionsByIdentity.set(identityKey, session);
-    configManager.read(errorSink);
+    await configManager.read(errorSink);
+    if (!isCurrent(session)) return;
     activeModel = ctx.model;
     modelRegistry = ctx.modelRegistry;
     codexUsageStore.clearSnapshot();
@@ -1200,18 +1233,28 @@ export function registerTokyoNightExtension(
     handler: async (args: string, ctx: ExtensionCommandContext) => {
       const arg = args.trim().toLowerCase();
       if (arg === "on" || arg === "off") {
-        const previousPanel = configManager.get().panel;
-        configManager.set("panel", arg === "on");
-        if (!configManager.write(errorSink)) {
-          configManager.set("panel", previousPanel);
-          if (ctx.hasUI) {
-            ctx.ui.notify("Could not save Tokyo Night panel settings.", "error");
+        const commandSession = sessionsByIdentity.get(identityOf(ctx));
+        const savePanel = async () => {
+          await sessionRetirement;
+          await activeNeonStudio?.controller.pendingClose;
+          const previousPanel = configManager.get().panel;
+          configManager.set("panel", arg === "on");
+          const snapshot = configManager.get();
+          if (!await configManager.write(errorSink)) {
+            if (configManager.get() === snapshot) configManager.set("panel", previousPanel);
+            if (ctx.hasUI && (!commandSession || isCurrent(commandSession))) {
+              ctx.ui.notify("Could not save Tokyo Night panel settings.", "error");
+            }
+            return;
           }
-          return;
-        }
-        if (!isInteractive(ctx) || !activeSession) return;
-        applyPanelState(activeSession);
-        ctx.ui.notify(`Tokyo Night panel ${arg}`, "info");
+          if (!isInteractive(ctx) || !commandSession || !isCurrent(commandSession)) return;
+          applyPanelState(commandSession);
+          ctx.ui.notify(`Tokyo Night panel ${arg}`, "info");
+        };
+        const save = panelSaveTail ? panelSaveTail.then(savePanel, savePanel) : savePanel();
+        panelSaveTail = save;
+        try { await save; }
+        finally { if (panelSaveTail === save) panelSaveTail = undefined; }
         return;
       }
       if (!isInteractive(ctx)) {
@@ -1220,6 +1263,7 @@ export function registerTokyoNightExtension(
         }
         return;
       }
+      if (panelSaveTail) await waitForPanelSaves();
       const studioSession = sessionsByIdentity.get(identityOf(ctx));
       if (!studioSession || !isCurrent(studioSession)) return;
       if (activeNeonStudio?.session === studioSession) {
@@ -1472,7 +1516,7 @@ export function registerTokyoNightExtension(
           const studio = activeNeonStudio;
           activeNeonStudio = null;
           try {
-            studio.controller.forceClose();
+            await studio.controller.forceClose();
           } catch (error) {
             if (!isStaleExtensionContextError(error)) {
               handleExtensionError(error, "Neon Studio close");
@@ -1486,18 +1530,28 @@ export function registerTokyoNightExtension(
   pi.on("session_shutdown", async (_event, ctx) => {
     const identityKey = identityOf(ctx);
     const shouldDisposeBridge = consoleBridgeOwnerIdentity === identityKey;
+    const bridgeRevision = consoleBridgeOwnerRevision;
     try {
       const session = sessionsByIdentity.get(identityKey);
-      if (!session) return;
+      if (!session) {
+        if (startingSession?.identityKey === identityKey && startingSession.generation === generation) {
+          generation += 1;
+          startingSession = undefined;
+        }
+        return;
+      }
       const wasActive = activeSession === session;
-      retireSession(session, session.mode === "tui" && session.hasUI);
       if (wasActive) generation += 1;
+      await retireSession(session, session.mode === "tui" && session.hasUI);
     } finally {
-      if (shouldDisposeBridge) {
+      await sessionRetirement;
+      await waitForPanelSaves();
+      if (shouldDisposeBridge && bridgeRevision === consoleBridgeOwnerRevision) {
         consoleLogBridge?.dispose();
         consoleLogBridge = undefined;
         consoleBridgeOwnerIdentity = undefined;
       }
+      await flushConsoleLogWrites();
     }
   });
 
