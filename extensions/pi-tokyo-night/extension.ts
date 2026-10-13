@@ -5,6 +5,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import fs from "node:fs";
 import path from "node:path";
 import type { EditorOptions, EditorTheme, TUI } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { readUsageHistory } from "./analytics/usage-history";
 import { TokyoConfigManager } from "./core/config";
 import { detectTerminalTheme } from "./core/terminal-theme";
@@ -326,6 +327,7 @@ export function registerTokyoNightExtension(
   let activeNeonStudio: {
     session: SessionState;
     controller: NeonStudioController;
+    component: NeonStudioComponent | null;
   } | null = null;
   let generation = 0;
   let panelSaveTail: Promise<void> | undefined;
@@ -884,6 +886,8 @@ export function registerTokyoNightExtension(
   };
 
   const createSessionResources = (session: SessionState): void => {
+    const workingLayout = new Text("", 1, 0);
+    let measuredWorkingMessage: string | undefined;
     const borderlessDependencies: BorderlessEditorDependencies = {
       config: configManager,
       getPalette: () =>
@@ -959,7 +963,11 @@ export function registerTokyoNightExtension(
     };
     session.resources.editorFactory = editorFactory;
     session.resources.rainManager = new RainAnimationManager(configManager, {
-      requestRender: () => requestRainRender(session),
+      requestRender: () => {
+        if (session.resources.rainPanel?.hasVisibleChanges() !== false) {
+          requestRainRender(session);
+        }
+      },
       scheduleTick: (tick, intervalMs) => session.refreshScheduler!.repeat(intervalMs, tick),
     });
 
@@ -968,6 +976,37 @@ export function registerTokyoNightExtension(
         config: configManager,
         rain: session.resources.rainManager!,
         getTheme: () => session.ui.theme,
+        getAvailableRows: (width) => {
+          const terminalRows = tui.terminal?.rows;
+          if (!Number.isFinite(terminalRows) || terminalRows <= 0) {
+            const config = configManager.get();
+            return config.rainRows + (config.editorFrame ? 1 : 0);
+          }
+          // Only budget surfaces we own, using the currently displayed Studio
+          // or editor rather than the height left over from a previous frame.
+          const studio = activeNeonStudio?.session === session ? activeNeonStudio : null;
+          const surface = studio ? studio.component : session.resources.editor;
+          if (!surface || (!studio &&
+            session.ui.getEditorComponent() !== session.resources.editorFactory)) {
+            return configManager.get().editorFrame ? 1 : 0;
+          }
+          const editorRows = surface.render(width).length;
+          const statusRows = isFullscreenTui(tui)
+            ? 0 : renderStatusLines(width, session.ui.theme).length;
+          const message = session.working.lastMessage === undefined
+            ? undefined
+            : session.working.indicatorOwned
+              ? session.working.lastMessage
+              : `⠋ ${session.working.lastMessage}`;
+          if (message !== measuredWorkingMessage) {
+            workingLayout.setText(message ?? "");
+            measuredWorkingMessage = message;
+          }
+          const workingRows = Math.max(2, 1 + workingLayout.render(width).length);
+          // One above-widget separator and one history row, plus the loader
+          // (including wrapped tool names), must stay below the animated rows.
+          return Math.max(0, Math.floor(terminalRows) - editorRows - statusRows - workingRows - 2);
+        },
       });
       if (isCurrent(session)) session.resources.rainPanel = panel;
       return panel;
@@ -1532,6 +1571,7 @@ export function registerTokyoNightExtension(
           activeNeonStudio = {
             session: studioSession,
             controller: studioController,
+            component: null,
           };
           if (
             studioController.themeChoice === "automatic" &&
@@ -1547,6 +1587,7 @@ export function registerTokyoNightExtension(
             getAutomaticTheme: () => automaticPreviewTheme,
             loadUsageHistory: (signal) => readUsageHistory({ signal }),
           });
+          activeNeonStudio.component = studioComponent.current;
           return studioComponent.current;
         });
       } finally {

@@ -32,6 +32,8 @@ import { RESET_BG } from "./ui-primitives";
 
 type Module = {
   text: string;
+  /** Width budget for grouping only; the displayed text always uses real values. */
+  layoutText?: string;
   bg: TokyoNightBackgroundRole | null;
   fg: TokyoNightForegroundRole;
   noEndArrow?: boolean;
@@ -386,6 +388,10 @@ const buildTransition = (
 
 const getModuleText = (m: Module): string => ` ${m.text} `;
 const getModuleWidth = (m: Module): number => visibleWidth(getModuleText(m));
+const getModuleLayoutWidth = (m: Module): number => Math.max(
+  getModuleWidth(m),
+  visibleWidth(m.layoutText ?? m.text) + 2,
+);
 const formatIconLabel = (icon: string, label: string): string =>
   icon ? `${icon} ${label}` : label;
 
@@ -422,6 +428,7 @@ const buildSection = (
 
 type StatusLayout = {
   oneLine: string;
+  requiredWidth: number;
   modules: Module[];
   icons: StatusIcons;
   palette: TokyoNightThemePalette;
@@ -475,7 +482,7 @@ function buildResponsiveRows(
   };
 
   for (const module of modules) {
-    const moduleWidth = getModuleWidth(module);
+    const moduleWidth = getModuleLayoutWidth(module);
     const endArrowWidth = visibleWidth(buildEndArrow(module, icons, palette));
 
     if (current.length > 0) {
@@ -498,6 +505,15 @@ function buildResponsiveRows(
     if (moduleWidth + endArrowWidth <= width) {
       current = [module];
       currentWidth = moduleWidth;
+      continue;
+    }
+
+    // The reserve only controls grouping; a complete actual module still fits
+    // on its own row before any narrow-screen fallback removes its details.
+    if (getModuleWidth(module) + endArrowWidth <= width) {
+      current = [module];
+      currentWidth = getModuleWidth(module);
+      flush();
       continue;
     }
 
@@ -768,6 +784,29 @@ function buildStatusLayout(
 
   const leftSection = buildSection(leftModules, icons, palette);
   const rightSection = buildSection(rightModules, icons, palette);
+  for (const module of rightModules) {
+    if (module.bg === "tokens") {
+      module.layoutText = module.text
+        .replace(/([↑↓RW])\d+(?:\.\d+)?[kM]?/g, (_match, prefix: string) => `${prefix}99.9M`)
+        .replace(/CH\d+\.\d%/, "CH100.0%")
+        .replace(/TPS \d+$/, "TPS 999");
+    } else if (module.fg === "statusContext") {
+      module.layoutText = module.text.replace(/(?:\d+%|\?)\//, "100%/");
+    } else if (module.bg === "cost") {
+      module.layoutText = "$999.99";
+    } else if (module.bg === "quota") {
+      module.layoutText = module.text
+        .replace(/\d+%/g, "100%")
+        .replace(/\((?:\d+h)?\d+m\)/, "(999h59m)");
+    }
+  }
+  const modules = [...leftModules, ...rightModules];
+  const requiredWidth = modules.reduce((total, module, index) => {
+    const transitionWidth = index > 0
+      ? visibleWidth(buildTransition(modules[index - 1], module, icons, palette))
+      : 0;
+    return total + getModuleLayoutWidth(module) + transitionWidth;
+  }, leftModules.length > 0 && rightModules.length > 0 ? 1 : 0);
 
   return {
     oneLine: buildWideStatusLine(
@@ -780,7 +819,8 @@ function buildStatusLayout(
       palette,
       stretchSides,
     ),
-    modules: [...leftModules, ...rightModules],
+    requiredWidth,
+    modules,
     icons,
     palette,
   };
@@ -841,7 +881,7 @@ export function buildStatusLines(
     outputTps,
   );
 
-  if (visibleWidth(layout.oneLine) <= renderWidth) {
+  if (layout.requiredWidth <= renderWidth && visibleWidth(layout.oneLine) <= renderWidth) {
     return [layout.oneLine];
   }
 

@@ -514,6 +514,133 @@ describe("buildStatusLine", () => {
     expect(plain).not.toContain("test-model TPS 44");
   });
 
+  it("keeps status rows stable when TPS crosses between 99 and 100", () => {
+    const ctx = makeContext([]);
+    for (let width = 40; width <= 160; width++) {
+      const render = (tps: number) => buildStatusLines(
+        width, theme, ctx, "main", "high", config,
+        undefined, undefined, undefined, tps,
+      );
+      const first = render(99);
+      const second = render(100);
+      const restored = render(99);
+
+      expect(second.length, `width ${width}`).toBe(first.length);
+      expect(restored.length, `width ${width}`).toBe(second.length);
+      const plain = second.join("\n").replace(/\u001b\[[0-9;]*m/g, "");
+      for (const label of ["test-model", "high", "project", "main", "tokens", "TPS 100", "$0.000", "0%/1.0k"]) {
+        expect(plain, `width ${width}: ${label}`).toContain(label);
+      }
+      expect(second.every((line) => visibleWidth(line) <= width)).toBe(true);
+    }
+  });
+
+  it("keeps status rows stable across token digit and unit boundaries", () => {
+    for (const [before, after] of [[99, 100], [999, 1000], [9999, 10000]]) {
+      for (let bucket = 0; bucket < 4; bucket++) {
+        const render = (width: number, value: number) => {
+          const counts = [99, 99, 99, 99];
+          counts[bucket] = value;
+          return buildStatusLines(
+            width, theme, makeContext([makeAssistant(...counts as [number, number, number, number])]),
+            "main", "high", config,
+          );
+        };
+        for (let width = 40; width <= 160; width++) {
+          const first = render(width, before);
+          const second = render(width, after);
+          expect(second.length, `width ${width}, bucket ${bucket}, ${before}→${after}`).toBe(first.length);
+          expect(second.every((line) => visibleWidth(line) <= width)).toBe(true);
+          const plain = second.join("\n").replace(/\u001b\[[0-9;]*m/g, "");
+          for (const label of ["test-model", "high", "project", "main", "↑", "↓", "R", "W", "CH", "$1.25", "/1.0k"]) {
+            expect(plain, `width ${width}: ${label}`).toContain(label);
+          }
+        }
+      }
+    }
+  });
+
+  it("keeps status rows stable across context percentage boundaries", () => {
+    for (const [before, after] of [[9, 10], [99, 100]]) {
+      for (let width = 40; width <= 160; width++) {
+        const render = (percent: number) => buildStatusLines(
+          width, theme,
+          makeContext([], () => ({ tokens: percent * 10, contextWindow: 1000, percent })),
+          "main", "high", config,
+        );
+        const first = render(before);
+        const second = render(after);
+        expect(second.length, `width ${width}, ${before}%→${after}%`).toBe(first.length);
+        expect(second.every((line) => visibleWidth(line) <= width)).toBe(true);
+        expect(second.join("\n")).toContain(`${after}%/1.0k`);
+      }
+    }
+  });
+
+  it("keeps status rows stable when cache hit rate rounds to 100.0%", () => {
+    for (let width = 40; width <= 160; width++) {
+      const render = (cacheRead: number) => buildStatusLines(
+        width, theme, makeContext([makeAssistant(1, 99, cacheRead)]),
+        "main", "high", config,
+      );
+      const first = render(999);
+      const second = render(1999);
+      expect(first.join("\n")).toContain("CH99.9%");
+      expect(second.join("\n")).toContain("CH100.0%");
+      expect(second.length, `width ${width}`).toBe(first.length);
+      expect(second.every((line) => visibleWidth(line) <= width)).toBe(true);
+    }
+  });
+
+  it("keeps status rows stable across cost precision and digit boundaries", () => {
+    const ctx = makeContext([]);
+    for (const [before, after, label] of [[0.009, 0.01, "$0.01"], [9.99, 10, "$10.00"], [99.99, 100, "$100.00"]] as const) {
+      for (let width = 40; width <= 160; width++) {
+        const render = (cost: number) => buildStatusLines(
+          width, theme, ctx, "main", "high", config, undefined, undefined,
+          { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost },
+        );
+        const first = render(before);
+        const second = render(after);
+        expect(second.length, `width ${width}, $${before}→$${after}`).toBe(first.length);
+        expect(second.join("\n")).toContain(label);
+        expect(second.every((line) => visibleWidth(line) <= width)).toBe(true);
+      }
+    }
+  });
+
+  it("keeps actual values wider than the layout budget visible in Nerd and ASCII modes", () => {
+    for (const iconMode of ["nerd", "ascii"] as const) {
+      const ctx = makeContext([makeAssistant(1_000_000_000_000, 99)]);
+      const wideConfig = { get: () => ({ codexQuota: false, iconMode }) } as any;
+      for (const width of [80, 160, 500]) {
+        const lines = buildStatusLines(
+          width, theme, ctx, "main", "high", wideConfig, undefined, undefined,
+          { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 10_000 }, 12345,
+        );
+        const plain = lines.join("\n").replace(/\u001b\[[0-9;]*m/g, "");
+        expect(plain).toContain("↑1000000M ↓99 TPS 12345");
+        expect(plain).toContain("$10001.25");
+        expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+      }
+    }
+  });
+
+  it("keeps TPS when the complete token module fits without its layout reserve", () => {
+    const width = 35;
+    const lines = buildStatusLines(
+      width, theme, makeContext([makeAssistant(10, 5, 2, 3)]),
+      "main", "high", config, undefined, undefined, undefined, 99,
+    );
+    const plain = lines.join("\n").replace(/\u001b\[[0-9;]*m/g, "");
+
+    expect(plain).toContain("↑10 ↓5 R2 W3 CH13.3% TPS 99");
+    for (const label of ["test-model", "high", "project", "main", "$1.25", "/1.0k"]) {
+      expect(plain).toContain(label);
+    }
+    expect(lines.every((line) => visibleWidth(line) <= width)).toBe(true);
+  });
+
   it("keeps token and cache usage instead of TPS on narrow status rows", () => {
     const lines = buildStatusLines(
       40,
@@ -1107,6 +1234,35 @@ describe("buildStatusLine provider quota modules", () => {
     ...makeContext([]),
     model: { id: "quota-model", provider, baseUrl, contextWindow: 1000 },
   } as unknown as ExtensionContext);
+
+  it("keeps quota rows stable across percentage and countdown boundaries", () => {
+    const quotaCases = [
+      [0, 1, 3600, 3600],
+      [91, 90, 3600, 3600],
+      [25, 25, 3600, 3540],
+      [25, 25, 36000, 35940],
+    ];
+    for (const [beforeUsed, afterUsed, beforeReset, afterReset] of quotaCases) {
+      for (let width = 40; width <= 180; width++) {
+        const render = (usedPercent: number, resetsInSeconds: number) => buildStatusLines(
+          width, theme, ctxWithModel("openai-codex"), "main", "high",
+          quotaConfig({ codexQuota: true }),
+          { getSnapshot: () => ({
+            primary: { usedPercent, windowMinutes: 300, resetsInSeconds },
+            secondary: { usedPercent, windowMinutes: 10080, resetsInSeconds: 0 },
+            capturedAt: Date.now(),
+          }) },
+        );
+        const first = render(beforeUsed, beforeReset);
+        const second = render(afterUsed, afterReset);
+        expect(second.length, `width ${width}, used ${beforeUsed}→${afterUsed}, reset ${beforeReset}→${afterReset}`).toBe(first.length);
+        expect(second.every((line) => visibleWidth(line) <= width)).toBe(true);
+        const plain = second.join("\n").replace(/\u001b\[[0-9;]*m/g, "");
+        expect(plain).toContain(`LIMIT 5h ${100 - afterUsed}%`);
+        expect(plain).toContain(`wk ${100 - afterUsed}%`);
+      }
+    }
+  });
 
   it("renders the Codex limit module from the injected store", () => {
     const line = buildStatusLine(

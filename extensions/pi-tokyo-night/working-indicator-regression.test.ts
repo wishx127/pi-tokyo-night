@@ -33,8 +33,11 @@ function makeFixture(mode: "tui" | "rpc" | "json" | "print" = "tui") {
 }
 
 function mountHost(fixture: ReturnType<typeof makeFixture>, withLoader = true) {
+  let onInput: ((data: string) => void) | undefined;
+  let onResize: (() => void) | undefined;
   const terminal = {
     columns: 120, rows: 40, write: vi.fn(), hideCursor() {}, showCursor() {}, stop() {},
+    start(input: (data: string) => void, resize: () => void) { onInput = input; onResize = resize; },
   };
   const runtime = piTui as unknown as { TuiMainScreen?: new (terminal: any) => TUI; TUI?: new (terminal: any) => TUI };
   const RuntimeTui = runtime.TuiMainScreen ?? runtime.TUI;
@@ -45,22 +48,43 @@ function mountHost(fixture: ReturnType<typeof makeFixture>, withLoader = true) {
   const history = Array.from({ length: 1000 }, () => "unchanged history");
   tui.addChild({ render: () => { renders++; return history; }, invalidate() {} });
   if (loader) tui.addChild(loader);
+  else tui.addChild({ render: () => ["", ""], invalidate() {} });
+  const aboveEditor = new piTui.Container();
+  aboveEditor.addChild(new piTui.Spacer(1));
+  const editorContainer = new piTui.Container();
+  const belowEditor = new piTui.Container();
+  tui.addChild(aboveEditor);
+  tui.addChild(editorContainer);
+  tui.addChild(belowEditor);
   const widgets = new Map<string, any>();
+  let editor: any;
+  let editorFactory: any;
   fixture.ui.theme = { name: "tokyo-night-dark", fg: (_color: string, text: string) => text };
-  fixture.ui.setWidget.mockImplementation((key: string, factory: any) => {
+  fixture.ui.setEditorComponent.mockImplementation((factory: any) => {
+    editorContainer.clear();
+    editorFactory = factory;
+    editor = factory?.(tui, { borderColor: () => "" }, piTui.getKeybindings());
+    if (editor) { editorContainer.addChild(editor); tui.setFocus(editor); }
+  });
+  fixture.ui.getEditorComponent.mockImplementation(() => editorFactory);
+  fixture.ui.setWidget.mockImplementation((key: string, factory: any, options: any) => {
     const previous = widgets.get(key);
-    if (previous) tui.removeChild(previous);
+    if (previous) { aboveEditor.removeChild(previous); belowEditor.removeChild(previous); }
     if (typeof factory === "function") {
       const component = factory(tui, fixture.ui.theme);
       widgets.set(key, component);
-      tui.addChild(component);
+      (options?.placement === "belowEditor" ? belowEditor : aboveEditor).addChild(component);
     }
   });
   fixture.ui.setWorkingIndicator.mockImplementation((options: any) => loader?.setIndicator(options));
   fixture.ui.setWorkingMessage.mockImplementation((message: string) => loader?.setMessage(message ?? "Working"));
   return {
+    terminal, tui, widgets,
+    get editor() { return editor; },
     get renders() { return renders; },
     reset() { renders = 0; },
+    input(data: string) { onInput?.(data); },
+    resize(rows: number) { terminal.rows = rows; onResize?.(); },
     stop() { loader?.stop(); tui.stop(); },
   };
 }
@@ -69,6 +93,143 @@ beforeEach(() => { vi.spyOn(TokyoConfigManager.prototype, "read").mockResolvedVa
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("working indicator compatibility regression", () => {
+  it("skips idle host frames when a short terminal hides every animated rain row", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    const host = mountHost(fixture, false);
+    host.terminal.rows = 8;
+    try {
+      await fixture.emit("session_start", {}, fixture.ctx);
+      host.editor.setText(Array.from({ length: 8 }, (_, index) => `input ${index}`).join("\n"));
+      host.tui.start();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(host.widgets.get("tokyo-rain").render(120)).toHaveLength(1);
+      host.reset();
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(host.renders).toBe(0);
+    } finally {
+      await fixture.emit("session_shutdown", {}, fixture.ctx);
+      host.stop();
+    }
+  });
+
+  it("resumes visible rain after the host handles a terminal resize", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    const host = mountHost(fixture, false);
+    host.terminal.rows = 8;
+    try {
+      await fixture.emit("session_start", {}, fixture.ctx);
+      host.editor.setText(Array.from({ length: 8 }, (_, index) => `input ${index}`).join("\n"));
+      host.tui.start();
+      await vi.advanceTimersByTimeAsync(1000);
+      host.reset();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(host.renders).toBe(0);
+
+      host.resize(40);
+      await vi.advanceTimersByTimeAsync(20);
+      expect(host.renders).toBeGreaterThan(0);
+      expect(host.widgets.get("tokyo-rain").render(120).length).toBeGreaterThan(1);
+      host.reset();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(host.renders).toBeGreaterThan(0);
+    } finally {
+      await fixture.emit("session_shutdown", {}, fixture.ctx);
+      host.stop();
+    }
+  });
+
+  it("resumes visible rain when native editor input frees its row budget", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    const host = mountHost(fixture, false);
+    host.terminal.rows = 12;
+    try {
+      await fixture.emit("session_start", {}, fixture.ctx);
+      host.editor.setText(Array.from({ length: 8 }, (_, index) => `input ${index}`).join("\n"));
+      host.tui.start();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(host.widgets.get("tokyo-rain").render(120)).toHaveLength(1);
+      host.reset();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(host.renders).toBe(0);
+
+      for (let line = 0; line < 7; line++) {
+        host.input("\u0015");
+        host.input("\u007f");
+      }
+      await vi.advanceTimersByTimeAsync(20);
+      expect(host.editor.getText()).not.toContain("\n");
+      expect(host.renders).toBeGreaterThan(0);
+      expect(host.widgets.get("tokyo-rain").render(120).length).toBeGreaterThan(1);
+      host.reset();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(host.renders).toBeGreaterThan(0);
+    } finally {
+      await fixture.emit("session_shutdown", {}, fixture.ctx);
+      host.stop();
+    }
+  });
+
+  it("keeps working messages refreshing while every rain body row is hidden", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    const host = mountHost(fixture);
+    host.terminal.rows = 8;
+    try {
+      await fixture.emit("session_start", {}, fixture.ctx);
+      host.editor.setText(Array.from({ length: 8 }, (_, index) => `input ${index}`).join("\n"));
+      host.tui.start();
+      await fixture.emit("agent_start", {}, fixture.ctx);
+      await vi.advanceTimersByTimeAsync(260);
+      expect(host.widgets.get("tokyo-rain").render(120)).toHaveLength(1);
+      host.reset();
+      fixture.ui.setWorkingMessage.mockClear();
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(host.renders).toBeGreaterThan(0);
+      expect(host.renders).toBeLessThanOrEqual(9);
+      expect(fixture.ui.setWorkingMessage).toHaveBeenCalled();
+      expect(stripAnsi(fixture.ui.setWorkingMessage.mock.calls.at(-1)?.[0])).toContain("Waiting");
+    } finally {
+      await fixture.emit("session_shutdown", {}, fixture.ctx);
+      host.stop();
+    }
+  });
+
+  it("skips unchanged visible rain frames and resumes when a new drop column appears", async () => {
+    vi.useFakeTimers();
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.4);
+    vi.mocked(TokyoConfigManager.prototype.read).mockImplementation(async function (this: TokyoConfigManager) {
+      this.set("rainMode", "manual");
+      this.set("rainTickMs", 50);
+      this.set("rainRows", 1);
+    });
+    const fixture = makeFixture();
+    const host = mountHost(fixture, false);
+    try {
+      await fixture.emit("session_start", {}, fixture.ctx);
+      host.tui.start();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(host.widgets.get("tokyo-rain").render(120)).toHaveLength(2);
+      host.reset();
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(host.renders).toBe(0);
+      random.mockReturnValue(0.6);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(host.renders).toBeGreaterThan(0);
+    } finally {
+      await fixture.emit("session_shutdown", {}, fixture.ctx);
+      host.stop();
+    }
+  });
+
   it.each([
     ["auto", 130, 9, 0, true],
     ["auto", 130, 9, 37, true],

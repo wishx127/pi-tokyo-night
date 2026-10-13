@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as piTui from "@earendil-works/pi-tui";
 import extension, {
   buildStatusWidgetLines,
   readPiThemeSetting,
@@ -243,6 +244,115 @@ describe("Pi theme settings persistence", () => {
 });
 
 describe("public layout and lifecycle contract", () => {
+  it("shrinks rain before a multiline editor pushes the dock beyond a short terminal", async () => {
+    vi.useFakeTimers();
+    vi.mocked(TokyoConfigManager.prototype.read).mockImplementation(async function (this: TokyoConfigManager) {
+      this.set("rainRows", 10);
+    });
+    const fixture = makeFixture();
+    await fixture.emit("session_start", {}, fixture.ctx);
+    const tui = {
+      requestRender: vi.fn(),
+      terminal: { rows: 16, columns: 40 },
+    };
+    const editor = fixture.editorFactory(tui, { borderColor: () => "" }, {});
+    const rain = fixture.widgets.get("tokyo-rain")(tui);
+    const status = fixture.widgets.get("tokyo-status")(tui, theme);
+    editor.setText(Array.from({ length: 12 }, (_, index) => `input ${index}`).join("\n"));
+
+    const rainLines = rain.render(40);
+    const dock = [...rainLines, ...editor.render(40), ...status.render(40)];
+    // Leave space for the host widget separator, working indicator and history.
+    expect(dock.length + 4).toBeLessThanOrEqual(16);
+    expect(rainLines[0]).toContain("╭");
+    expect(dock.at(-1)).toContain("╰");
+
+    tui.terminal.rows = 50;
+    expect(rain.render(40)).toHaveLength(11);
+    await fixture.emit("session_shutdown", {}, fixture.ctx);
+  });
+
+  it("keeps the rain preview visible in Studio when there is enough room", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", {}, fixture.ctx);
+    const tui = { requestRender: vi.fn(), terminal: { rows: 60, columns: 80 } };
+    fixture.editorFactory(tui, { borderColor: () => "" }, {});
+    const rain = fixture.widgets.get("tokyo-rain")(tui);
+    const studio = fixture.command.handler("", fixture.ctx);
+    await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
+
+    expect(rain.render(80).join("\n")).toContain("🌙");
+    tui.terminal.rows = 12;
+    expect(rain.render(80)).toHaveLength(1);
+    expect(rain.render(80)[0]).toContain("╭");
+    tui.terminal.rows = 60;
+    expect(rain.render(80).join("\n")).toContain("🌙");
+
+    fixture.customComponent.handleInput("\x1b");
+    await studio;
+    await fixture.emit("session_shutdown", {}, fixture.ctx);
+  });
+
+  it.each([true, false])("keeps animation in the viewport with long tool names and a multiline editor (owned indicator: %s)", async (ownedIndicator) => {
+    vi.useFakeTimers();
+    vi.mocked(TokyoConfigManager.prototype.read).mockImplementation(async function (this: TokyoConfigManager) {
+      this.set("rainRows", 10);
+    });
+    const fixture = makeFixture();
+    if (!ownedIndicator) delete fixture.ui.setWorkingIndicator;
+    await fixture.emit("session_start", {}, fixture.ctx);
+    const runtime = piTui as unknown as {
+      TuiMainScreen?: new (terminal: any) => piTui.TUI;
+      TUI?: new (terminal: any) => piTui.TUI;
+    };
+    const RuntimeTui = runtime.TuiMainScreen ?? runtime.TUI;
+    if (!RuntimeTui) throw new Error("Pi TUI constructor unavailable");
+    const terminal = {
+      columns: 80, rows: 24, write: vi.fn(), hideCursor() {}, showCursor() {}, stop() {},
+    };
+    const tui = new RuntimeTui(terminal);
+    const loader = new piTui.Loader(tui, (text) => text, (text) => text, "", { frames: [""] });
+    fixture.ui.setWorkingMessage.mockImplementation((message: string) => loader.setMessage(message ?? ""));
+    if (ownedIndicator) {
+      fixture.ui.setWorkingIndicator.mockImplementation((indicator: any) => loader.setIndicator(indicator));
+    } else {
+      loader.setIndicator({ frames: ["⠋"] });
+    }
+    const editor = fixture.editorFactory(tui, { borderColor: () => "" }, {});
+    editor.setText(Array.from({ length: 12 }, (_, index) => `input ${index}`).join("\n"));
+    const rain = fixture.widgets.get("tokyo-rain")(tui);
+    const status = fixture.widgets.get("tokyo-status")(tui, theme);
+    tui.addChild({ render: () => Array.from({ length: 100 }, () => "completed history"), invalidate() {} });
+    tui.addChild(loader);
+    tui.addChild(new piTui.Spacer(1));
+    tui.addChild(rain);
+    tui.addChild(editor);
+    tui.addChild(status);
+    try {
+      await fixture.emit("agent_start", {}, fixture.ctx);
+      await fixture.emit("tool_execution_start", {
+        toolCallId: "long-tool", toolName: "read_".repeat(40),
+      }, fixture.ctx);
+      if (!ownedIndicator) {
+        const message = fixture.ui.setWorkingMessage.mock.calls.at(-1)![0];
+        terminal.columns = piTui.visibleWidth(message) + 2;
+      }
+      const width = terminal.columns;
+      tui.requestRender();
+      await vi.advanceTimersByTimeAsync(100);
+      const fullRedraws = tui.fullRedraws;
+      const dock = [...loader.render(width), "", ...rain.render(width), ...editor.render(width), ...status.render(width)];
+      expect(dock.length).toBeLessThan(24);
+      await vi.advanceTimersByTimeAsync(1500);
+      expect(tui.fullRedraws).toBe(fullRedraws);
+    } finally {
+      await fixture.emit("session_shutdown", {}, fixture.ctx);
+      loader.stop();
+      tui.stop();
+    }
+  });
+
   it.each([true, false])("uses working and tool refresh intervals with the panel set to %s", async (panel) => {
     vi.useFakeTimers();
     vi.mocked(TokyoConfigManager.prototype.read).mockImplementation(async function (this: TokyoConfigManager) {

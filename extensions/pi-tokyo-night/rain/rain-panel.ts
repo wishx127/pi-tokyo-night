@@ -103,14 +103,27 @@ export interface RainPanelDependencies {
   rain: RainAnimationManager;
   getTheme?: () => Theme;
   palette?: TokyoNightThemePalette;
+  /** Total segment budget, including its top edge; framed panels always keep that edge. */
+  getAvailableRows?: (width: number) => number;
+}
+
+function paletteSignature(palette: TokyoNightThemePalette | undefined): string {
+  return palette ? [
+    palette.fg("rain", RAIN_DROP), palette.fg("star", STAR),
+    palette.fg("moon", MOON), palette.fg("frame", "│"),
+  ].join("\0") : "";
 }
 
 type RainPanelCacheEntry = {
   theme: Theme | undefined;
+  colors: string;
   revision: number;
   width: number;
   frameEnabled: boolean;
-  rainRows: number;
+  effectiveRows: number;
+  configuredRows: number;
+  terminalRows: number | undefined;
+  terminalColumns: number | undefined;
   lines: string[];
 };
 
@@ -118,6 +131,7 @@ export class RainPanelComponent implements Component {
   private disposed = false;
   private invalidated = true;
   private cache: RainPanelCacheEntry | undefined;
+  private pendingFrame: RainPanelCacheEntry | undefined;
 
   constructor(
     private readonly tui: TUI,
@@ -127,6 +141,44 @@ export class RainPanelComponent implements Component {
   invalidate(): void {
     this.invalidated = true;
     this.cache = undefined;
+    this.pendingFrame = undefined;
+  }
+
+  /** Whether a rain tick can change the last rendered panel. */
+  hasVisibleChanges(): boolean {
+    if (this.disposed) return false;
+    try {
+      const config = this.dependencies.config.get();
+      if (!config.panel) return false;
+      const cached = this.cache;
+      if (this.invalidated || !cached) return true;
+      if (cached.frameEnabled !== config.editorFrame ||
+        cached.configuredRows !== config.rainRows ||
+        cached.terminalRows !== this.tui.terminal?.rows ||
+        cached.terminalColumns !== this.tui.terminal?.columns) return true;
+      const theme = this.dependencies.getTheme?.();
+      const palette = theme ? createTokyoNightPalette(theme) : this.dependencies.palette;
+      const colors = paletteSignature(palette);
+      if (cached.theme !== theme || cached.colors !== colors) return true;
+      if (cached.effectiveRows === 0) return false;
+      const lines = renderRainPanelLines({
+        width: cached.width,
+        frameEnabled: cached.frameEnabled,
+        rainRows: cached.effectiveRows,
+        snapshot: this.dependencies.rain.getSnapshot(),
+        palette,
+      });
+      this.pendingFrame = {
+        ...cached, revision: this.dependencies.rain.frameRevision, lines,
+      };
+      return lines.length !== cached.lines.length ||
+        lines.some((line, index) => line !== cached.lines[index]);
+    } catch {
+      // Let the actual render report errors; uncertain frames must not freeze
+      // the animation or stop its clock through the manager's failure guard.
+      this.pendingFrame = undefined;
+      return true;
+    }
   }
 
   render(width: number): string[] {
@@ -134,49 +186,71 @@ export class RainPanelComponent implements Component {
 
     try {
       const config = this.dependencies.config.get();
-      if (!config.panel) return [];
+      if (!config.panel) {
+        this.invalidate();
+        return [];
+      }
 
       const theme = this.dependencies.getTheme?.();
       const palette = theme
         ? createTokyoNightPalette(theme)
         : this.dependencies.palette;
+      const colors = paletteSignature(palette);
       const outputWidth = Math.max(0, Math.floor(width));
+      const topRows = config.editorFrame ? 1 : 0;
+      const availableRows = this.dependencies.getAvailableRows?.(outputWidth)
+        ?? config.rainRows + topRows;
+      const effectiveRows = Math.min(config.rainRows, Math.max(0,
+        (Number.isFinite(availableRows) ? Math.floor(availableRows) : 0) - topRows,
+      ));
       this.dependencies.rain.setRenderWidth(
         getFrameContentWidth(outputWidth, config.editorFrame),
       );
       const revision = this.dependencies.rain.frameRevision;
-      const cached = this.cache;
+      const cached = this.pendingFrame ?? this.cache;
       if (
         !this.invalidated &&
         cached &&
         cached.theme === theme &&
+        cached.colors === colors &&
         cached.revision === revision &&
         cached.width === outputWidth &&
         cached.frameEnabled === config.editorFrame &&
-        cached.rainRows === config.rainRows
+        cached.configuredRows === config.rainRows &&
+        cached.terminalRows === this.tui.terminal?.rows &&
+        cached.terminalColumns === this.tui.terminal?.columns &&
+        cached.effectiveRows === effectiveRows
       ) {
+        this.cache = cached;
+        this.pendingFrame = undefined;
         return cached.lines;
       }
 
       const rendered = renderRainPanelLines({
         width: outputWidth,
         frameEnabled: config.editorFrame,
-        rainRows: config.rainRows,
+        rainRows: effectiveRows,
         snapshot: this.dependencies.rain.getSnapshot(),
         palette,
       });
       const lines = rendered;
       this.cache = {
         theme,
+        colors,
         revision,
         width: outputWidth,
         frameEnabled: config.editorFrame,
-        rainRows: config.rainRows,
+        effectiveRows,
+        configuredRows: config.rainRows,
+        terminalRows: this.tui.terminal?.rows,
+        terminalColumns: this.tui.terminal?.columns,
         lines,
       };
       this.invalidated = false;
+      this.pendingFrame = undefined;
       return lines;
     } catch (error) {
+      this.invalidate();
       handleExtensionError(error, "rain panel render");
       return [];
     }
@@ -190,5 +264,6 @@ export class RainPanelComponent implements Component {
     this.disposed = true;
     this.invalidated = false;
     this.cache = undefined;
+    this.pendingFrame = undefined;
   }
 }
