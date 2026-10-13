@@ -649,10 +649,12 @@ export class NeonStudioComponent implements Component {
     const rainRows: StudioRow[] = [
       {
         label: "Rain Mode",
-        value: config.rainMode === "auto" ? "Auto" : "Manual",
+        value: config.rainMode === "auto" ? "Auto" : config.rainMode === "static" ? "Static" : "Manual",
         description: config.rainMode === "auto"
-          ? "Follow Pi activity with automatic rain speed and density"
-          : "Use the saved Rain Tick and Max Rain Drops values",
+          ? "Slow rain slightly when idle; speed and density follow Pi activity"
+          : config.rainMode === "static"
+            ? "Keep the scene visible without rain animation"
+            : "Use the saved Rain Tick and Max Rain Drops values",
       },
       {
         label: "Rain Rows",

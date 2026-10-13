@@ -32,6 +32,8 @@ describe("Pi compatibility fixture", () => {
       ),
       "@earendil-works/pi-server": "0.85.0",
     });
+    expect(getCompatibilityPackages("1.1.0")).toContain("@earendil-works/pi-server");
+    expect(getCompatibilityPackages("1.2.0")).toEqual(PI_CORE_PACKAGES);
   });
 
   it("roots dependency installation in the isolated runtime", () => {

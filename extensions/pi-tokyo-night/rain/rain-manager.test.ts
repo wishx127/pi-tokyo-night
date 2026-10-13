@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { RainAnimationManager } from "./rain-manager";
 import { TokyoConfigManager, DEFAULT_CONFIG } from "../core/config";
+import { resolveRainRuntimeProfile } from "./rain-profile";
 
 // ---------------------------------------------------------------------------
 // Minimal fake config that doesn't touch the filesystem.
@@ -18,6 +19,12 @@ function makeConfig(overrides?: Partial<typeof DEFAULT_CONFIG>): TokyoConfigMana
   return mgr;
 }
 
+// Hold cadence fixed here so density transitions are tested independently of activity speed.
+function densityProfile(config: TokyoConfigManager, activity: Parameters<typeof resolveRainRuntimeProfile>[1]) {
+  const profile = resolveRainRuntimeProfile(config.get(), activity);
+  return config.get().rainMode === "auto" ? { ...profile, tickMs: 130 } : profile;
+}
+
 describe("RainAnimationManager", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -29,6 +36,130 @@ describe("RainAnimationManager", () => {
   });
 
   // ── 1. start() creates ONE timer using the current rainTickMs ──────────────
+
+  it("gradually increases auto rain over 800ms without restarting for repeated activity", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.4);
+    const config = makeConfig({ rainRows: 1 });
+    const render = vi.fn();
+    const manager = new RainAnimationManager(config, { requestRender: render });
+    manager.start(densityProfile(config, "idle"));
+    vi.advanceTimersByTime(130);
+    expect(manager.getSnapshot().drops).toHaveLength(2);
+
+    const before = manager.getSnapshot();
+    const busy = densityProfile(config, "tools");
+    manager.applyProfile(busy);
+    expect(manager.getSnapshot()).toEqual(before);
+    const counts: number[] = [];
+    for (let frame = 0; frame < 7; frame++) {
+      manager.applyProfile(busy);
+      vi.advanceTimersByTime(130);
+      counts.push(manager.getSnapshot().drops.length);
+    }
+
+    expect(counts).toEqual([2, 3, 3, 4, 4, 5, 5]);
+    expect(render).toHaveBeenCalledTimes(8);
+    expect(vi.getTimerCount()).toBe(1);
+    manager.stop();
+  });
+
+  it("keeps a static scene without timers and can resume manual animation", () => {
+    const config = makeConfig();
+    config.set("rainMode", "static");
+    expect(config.get().rainMode).toBe("static");
+    const render = vi.fn();
+    const manager = new RainAnimationManager(config, { requestRender: render });
+    manager.start(resolveRainRuntimeProfile(config.get(), "idle"));
+    expect(manager.getSnapshot().stars.length).toBeGreaterThan(0);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(5000);
+    expect(render).not.toHaveBeenCalled();
+    config.set("rainMode", "manual");
+    manager.applyProfile(resolveRainRuntimeProfile(config.get(), "idle"));
+    vi.advanceTimersByTime(130);
+    expect(render).toHaveBeenCalledOnce();
+    config.set("rainMode", "static");
+    manager.applyProfile(resolveRainRuntimeProfile(config.get(), "idle"));
+    const snapshot = manager.getSnapshot();
+    vi.advanceTimersByTime(5000);
+    expect(manager.getSnapshot()).toEqual(snapshot);
+    expect(vi.getTimerCount()).toBe(0);
+    manager.stop();
+  });
+
+  it("reverses an unfinished density change from the currently visible rain level", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.4);
+    const config = makeConfig({ rainRows: 1 });
+    const manager = new RainAnimationManager(config, { requestRender: vi.fn() });
+    manager.start(densityProfile(config, "idle"));
+    vi.advanceTimersByTime(130);
+    manager.applyProfile(densityProfile(config, "tools"));
+    vi.advanceTimersByTime(390);
+    const before = manager.getSnapshot();
+    expect(before.drops).toHaveLength(3);
+
+    manager.applyProfile(densityProfile(config, "idle"));
+    expect(manager.getSnapshot()).toEqual(before);
+    const counts: number[] = [];
+    for (let frame = 0; frame < 7; frame++) {
+      vi.advanceTimersByTime(130);
+      counts.push(manager.getSnapshot().drops.length);
+    }
+    expect(counts).toEqual([3, 3, 2, 2, 2, 2, 2]);
+    manager.stop();
+  });
+
+  it("reaches the density target after a wall-clock pause without advancing missed rain steps", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.4);
+    const config = makeConfig({ rainRows: 10 });
+    const manager = new RainAnimationManager(config, { requestRender: vi.fn() });
+    manager.start(densityProfile(config, "idle"));
+    vi.advanceTimersByTime(130);
+    const revision = manager.frameRevision;
+    manager.applyProfile(densityProfile(config, "tools"));
+
+    vi.setSystemTime(Date.now() + 5000);
+    vi.advanceTimersByTime(130);
+    const drops = manager.getSnapshot().drops;
+    expect(drops.filter((drop) => drop.row === 0)).toHaveLength(5);
+    expect(drops.filter((drop) => drop.row === 1)).toHaveLength(2);
+    expect(manager.frameRevision).toBe(revision + 1);
+    manager.stop();
+  });
+
+  it("applies manual density immediately and freezes an unfinished transition in static mode", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.4);
+    const config = makeConfig({ rainRows: 1 });
+    const manager = new RainAnimationManager(config, { requestRender: vi.fn() });
+    manager.start(densityProfile(config, "idle"));
+    manager.applyProfile(densityProfile(config, "tools"));
+    vi.advanceTimersByTime(130);
+
+    config.set("rainMode", "manual");
+    config.set("maxRainDrops", 50);
+    manager.applyProfile(densityProfile(config, "idle"));
+    vi.advanceTimersByTime(130);
+    expect(manager.getSnapshot().drops).toHaveLength(6);
+
+    config.set("rainMode", "auto");
+    manager.applyProfile(densityProfile(config, "idle"));
+    vi.advanceTimersByTime(130);
+    config.set("rainMode", "static");
+    manager.applyProfile(densityProfile(config, "idle"));
+    const frozen = manager.getSnapshot();
+    vi.advanceTimersByTime(5000);
+    expect(manager.getSnapshot()).toEqual(frozen);
+    expect(vi.getTimerCount()).toBe(0);
+
+    config.set("rainMode", "manual");
+    config.set("rainTickMs", 50);
+    config.set("maxRainDrops", 5);
+    manager.applyProfile(densityProfile(config, "idle"));
+    vi.advanceTimersByTime(50);
+    expect(manager.getSnapshot().drops).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(1);
+    manager.stop();
+  });
 
   it("start() creates a timer using rainTickMs and triggers one tick per interval", () => {
     const config = makeConfig({ rainTickMs: 130 });

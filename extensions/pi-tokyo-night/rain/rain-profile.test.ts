@@ -4,9 +4,9 @@ import { resolveRainRuntimeProfile } from "./rain-profile";
 
 describe("resolveRainRuntimeProfile", () => {
   it.each([
-    ["idle", { tickMs: 160, maxDrops: 10 }],
-    ["active", { tickMs: 130, maxDrops: 25 }],
-    ["tools", { tickMs: 110, maxDrops: 35 }],
+    ["idle", { tickMs: 160, maxDrops: 10, densityTransitionMs: 800 }],
+    ["active", { tickMs: 130, maxDrops: 25, densityTransitionMs: 800 }],
+    ["tools", { tickMs: 110, maxDrops: 35, densityTransitionMs: 800 }],
   ] as const)("maps auto %s activity to its rain profile", (activity, expected) => {
     expect(resolveRainRuntimeProfile({
       ...DEFAULT_CONFIG,

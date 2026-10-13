@@ -15,6 +15,8 @@ export interface RainFrameSnapshot {
 export interface RainManagerDependencies {
   /** Called once per animation tick (no arguments). */
   requestRender(): void;
+  /** Share the extension's UI clock; standalone users retain interval scheduling. */
+  scheduleTick?(tick: () => void, intervalMs: number): () => void;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────
@@ -48,12 +50,19 @@ const INITIAL_STARS: ReadonlyArray<{ readonly col: number; readonly row: number 
 export class RainAnimationManager {
   private config: TokyoConfigManager;
   private dependencies: RainManagerDependencies;
-  private interval: ReturnType<typeof setInterval> | undefined;
+  private cancelTick: (() => void) | undefined;
+  private active = false;
   private drops: Array<{ col: number; row: number }> = [];
   private lastWidth = 80;
   private stars: Array<{ col: number; row: number }> = [];
   private consecutiveRenderFailures = 0;
   private profile: RainRuntimeProfile | undefined;
+  private densityTransition: {
+    from: number;
+    to: number;
+    startedAt: number;
+    durationMs: number;
+  } | undefined;
   private scheduledTickMs: number | undefined;
   private pendingTickMs: number | undefined;
   private revision = 0;
@@ -76,10 +85,9 @@ export class RainAnimationManager {
    */
   start(profile?: RainRuntimeProfile): void {
     // Clear any previously running timer first (idempotency).
-    if (this.interval !== undefined) {
-      clearInterval(this.interval);
-      this.interval = undefined;
-    }
+    this.cancelTick?.();
+    this.cancelTick = undefined;
+    this.active = true;
 
     // Reset animation state only for a new animation lifecycle.
     this.drops = [];
@@ -88,16 +96,36 @@ export class RainAnimationManager {
     this.consecutiveRenderFailures = 0;
     const config = this.config.get();
     this.profile = profile;
+    this.densityTransition = undefined;
     this.revision += 1;
     this.schedule(profile?.tickMs ?? config.rainTickMs);
   }
 
   /** Apply speed and density without resetting the visible rain frame. */
   applyProfile(profile: RainRuntimeProfile): void {
+    const currentDensity = this.getDensity();
+    const sameDensityTarget = this.profile?.maxDrops === profile.maxDrops &&
+      this.profile?.densityTransitionMs === profile.densityTransitionMs;
     this.profile = profile;
-    if (this.interval === undefined) return;
+    if (!sameDensityTarget) {
+      this.densityTransition = this.active && profile.densityTransitionMs && currentDensity !== profile.maxDrops
+        ? {
+            from: currentDensity,
+            to: profile.maxDrops,
+            startedAt: Date.now(),
+            durationMs: profile.densityTransitionMs,
+          }
+        : undefined;
+    }
+    if (!this.active) return;
     if (this.scheduledTickMs === profile.tickMs) {
       this.pendingTickMs = undefined;
+      return;
+    }
+    if (profile.tickMs === 0 || this.scheduledTickMs === 0) {
+      this.cancelTick?.();
+      this.cancelTick = undefined;
+      this.schedule(profile.tickMs);
       return;
     }
     // Keep the current interval until its next tick. Replacing it here can
@@ -110,21 +138,21 @@ export class RainAnimationManager {
    * repeatedly (idempotent).
    */
   stop(): void {
-    if (this.interval !== undefined) {
-      clearInterval(this.interval);
-      this.interval = undefined;
-    }
+    this.active = false;
+    this.cancelTick?.();
+    this.cancelTick = undefined;
     this.drops = [];
     this.consecutiveRenderFailures = 0;
     this.profile = undefined;
+    this.densityTransition = undefined;
     this.scheduledTickMs = undefined;
     this.pendingTickMs = undefined;
     this.revision += 1;
   }
 
-  /** True iff a timer is currently active. */
+  /** True while the scene is active, including a static scene without a timer. */
   get isRunning(): boolean {
-    return this.interval !== undefined;
+    return this.active;
   }
 
   /** Monotonic identity of the current animation frame. */
@@ -155,25 +183,38 @@ export class RainAnimationManager {
 
   // ── Private tick ─────────────────────────────────────────────────────────
 
+  private getDensity(): number {
+    const transition = this.densityTransition;
+    if (!transition) return this.profile?.maxDrops ?? this.config.get().maxRainDrops;
+    const progress = Math.max(0, Math.min(1, (Date.now() - transition.startedAt) / transition.durationMs));
+    return transition.from + (transition.to - transition.from) * progress;
+  }
+
   private schedule(tickMs: number): void {
     this.scheduledTickMs = tickMs;
     this.pendingTickMs = undefined;
-    this.interval = setInterval(() => this.tick(), tickMs);
-    this.interval.unref?.();
+    if (tickMs === 0) return;
+    if (this.dependencies.scheduleTick) {
+      this.cancelTick = this.dependencies.scheduleTick(() => this.tick(), tickMs);
+    } else {
+      const interval = setInterval(() => this.tick(), tickMs);
+      interval.unref?.();
+      this.cancelTick = () => clearInterval(interval);
+    }
   }
 
   private applyPendingCadence(): void {
     const pending = this.pendingTickMs;
     if (pending === undefined || pending === this.scheduledTickMs) return;
-    if (this.interval !== undefined) clearInterval(this.interval);
-    this.interval = undefined;
+    this.cancelTick?.();
+    this.cancelTick = undefined;
     this.schedule(pending);
   }
 
   /** Animation tick: advance drops, spawn new ones, then notify the renderer. */
   private tick(): void {
     const cfg = this.config.get();
-    const maxDrops = this.profile?.maxDrops ?? cfg.maxRainDrops;
+    const maxDrops = Math.round(this.getDensity());
 
     // Advance existing drops.
     for (const drop of this.drops) {

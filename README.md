@@ -77,7 +77,7 @@ Open with `/tokyo-night`. Neon Studio uses Pi's standard custom UI area—not an
 | Appearance | Automatic/Dark/Light Theme, Top Panel, Interface Frame, Status Icons    |
 | Status     | Model, Thinking, Path, Git Branch, Provider Limit, Codex Limit, Kimi Limit, Tokens, Cost, Context |
 | Usage      | 3/7/30-day or all-conversation local token trends, Top 5 model series, and filterable legend      |
-| Rain       | Rain Mode, Rain Rows; Manual also exposes Rain Tick and Max Rain Drops                            |
+| Rain       | Auto / Manual / Static, Rain Rows; Manual also exposes Rain Tick and Max Rain Drops                |
 
 Extension settings are persisted in an extension-owned file:
 

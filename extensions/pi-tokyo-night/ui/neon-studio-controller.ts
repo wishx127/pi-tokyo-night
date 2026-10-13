@@ -366,9 +366,11 @@ export class NeonStudioController {
 
   private changeRain(selectedIndex: number, direction: number): boolean {
     if (selectedIndex === 0) {
+      const modes = ["auto", "manual", "static"] as const;
+      const index = modes.indexOf(this.config.get().rainMode);
       this.config.set(
         "rainMode",
-        this.config.get().rainMode === "auto" ? "manual" : "auto",
+        modes[(index + (direction < 0 ? -1 : 1) + modes.length) % modes.length],
       );
       this.dependencies.onConfigChange({ kind: "config", key: "rainMode" });
       return true;

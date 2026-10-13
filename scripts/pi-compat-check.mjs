@@ -27,13 +27,13 @@ export const PI_CORE_PACKAGES = Object.freeze([
 ]);
 export const PI_SERVER_PACKAGE = "@earendil-works/pi-server";
 
-/** Pi 0.84+ exposes experimental server exports from the public package. */
+/** Pi 0.84–1.1 exposes server exports; Pi 1.2 removes that package. */
 export function getCompatibilityPackages(piVersion) {
   const [major = 0, minor = 0] = piVersion
     .split(".")
     .slice(0, 2)
     .map((part) => Number.parseInt(part, 10));
-  const needsServerPackage = major > 0 || (major === 0 && minor >= 84);
+  const needsServerPackage = (major === 0 && minor >= 84) || (major === 1 && minor < 2);
   return needsServerPackage
     ? [...PI_CORE_PACKAGES, PI_SERVER_PACKAGE]
     : PI_CORE_PACKAGES;

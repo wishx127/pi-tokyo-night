@@ -243,6 +243,69 @@ describe("Pi theme settings persistence", () => {
 });
 
 describe("public layout and lifecycle contract", () => {
+  it.each([true, false])("uses working and tool refresh intervals with the panel set to %s", async (panel) => {
+    vi.useFakeTimers();
+    vi.mocked(TokyoConfigManager.prototype.read).mockImplementation(async function (this: TokyoConfigManager) {
+      this.set("panel", panel);
+    });
+    const fixture = makeFixture();
+    await fixture.emit("session_start", {}, fixture.ctx);
+    const requestRender = vi.fn();
+    fixture.widgets.get("tokyo-status")({ requestRender }, theme);
+    await fixture.emit("agent_start", {}, fixture.ctx);
+    requestRender.mockClear();
+    await vi.advanceTimersByTimeAsync(129);
+    expect(requestRender).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(requestRender).toHaveBeenCalledOnce();
+
+    await fixture.emit("tool_execution_start", { toolCallId: "tool", toolName: "read" }, fixture.ctx);
+    requestRender.mockClear();
+    await vi.advanceTimersByTimeAsync(109);
+    expect(requestRender).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(requestRender).toHaveBeenCalledOnce();
+
+    await fixture.emit("tool_execution_end", { toolCallId: "tool" }, fixture.ctx);
+    requestRender.mockClear();
+    await vi.advanceTimersByTimeAsync(129);
+    expect(requestRender).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(requestRender).toHaveBeenCalledOnce();
+    await fixture.emit("session_shutdown", {}, fixture.ctx);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not rescan pending usage on animation renders and reconciles delayed persistence", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    const entries: any[] = [];
+    const getEntries = vi.fn(() => entries);
+    fixture.ctx.sessionManager.getEntries = getEntries;
+    await fixture.emit("session_start", {}, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")({ requestRender: vi.fn() }, theme);
+    const usage = { input: 10, output: 5, cost: { total: 0.01 } };
+    await fixture.emit("message_update", {
+      assistantMessageEvent: { type: "text_delta", partial: { usage } },
+    }, fixture.ctx);
+    await fixture.emit("message_end", { message: { role: "assistant", usage } }, fixture.ctx);
+    status.render(500);
+    getEntries.mockClear();
+
+    for (let frame = 0; frame < 100; frame++) status.render(500);
+    expect(getEntries).not.toHaveBeenCalled();
+
+    entries.push({ type: "message", message: { role: "assistant", usage } });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(status.render(500).join("\n")).toContain("↑10 ↓5");
+    expect(status.render(500).join("\n")).not.toContain("↑20 ↓10");
+    expect(getEntries.mock.calls.length).toBeLessThanOrEqual(2);
+    getEntries.mockClear();
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(getEntries).not.toHaveBeenCalled();
+    await fixture.emit("session_shutdown", {}, fixture.ctx);
+  });
+
   it("keeps narrow status output bounded without selector-specific state", () => {
     for (const width of [0, 1, 2, 9]) {
       expect(() => buildStatusWidgetLines(width, "status")).not.toThrow();
@@ -495,6 +558,9 @@ describe("public layout and lifecycle contract", () => {
 
   it("skips live usage redraws when Tokens, Cost, and Context are hidden", async () => {
     vi.useFakeTimers();
+    vi.mocked(TokyoConfigManager.prototype.read).mockImplementation(async function (this: TokyoConfigManager) {
+      this.set("panel", false);
+    });
     let now = 0;
     vi.spyOn(performance, "now").mockImplementation(() => now);
     const fixture = makeFixture();
@@ -515,10 +581,9 @@ describe("public layout and lifecycle contract", () => {
     fixture.customComponent.handleInput("\r");
     fixture.customComponent.handleInput("\x1b");
     await studio;
-    await vi.advanceTimersByTimeAsync(33);
+    await vi.advanceTimersByTimeAsync(100);
     statusTui.requestRender.mockClear();
 
-    await fixture.emit("agent_start", {}, fixture.ctx);
     await fixture.emit(
       "message_update",
       {
@@ -537,7 +602,7 @@ describe("public layout and lifecycle contract", () => {
       },
       fixture.ctx,
     );
-    await vi.advanceTimersByTimeAsync(33);
+    await vi.advanceTimersByTimeAsync(100);
     now = 1000;
     await fixture.emit("message_update", {
       assistantMessageEvent: {
@@ -545,7 +610,7 @@ describe("public layout and lifecycle contract", () => {
         partial: { usage: { output: 50 } },
       },
     }, fixture.ctx);
-    await vi.advanceTimersByTimeAsync(33);
+    await vi.advanceTimersByTimeAsync(100);
 
     expect(statusTui.requestRender).not.toHaveBeenCalled();
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
@@ -583,8 +648,8 @@ describe("public layout and lifecycle contract", () => {
 
     expect(status.render(500).join("\n")).toContain("↑120 ↓34 R40 W6");
     expect(status.render(500).join("\n")).toContain("$0.03");
-    await vi.advanceTimersByTimeAsync(33);
-    expect(statusTui.requestRender).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(99);
+    expect(statusTui.requestRender).not.toHaveBeenCalled();
 
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
@@ -1142,6 +1207,7 @@ describe("public layout and lifecycle contract", () => {
     });
     persisted = true;
 
+    await vi.advanceTimersByTimeAsync(50);
     const output = status.render(500).join("\n");
     expect(output).toContain("↑10 ↓5 R20 CH66.7%");
     expect(output).not.toContain("↑20 ↓10 R40");
@@ -1236,10 +1302,18 @@ describe("public layout and lifecycle contract", () => {
 
     expect(status.render(500).join("\n")).toContain("↑10 ↓5");
     expect(status.render(500).join("\n")).not.toContain("↑20 ↓10");
+    // The next reply can report exactly the same usage before a retry runs.
+    await fixture.emit("message_update", {
+      assistantMessageEvent: {
+        type: "text_delta",
+        partial: { usage: { input: 10, output: 5, cost: { total: 0.01 } } },
+      },
+    }, fixture.ctx);
+    expect(status.render(500).join("\n")).toContain("↑20 ↓10");
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
-  it("keeps the status redraw scheduled during frequent stream updates", async () => {
+  it("lets host stream frames carry status updates without a separate redraw", async () => {
     vi.useFakeTimers();
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
@@ -1266,7 +1340,7 @@ describe("public layout and lifecycle contract", () => {
     await update(2);
     await vi.advanceTimersByTimeAsync(13);
 
-    expect(statusTui.requestRender).toHaveBeenCalledOnce();
+    expect(statusTui.requestRender).not.toHaveBeenCalled();
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
@@ -1432,6 +1506,12 @@ describe("public layout and lifecycle contract", () => {
     expect(rain.render(80).join("\n")).toBe(activeTickFrame);
     await vi.advanceTimersByTimeAsync(1);
     expect(rain.render(80).join("\n")).not.toBe(activeTickFrame);
+    const firstToolFrame = rain.render(80).join("\n");
+    await vi.advanceTimersByTimeAsync(109);
+    expect(rain.render(80).join("\n")).toBe(firstToolFrame);
+    vi.mocked(Math.random).mockReturnValue(0.6);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(rain.render(80).join("\n")).not.toBe(firstToolFrame);
 
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
@@ -1448,14 +1528,26 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
     tui.requestRender.mockClear();
     await vi.advanceTimersByTimeAsync(1000);
-    expect(tui.requestRender).toHaveBeenCalledTimes(20);
+    expect(tui.requestRender).toHaveBeenCalledTimes(7);
 
     await fixture.emit("agent_end", { type: "agent_end" }, fixture.ctx);
-    expect(tui.requestRender).toHaveBeenCalledTimes(21);
+    expect(tui.requestRender).toHaveBeenCalledTimes(7);
     await vi.advanceTimersByTimeAsync(130);
-    expect(tui.requestRender).toHaveBeenCalledTimes(22);
+    expect(tui.requestRender).toHaveBeenCalledTimes(8);
 
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it.each(["This extension instance is stale", "render unavailable"])("stops failed asynchronous refreshes safely: %s", async (message) => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", {}, fixture.ctx);
+    const requestRender = vi.fn(() => { throw new Error(message); });
+    fixture.widgets.get("tokyo-rain")({ requestRender }).render(80);
+    await expect(vi.advanceTimersByTimeAsync(3000)).resolves.not.toThrow();
+    expect(requestRender).toHaveBeenCalledTimes(message.includes("stale") ? 1 : 3);
+    expect(vi.getTimerCount()).toBe(0);
+    await fixture.emit("session_shutdown", {}, fixture.ctx);
   });
 
   it("keeps rain refreshes alive when working UI updates fail", async () => {
@@ -1474,8 +1566,8 @@ describe("public layout and lifecycle contract", () => {
 
     await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
     expect(tui.requestRender).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(100);
-    expect(tui.requestRender).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(130);
+    expect(tui.requestRender).toHaveBeenCalledTimes(2);
 
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
@@ -2013,7 +2105,7 @@ describe("public layout and lifecycle contract", () => {
       fixture.customComponent.handleInput("\x1b[B");
     }
     fixture.customComponent.handleInput("\r");
-    await vi.advanceTimersByTimeAsync(33);
+    await vi.advanceTimersByTimeAsync(100);
 
     expect(vi.getTimerCount()).toBe(1);
     fixture.customComponent.handleInput("\x1b");
@@ -2024,10 +2116,12 @@ describe("public layout and lifecycle contract", () => {
 
   it("restarts the rain animation with the previewed tick interval", async () => {
     vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.4);
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
     const rainTui = { requestRender: vi.fn() };
-    fixture.widgets.get("tokyo-rain")(rainTui).render(80);
+    const rain = fixture.widgets.get("tokyo-rain")(rainTui);
+    rain.render(80);
 
     const studio = fixture.command.handler("", fixture.ctx);
     await Promise.resolve();
@@ -2038,15 +2132,18 @@ describe("public layout and lifecycle contract", () => {
     fixture.customComponent.handleInput("\x1b[B");
     fixture.customComponent.handleInput("\x1b[B");
     fixture.customComponent.handleInput("\x1b[C");
-    rainTui.requestRender.mockClear();
-
-    await vi.advanceTimersByTimeAsync(160);
-    expect(rainTui.requestRender).toHaveBeenCalledOnce();
-    rainTui.requestRender.mockClear();
-    await vi.advanceTimersByTimeAsync(139);
-    expect(rainTui.requestRender).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(100);
+    const beforeFirstTick = rain.render(80).join("\n");
+    await vi.advanceTimersByTimeAsync(59);
+    expect(rain.render(80).join("\n")).toBe(beforeFirstTick);
     await vi.advanceTimersByTimeAsync(1);
-    expect(rainTui.requestRender).toHaveBeenCalledOnce();
+    const firstTick = rain.render(80).join("\n");
+    expect(firstTick).not.toBe(beforeFirstTick);
+    await vi.advanceTimersByTimeAsync(139);
+    expect(rain.render(80).join("\n")).toBe(firstTick);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(rain.render(80).join("\n")).not.toBe(firstTick);
+    expect(rainTui.requestRender).toHaveBeenCalled();
 
     fixture.customComponent.handleInput("\x1b");
     await studio;
@@ -2064,7 +2161,7 @@ describe("public layout and lifecycle contract", () => {
     await Promise.resolve();
     fixture.customComponent.handleInput("\x1b[B");
     fixture.customComponent.handleInput("\r");
-    await vi.advanceTimersByTimeAsync(33);
+    await vi.advanceTimersByTimeAsync(160);
 
     expect(vi.getTimerCount()).toBe(0);
     fixture.customComponent.handleInput("\x1b");
@@ -2087,7 +2184,7 @@ describe("public layout and lifecycle contract", () => {
 
     fixture.customComponent.handleInput("\t");
     fixture.customComponent.handleInput("\r");
-    await vi.advanceTimersByTimeAsync(33);
+    await vi.advanceTimersByTimeAsync(160);
 
     expect(statusTui.requestRender).toHaveBeenCalledOnce();
     expect(status.render(500).join("\n")).not.toContain("pi-agent");
@@ -2650,7 +2747,7 @@ describe("public layout and lifecycle contract", () => {
 
     vi.mocked(TokyoConfigManager.prototype.write).mockResolvedValue(false);
     await fixture.command.handler("off", fixture.ctx);
-    await vi.advanceTimersByTimeAsync(160);
+    await vi.advanceTimersByTimeAsync(500);
 
     expect(rain.render(40).length).toBeGreaterThan(0);
     expect(rainTui.requestRender).toHaveBeenCalled();
@@ -3054,7 +3151,7 @@ describe("public layout and lifecycle contract", () => {
         return unsubscribe;
       },
     });
-    await vi.advanceTimersByTimeAsync(33);
+    await vi.advanceTimersByTimeAsync(100);
     expect(vi.getTimerCount()).toBe(1);
     fixture.ui.setWidget.mockClear();
     fixture.ui.setFooter.mockClear();
@@ -3077,7 +3174,7 @@ describe("public layout and lifecycle contract", () => {
     newTui.requestRender.mockClear();
     oldPanel.requestRender(true);
     oldBranchListener();
-    await vi.advanceTimersByTimeAsync(160);
+    await vi.advanceTimersByTimeAsync(500);
     expect(oldTui.requestRender).not.toHaveBeenCalled();
     expect(newTui.requestRender).toHaveBeenCalled();
     footer.dispose();

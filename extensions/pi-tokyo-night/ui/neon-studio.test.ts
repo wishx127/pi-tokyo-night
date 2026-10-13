@@ -1210,7 +1210,7 @@ describe("NeonStudioComponent", () => {
     expect(tui.requestRender).toHaveBeenCalledTimes(2);
   });
 
-  it("switches Rain Mode between Auto and Manual", () => {
+  it("cycles Auto, Manual, and Static rain in both directions", () => {
     const { config, onConfigChange, studio } = makeStudio();
 
     studio.handleInput("\t");
@@ -1226,6 +1226,14 @@ describe("NeonStudioComponent", () => {
       kind: "config",
       key: "rainMode",
     });
+    studio.handleInput("\r");
+    expect(config.get().rainMode).toBe("static");
+    expect(studio.render(80).join("\n")).toContain("Rain Mode: Static");
+    expect(studio.render(80).join("\n")).not.toContain("Rain Tick (ms)");
+    studio.handleInput("\r");
+    expect(config.get().rainMode).toBe("auto");
+    studio.handleInput("\x1b[D");
+    expect(config.get().rainMode).toBe("static");
   });
 
   it("adjusts Max Rain Drops in steps of five", () => {

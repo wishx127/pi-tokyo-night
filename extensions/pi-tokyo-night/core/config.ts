@@ -26,7 +26,7 @@ export interface StatusModulesConfig {
   context: boolean;
 }
 
-export type RainMode = "auto" | "manual";
+export type RainMode = "auto" | "manual" | "static";
 
 export interface TokyoConfig {
   /** Show the top rain/moon/stars panel. */
@@ -41,7 +41,7 @@ export interface TokyoConfig {
   iconMode: IconMode;
   /** Visibility of status bar modules, configured in pi-tokyo-night.json. */
   statusModules: Readonly<StatusModulesConfig>;
-  /** Select Pi-driven automatic rain or the saved manual values. */
+  /** Select automatic, manual, or a static scene without animation refreshes. */
   rainMode: RainMode;
   /** Height of the rain panel in rows. */
   rainRows: number;
@@ -133,11 +133,12 @@ export const SETTINGS: SettingDescriptor[] = [
   {
     id: "rainMode",
     label: "Rain Mode",
-    description: "Follow Pi activity automatically or use manual rain values",
+    description: "Follow Pi activity, use manual rain values, or keep a static scene",
     kind: "choice",
     options: [
       { value: "auto", label: "Auto" },
       { value: "manual", label: "Manual" },
+      { value: "static", label: "Static" },
     ],
   },
   {

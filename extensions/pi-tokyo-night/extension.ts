@@ -48,6 +48,7 @@ import {
   type LiveSessionUsage,
 } from "./ui/status-bar";
 import { StatusRenderCache } from "./ui/status-render-cache";
+import { RefreshScheduler } from "./ui/refresh-scheduler";
 import {
   getFrameContentWidth,
   renderFrameSegment,
@@ -85,9 +86,12 @@ type NativeWorkingState = {
   phase: WorkingPhase;
   phaseStartedAt: number | undefined;
   activeTools: Map<string, WorkingTool>;
-  timer: ReturnType<typeof setInterval> | undefined;
+  stopAnimation: (() => void) | undefined;
   indicatorConfigured: boolean;
+  indicatorOwned: boolean;
   indicatorThemeName: string | undefined;
+  lastMessage: string | undefined;
+  pending: boolean;
   setIndicator: ReturnType<typeof resolveWorkingIndicatorSetter>;
 };
 
@@ -113,7 +117,7 @@ type SessionState = {
   footerData: ReadonlyFooterDataProvider | null;
   branch: BranchState;
   resources: SessionUIResources;
-  statusRenderThrottleTimeout: ReturnType<typeof setTimeout> | undefined;
+  refreshScheduler: RefreshScheduler | undefined;
   codexCountdownRefreshTimeout: ReturnType<typeof setTimeout> | undefined;
   working: NativeWorkingState;
   rainActivity: RainActivity;
@@ -133,18 +137,17 @@ type SessionState = {
   requestStatusRender: (() => void) | undefined;
 };
 
-const WORKING_ANIMATION_INTERVAL_MS = 50;
+const WORKING_ANIMATION_INTERVAL_MS = 100;
 const WORKING_INDICATOR_INTERVAL_MS = 80;
 const MIN_OUTPUT_TPS_INTERVAL_MS = 100;
 const TOKYO_WORKING_GLYPHS = Object.freeze([
   "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
 ] as const);
 
-function buildTokyoWorkingFrames(theme: Theme | undefined): string[] {
+function renderTokyoWorkingFrame(theme: Theme | undefined, elapsedMs: number): string {
   const palette = theme ? createTokyoNightPalette(theme) : undefined;
-  return TOKYO_WORKING_GLYPHS.map((glyph) =>
-    palette?.fg("workingText", glyph) ?? glyph
-  );
+  const glyph = TOKYO_WORKING_GLYPHS[Math.floor(elapsedMs / WORKING_INDICATOR_INTERVAL_MS) % TOKYO_WORKING_GLYPHS.length];
+  return palette?.fg("workingText", glyph) ?? glyph;
 }
 
 const CODEX_COUNTDOWN_REFRESH_MS = 30_000;
@@ -443,17 +446,13 @@ export function registerTokyoNightExtension(
     requestStatusRenderFor(session);
   };
 
-  const reconcileLiveUsage = (
-    session: SessionState,
-    requestRender = true,
-  ): boolean => {
+  const reconcileLiveUsage = (session: SessionState): boolean => {
     const live = session.liveUsage;
     const baseline = session.liveUsageBaseline;
     if (!session.liveUsageFinalizing || !live || !baseline) return false;
 
     // Pi may persist the finalized message without changing the current leaf.
-    // Re-scan while reconciling so CH and full-session totals become visible
-    // immediately instead of waiting for a later cache invalidation event.
+    // Only lifecycle events and bounded retries may re-scan; never animation renders.
     invalidateSessionStats(session.context);
     const persisted = getSessionStats(session.context);
     if (!usageIncludesLiveValue(persisted, baseline, live)) return false;
@@ -463,7 +462,7 @@ export function registerTokyoNightExtension(
     session.liveUsageBaseline = undefined;
     session.liveUsageFinalizing = false;
     session.liveUsageRevision += 1;
-    if (requestRender) requestStatusRenderFor(session);
+    requestStatusRenderFor(session);
     return true;
   };
 
@@ -503,13 +502,13 @@ export function registerTokyoNightExtension(
 
   const requestRainRender = (session: SessionState): void => {
     if (!isCurrent(session) || !session.resources.rainManager || !configManager.get().panel) return;
-    if (session.working.timer !== undefined) return;
-    session.resources.rainPanel?.requestRender();
+    session.refreshScheduler?.requestRender();
   };
 
   const stopWorking = (session: SessionState): void => {
-    if (session.working.timer !== undefined) clearInterval(session.working.timer);
-    session.working.timer = undefined;
+    session.working.stopAnimation?.();
+    session.working.stopAnimation = undefined;
+    session.working.pending = false;
   };
   const resetWorking = (session: SessionState): void => {
     stopWorking(session);
@@ -517,7 +516,9 @@ export function registerTokyoNightExtension(
     session.working.phaseStartedAt = undefined;
     session.working.activeTools.clear();
     session.working.indicatorConfigured = false;
+    session.working.indicatorOwned = false;
     session.working.indicatorThemeName = undefined;
+    session.working.lastMessage = undefined;
   };
   const formatDuration = (milliseconds: number): string => {
     const quantizedMilliseconds = Math.floor(Math.max(0, milliseconds) / 100) * 100;
@@ -555,9 +556,10 @@ export function registerTokyoNightExtension(
     ) return;
     try {
       session.working.setIndicator?.({
-        frames: buildTokyoWorkingFrames(theme),
-        intervalMs: WORKING_INDICATOR_INTERVAL_MS,
+        // A single empty frame stops Pi's independent Loader animation clock.
+        frames: [""],
       });
+      session.working.indicatorOwned = session.working.setIndicator !== undefined;
     } catch (error) {
       if (!isStaleExtensionContextError(error)) {
         handleExtensionError(error, "working indicator update");
@@ -567,16 +569,27 @@ export function registerTokyoNightExtension(
       session.working.indicatorThemeName = themeName;
     }
   };
+  const publishWorking = (session: SessionState): void => {
+    if (!isCurrent(session) || session.mode !== "tui" || !session.hasUI) return;
+    if (!session.working.pending) return;
+    session.working.pending = false;
+    syncWorkingIndicator(session);
+    const elapsed = Math.max(0, Date.now() - (session.working.phaseStartedAt ?? Date.now()));
+    const message = session.working.indicatorOwned
+      ? `${renderTokyoWorkingFrame(session.ui.theme, elapsed)} ${workingMessage(session)}`
+      : workingMessage(session);
+    try {
+      if (session.working.lastMessage !== message) {
+        session.ui.setWorkingMessage(message);
+        session.working.lastMessage = message;
+      }
+    }
+    catch (error) { if (!isStaleExtensionContextError(error)) handleExtensionError(error, "working message update"); }
+  };
   const updateWorking = (session: SessionState): void => {
     if (!isCurrent(session) || session.mode !== "tui" || !session.hasUI) return;
-    syncWorkingIndicator(session);
-    try { session.ui.setWorkingMessage(workingMessage(session)); }
-    catch (error) { if (!isStaleExtensionContextError(error)) handleExtensionError(error, "working message update"); }
-    try {
-      if (configManager.get().panel) session.resources.rainPanel?.requestRender();
-    } catch (error) {
-      if (!isStaleExtensionContextError(error)) handleExtensionError(error, "working rain render");
-    }
+    session.working.pending = true;
+    session.refreshScheduler?.requestRender();
   };
   const restoreWorkingUi = (session: SessionState): void => {
     try { session.working.setIndicator?.(); }
@@ -586,13 +599,13 @@ export function registerTokyoNightExtension(
   };
   const startWorking = (session: SessionState): void => {
     stopWorking(session);
-    syncWorkingIndicator(session);
+    session.working.lastMessage = undefined;
     updateWorking(session);
-    session.working.timer = setInterval(() => {
+    session.refreshScheduler?.flushNow();
+    session.working.stopAnimation = session.refreshScheduler?.repeat(WORKING_ANIMATION_INTERVAL_MS, () => {
       if (!isCurrent(session)) { stopWorking(session); return; }
       updateWorking(session);
-    }, WORKING_ANIMATION_INTERVAL_MS);
-    session.working.timer.unref?.();
+    });
   };
   const setWorkingPhase = (session: SessionState, phase: WorkingPhase, restart = false): boolean => {
     if (!restart && session.working.phase === phase && session.working.phaseStartedAt !== undefined) return false;
@@ -761,19 +774,24 @@ export function registerTokyoNightExtension(
     activity: RainActivity,
   ): void => {
     session.rainActivity = activity;
+    const config = configManager.get();
+    const profile = resolveRainRuntimeProfile(config, activity);
+    if (config.rainMode === "auto") session.refreshScheduler?.setFrameInterval(profile.tickMs);
     const manager = session.resources.rainManager;
     if (!manager || !manager.isRunning) return;
-    manager.applyProfile(resolveRainRuntimeProfile(configManager.get(), activity));
+    manager.applyProfile(profile);
   };
 
   const applyPanelState = (session: SessionState): void => {
     const manager = session.resources.rainManager;
     if (!manager) return;
+    const config = configManager.get();
+    const profile = resolveRainRuntimeProfile(config, session.rainActivity);
+    session.refreshScheduler?.setFrameInterval(
+      config.rainMode === "auto" ? profile.tickMs
+        : config.rainMode === "manual" ? Math.min(100, config.rainTickMs) : 100,
+    );
     if (shouldRunRainAnimation(session.mode, configManager.get().panel)) {
-      const profile = resolveRainRuntimeProfile(
-        configManager.get(),
-        session.rainActivity,
-      );
       if (manager.isRunning) manager.applyProfile(profile);
       else manager.start(profile);
     } else {
@@ -787,8 +805,7 @@ export function registerTokyoNightExtension(
     resetWorking(session);
     abortBranch(session.branch);
     session.branch.requestToken += 1;
-    if (session.statusRenderThrottleTimeout !== undefined) clearTimeout(session.statusRenderThrottleTimeout);
-    session.statusRenderThrottleTimeout = undefined;
+    session.refreshScheduler?.dispose();
     if (session.codexCountdownRefreshTimeout !== undefined) clearTimeout(session.codexCountdownRefreshTimeout);
     session.codexCountdownRefreshTimeout = undefined;
     clearLiveUsageReconcile(session);
@@ -874,7 +891,6 @@ export function registerTokyoNightExtension(
     };
     const renderStatusLines = (width: number, theme: Theme): string[] => {
       if (!isCurrent(session)) return [];
-      reconcileLiveUsage(session, false);
       const outputWidth = safeTerminalWidth(width);
       const config = configManager.get();
       const statusWidth = getFrameContentWidth(
@@ -911,7 +927,9 @@ export function registerTokyoNightExtension(
           configManager,
           codexUsageStore,
           session.kimiUsageStore,
-          session.liveUsage,
+          session.liveUsageFinalizing && session.liveUsage && session.liveUsageBaseline &&
+            usageIncludesLiveValue(getSessionStats(session.context), session.liveUsageBaseline, session.liveUsage)
+            ? undefined : session.liveUsage,
           session.outputTps ?? session.outputTpsLast,
         );
         return buildStatusWidgetLines(
@@ -942,6 +960,7 @@ export function registerTokyoNightExtension(
     session.resources.editorFactory = editorFactory;
     session.resources.rainManager = new RainAnimationManager(configManager, {
       requestRender: () => requestRainRender(session),
+      scheduleTick: (tick, intervalMs) => session.refreshScheduler!.repeat(intervalMs, tick),
     });
 
     const rainFactory = (tui: TUI): RainPanelComponent => {
@@ -1020,6 +1039,7 @@ export function registerTokyoNightExtension(
     if (session.working.phaseStartedAt === undefined) return;
     setWorkingPhase(session, "waiting", true);
     updateWorking(session);
+    session.refreshScheduler?.flushNow();
   });
   pi.on("agent_end", async (_event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
@@ -1060,10 +1080,10 @@ export function registerTokyoNightExtension(
       updateLiveUsage(session, assistantEvent.partial.usage);
       updateOutputTps(session, assistantEvent.partial.usage);
     }
-    if (session.working.phaseStartedAt === undefined) return;
     const type = assistantEvent.type;
     const phase: WorkingPhase | undefined = type.includes("thinking") || type.includes("toolcall") ? "thinking" : type.includes("text") ? "streaming" : undefined;
-    if (phase && setWorkingPhase(session, phase)) updateWorking(session);
+    if (session.working.phaseStartedAt !== undefined && phase && setWorkingPhase(session, phase)) updateWorking(session);
+    session.refreshScheduler?.hostWillRender();
   });
   pi.on("message_end", async (event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
@@ -1077,9 +1097,11 @@ export function registerTokyoNightExtension(
       resetOutputTps(session);
       if (session.liveUsage) {
         session.liveUsageFinalizing = true;
+        scheduleLiveUsageReconcile(session);
         requestStatusRenderFor(session);
       }
     }
+    session.refreshScheduler?.hostWillRender(false);
   });
   pi.on("turn_end", async (_event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
@@ -1092,6 +1114,7 @@ export function registerTokyoNightExtension(
     applyRainProfile(session, "tools");
     session.working.activeTools.set(event.toolCallId, { name: event.toolName, startedAt: Date.now() });
     updateWorking(session);
+    session.refreshScheduler?.flushNow();
   });
   pi.on("tool_execution_end", async (event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
@@ -1102,6 +1125,7 @@ export function registerTokyoNightExtension(
       setWorkingPhase(session, "waiting");
     }
     updateWorking(session);
+    session.refreshScheduler?.flushNow();
   });
   pi.on("after_provider_response", async (event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
@@ -1174,15 +1198,18 @@ export function registerTokyoNightExtension(
       footerData: null,
       branch: { cachedBranch: "", cacheTime: 0, pending: false, requestToken: 0, requestController: undefined, cwd: undefined },
       resources: { editorFactory: null, editor: null, rainPanel: null, rainManager: null, statusTui: null, renderFullscreenStatus: null, footerOwned: false, footerSubscription: null },
-      statusRenderThrottleTimeout: undefined,
+      refreshScheduler: undefined,
       codexCountdownRefreshTimeout: undefined,
       working: {
         phase: "waiting",
         phaseStartedAt: undefined,
         activeTools: new Map(),
-        timer: undefined,
+        stopAnimation: undefined,
         indicatorConfigured: false,
+        indicatorOwned: false,
         indicatorThemeName: undefined,
+        lastMessage: undefined,
+        pending: false,
         setIndicator: resolveWorkingIndicatorSetter(sessionUI),
       },
       rainActivity: "idle",
@@ -1211,15 +1238,30 @@ export function registerTokyoNightExtension(
     if (ctx.mode !== "tui" || !ctx.hasUI) return;
 
     try {
+      let renderFailures = 0;
+      session.refreshScheduler = new RefreshScheduler((requestRender) => {
+        if (!isCurrent(session)) return;
+        try {
+          publishWorking(session);
+          if (!requestRender) return;
+          if (session.resources.statusTui) requestHostRender(session.resources.statusTui);
+          else session.resources.rainPanel?.requestRender();
+          renderFailures = 0;
+        } catch (error) {
+          const stale = isStaleExtensionContextError(error);
+          if (!stale) handleExtensionError(error, "scheduled UI render");
+          if (stale || ++renderFailures >= 3) {
+            stopWorking(session);
+            session.resources.rainManager?.stop();
+            session.refreshScheduler?.dispose();
+          }
+        }
+      });
       createSessionResources(session);
       session.requestStatusRender = () => {
         if (!isCurrent(session)) return;
         session.statusRenderCache.invalidate();
-        if (session.statusRenderThrottleTimeout !== undefined) return;
-        session.statusRenderThrottleTimeout = setTimeout(() => {
-          session.statusRenderThrottleTimeout = undefined;
-          if (isCurrent(session)) requestHostRender(session.resources.statusTui);
-        }, 33);
+        session.refreshScheduler?.requestRender();
       };
       applyPanelState(session);
       refreshKimi();
