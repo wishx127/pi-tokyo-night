@@ -4,6 +4,35 @@ import { RefreshScheduler } from "./refresh-scheduler";
 afterEach(() => vi.useRealTimers());
 
 describe("RefreshScheduler", () => {
+  it("pauses cosmetic updates and resumes one current frame without replaying the backlog", () => {
+    vi.useFakeTimers();
+    const publish = vi.fn();
+    const scheduler = new RefreshScheduler(publish);
+    let frames = 0;
+    scheduler.repeat(100, () => { frames++; scheduler.requestRender(); });
+
+    scheduler.setPaused(true);
+    scheduler.requestRender();
+    scheduler.flushNow();
+    scheduler.hostWillRender();
+    vi.advanceTimersByTime(2500);
+
+    expect(frames).toBe(0);
+    expect(publish).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+
+    scheduler.setPaused(false);
+    vi.advanceTimersByTime(0);
+
+    expect(frames).toBe(1);
+    expect(publish).toHaveBeenCalledExactlyOnceWith(true);
+    vi.advanceTimersByTime(100);
+    expect(frames).toBe(2);
+    scheduler.dispose();
+    scheduler.setPaused(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("keeps the rain's average cadence when host stream frames arrive every 100ms", () => {
     vi.useFakeTimers();
     const scheduler = new RefreshScheduler(() => {});

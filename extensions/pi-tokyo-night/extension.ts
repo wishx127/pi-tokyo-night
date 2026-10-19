@@ -9,6 +9,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { readUsageHistory } from "./analytics/usage-history";
 import { TokyoConfigManager } from "./core/config";
 import { detectTerminalTheme } from "./core/terminal-theme";
+import { observeTerminalRecovery } from "./core/terminal-recovery";
 import {
   createTokyoNightErrorSink,
   flushConsoleLogWrites,
@@ -50,6 +51,7 @@ import {
 } from "./ui/status-bar";
 import { StatusRenderCache } from "./ui/status-render-cache";
 import { RefreshScheduler } from "./ui/refresh-scheduler";
+import { RenderRecoveryCoordinator } from "./ui/render-recovery";
 import {
   getFrameContentWidth,
   renderFrameSegment,
@@ -119,6 +121,8 @@ type SessionState = {
   branch: BranchState;
   resources: SessionUIResources;
   refreshScheduler: RefreshScheduler | undefined;
+  renderRecovery: RenderRecoveryCoordinator | undefined;
+  terminalRecovery: { dispose(): void } | undefined;
   codexCountdownRefreshTimeout: ReturnType<typeof setTimeout> | undefined;
   working: NativeWorkingState;
   rainActivity: RainActivity;
@@ -313,11 +317,13 @@ export function registerTokyoNightExtension(
     writePiThemeSetting?: typeof writePiThemeSetting;
     errorSink?: ExtensionErrorSink;
     compatibility?: PiCompatibility;
+    observeTerminalRecovery?: typeof observeTerminalRecovery;
   } = {},
 ): void {
   const configManager = new TokyoConfigManager();
   const codexUsageStore = createCodexUsageStore();
   const installBridge = dependencies.installConsoleLogBridge ?? installConsoleLogBridge;
+  const observeRecovery = dependencies.observeTerminalRecovery ?? observeTerminalRecovery;
   let consoleLogBridge: ConsoleLogBridge | undefined;
   let consoleBridgeOwnerIdentity: string | undefined;
   let consoleBridgeOwnerRevision = 0;
@@ -804,6 +810,10 @@ export function registerTokyoNightExtension(
   };
 
   const clearSessionTimers = (session: SessionState): void => {
+    session.terminalRecovery?.dispose();
+    session.terminalRecovery = undefined;
+    session.renderRecovery?.dispose();
+    session.renderRecovery = undefined;
     resetWorking(session);
     abortBranch(session.branch);
     session.branch.requestToken += 1;
@@ -885,6 +895,46 @@ export function registerTokyoNightExtension(
     return sessionRetirement;
   };
 
+  const attachRenderRecovery = (session: SessionState, tui: TUI): void => {
+    if (session.terminalRecovery || !tui.terminal) return;
+    const recovery = new RenderRecoveryCoordinator({
+      getDimensions: () => ({ columns: tui.terminal.columns, rows: tui.terminal.rows }),
+      pause: () => session.refreshScheduler?.setPaused(true),
+      resume: () => session.refreshScheduler?.setPaused(false),
+      recover: () => {
+        if (!isCurrent(session)) return;
+        session.statusRenderCache.invalidate();
+        session.resources.rainPanel?.invalidate();
+        if (session.working.phaseStartedAt !== undefined) {
+          session.working.pending = true;
+          publishWorking(session);
+        }
+        requestHostRender(tui, true);
+      },
+      onError: (error) => {
+        if (!isStaleExtensionContextError(error)) handleExtensionError(error, "screen recovery");
+      },
+    });
+    try {
+      const subscription = observeRecovery(tui, {
+        onFocus: (focused) => { if (isCurrent(session)) recovery.setFocused(focused); },
+        onResize: () => { if (isCurrent(session)) recovery.resized(); },
+        onActive: (active) => { if (isCurrent(session)) recovery.setActive(active); },
+      });
+      if (!subscription) {
+        recovery.dispose();
+        session.refreshScheduler?.setPaused(false);
+        return;
+      }
+      session.renderRecovery = recovery;
+      session.terminalRecovery = subscription;
+    } catch (error) {
+      recovery.dispose();
+      session.refreshScheduler?.setPaused(false);
+      if (!isStaleExtensionContextError(error)) handleExtensionError(error, "screen recovery setup");
+    }
+  };
+
   const createSessionResources = (session: SessionState): void => {
     const workingLayout = new Text("", 1, 0);
     let measuredWorkingMessage: string | undefined;
@@ -958,7 +1008,10 @@ export function registerTokyoNightExtension(
         },
         options,
       );
-      if (isCurrent(session)) session.resources.editor = editor;
+      if (isCurrent(session)) {
+        session.resources.editor = editor;
+        attachRenderRecovery(session, tui);
+      }
       return editor;
     };
     session.resources.editorFactory = editorFactory;
@@ -1238,6 +1291,8 @@ export function registerTokyoNightExtension(
       branch: { cachedBranch: "", cacheTime: 0, pending: false, requestToken: 0, requestController: undefined, cwd: undefined },
       resources: { editorFactory: null, editor: null, rainPanel: null, rainManager: null, statusTui: null, renderFullscreenStatus: null, footerOwned: false, footerSubscription: null },
       refreshScheduler: undefined,
+      renderRecovery: undefined,
+      terminalRecovery: undefined,
       codexCountdownRefreshTimeout: undefined,
       working: {
         phase: "waiting",
