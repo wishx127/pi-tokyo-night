@@ -57,6 +57,10 @@ export class RenderRecoveryCoordinator {
     this.invalidDimensionProbes = MAX_INVALID_DIMENSION_PROBES;
     if (this.timer !== undefined) clearTimeout(this.timer);
     this.timer = undefined;
+    if (this.active && !this.focused) {
+      this.resume(revision);
+      return;
+    }
     if (!this.paused) {
       this.paused = true;
       try {
@@ -142,7 +146,7 @@ export class RenderRecoveryCoordinator {
   }
 
   private resume(revision: number): void {
-    if (!this.isCurrent(revision)) return;
+    if (this.disposed || !this.active || this.revision !== revision || !this.paused) return;
     this.paused = false;
     try {
       this.dependencies.resume();

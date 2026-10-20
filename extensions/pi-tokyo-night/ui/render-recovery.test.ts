@@ -1,10 +1,50 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RenderRecoveryCoordinator } from "./render-recovery";
+import { RefreshScheduler } from "./refresh-scheduler";
 
 afterEach(() => vi.useRealTimers());
 
 describe("RenderRecoveryCoordinator", () => {
-  it("pauses cosmetic updates while unfocused and repaints once after focus settles", () => {
+  it("keeps scheduled progress updates running while the terminal is unfocused", () => {
+    vi.useFakeTimers();
+    const startedAt = Date.now();
+    const progress: number[] = [];
+    const scheduler = new RefreshScheduler(() => { progress.push(Date.now() - startedAt); });
+    scheduler.repeat(100, () => scheduler.requestRender());
+    const recover = vi.fn();
+    const recovery = new RenderRecoveryCoordinator({
+      getDimensions: () => ({ columns: 80, rows: 24 }),
+      pause: () => scheduler.setPaused(true),
+      recover,
+      resume: () => scheduler.setPaused(false),
+    });
+
+    try {
+      recovery.setFocused(false);
+      vi.advanceTimersByTime(1000);
+
+      expect(progress).toHaveLength(10);
+      expect(progress.at(-1)).toBe(1000);
+
+      recovery.resized();
+      vi.advanceTimersByTime(1000);
+      expect(progress).toHaveLength(20);
+      expect(progress.at(-1)).toBe(2000);
+
+      recovery.setFocused(true);
+      vi.advanceTimersByTime(100);
+      recovery.setFocused(false);
+      vi.advanceTimersByTime(900);
+      expect(progress).toHaveLength(30);
+      expect(progress.at(-1)).toBe(3000);
+      expect(recover).not.toHaveBeenCalled();
+    } finally {
+      recovery.dispose();
+      scheduler.dispose();
+    }
+  });
+
+  it("keeps background updates active and repaints once after focus settles", () => {
     vi.useFakeTimers();
     const calls: string[] = [];
     const recovery = new RenderRecoveryCoordinator({
@@ -17,7 +57,7 @@ describe("RenderRecoveryCoordinator", () => {
     expect(calls).toEqual([]);
     recovery.setFocused(false);
     vi.advanceTimersByTime(1000);
-    expect(calls).toEqual(["pause"]);
+    expect(calls).toEqual([]);
 
     recovery.setFocused(true);
     vi.advanceTimersByTime(199);
@@ -277,11 +317,11 @@ describe("RenderRecoveryCoordinator", () => {
     recovery.setFocused(false);
     vi.advanceTimersByTime(1000);
     expect(recover).not.toHaveBeenCalled();
-    expect(resume).not.toHaveBeenCalled();
+    expect(resume).toHaveBeenCalledOnce();
     recovery.setFocused(true);
     vi.advanceTimersByTime(200);
     expect(recover).toHaveBeenCalledOnce();
-    expect(resume).toHaveBeenCalledOnce();
+    expect(resume).toHaveBeenCalledTimes(2);
   });
 
   it("bounds probes if dimensions disappear during the quiet period", () => {
