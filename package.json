@@ -1,6 +1,6 @@
 {
   "name": "@wishx127/pi-tokyo-night",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "Animated Tokyo Night theme + extension for Pi with dynamic rain, a Powerline status bar, switchable light/dark themes, and live settings.",
   "type": "module",
   "peerDependencies": {
@@ -59,9 +59,9 @@
     "compatibility": "node scripts/pi-compat-check.mjs"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.84.4",
-    "@earendil-works/pi-coding-agent": "0.84.4",
-    "@earendil-works/pi-tui": "0.84.4",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-tui": "1.4.0",
     "@types/node": "^22.19.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10",
