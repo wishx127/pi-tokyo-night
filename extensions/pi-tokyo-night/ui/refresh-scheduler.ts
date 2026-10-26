@@ -9,9 +9,17 @@ export class RefreshScheduler {
   private lastStreamAt: number | undefined;
   private frameIntervalMs = 100;
   private updating = false;
+  private paused = false;
   private disposed = false;
 
   constructor(private readonly publish: (requestHostRender: boolean) => void) {}
+
+  setPaused(paused: boolean): void {
+    if (this.disposed || this.paused === paused) return;
+    this.paused = paused;
+    if (!paused) this.lastStreamAt = undefined;
+    this.schedule();
+  }
 
   setFrameInterval(intervalMs: number): void {
     this.frameIntervalMs = intervalMs;
@@ -43,12 +51,12 @@ export class RefreshScheduler {
     if (this.disposed) return;
     this.lastStreamAt = undefined;
     this.dirtyAt = Date.now();
-    this.update(Date.now());
+    if (!this.paused) this.update(Date.now());
   }
 
   /** Called after a stream event updates state, before Pi renders that event. */
   hostWillRender(streaming = true): void {
-    if (this.disposed) return;
+    if (this.disposed || this.paused) return;
     const now = Date.now();
     this.lastStreamAt = streaming ? now : undefined;
     this.update(now, true);
@@ -90,6 +98,7 @@ export class RefreshScheduler {
     if (this.updating || this.disposed) return;
     if (this.timer !== undefined) clearTimeout(this.timer);
     this.timer = undefined;
+    if (this.paused) return;
     let dueAt = this.dirtyAt ?? Infinity;
     for (const task of this.tasks) dueAt = Math.min(dueAt, task.dueAt);
     if (!Number.isFinite(dueAt)) return;

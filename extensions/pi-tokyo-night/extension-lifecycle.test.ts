@@ -14,6 +14,7 @@ import extension, {
 import * as usageHistory from "./analytics/usage-history";
 import { TokyoConfigManager } from "./core/config";
 import { createTokyoNightErrorSink, flushConsoleLogWrites } from "./core/console-bridge";
+import type { observeTerminalRecovery, TerminalRecoveryCallbacks } from "./core/terminal-recovery";
 
 const theme = { name: "existing-theme", fg: (_color: string, text: string) => text } as any;
 const tokyoDarkTheme = { name: "tokyo-night-dark", fg: theme.fg } as any;
@@ -30,6 +31,7 @@ function makeFixture(
     supported: boolean;
     minimum: "0.80.5";
   },
+  observeRecovery?: typeof observeTerminalRecovery,
 ) {
   const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
   const widgets = new Map<string, any>();
@@ -142,6 +144,7 @@ function makeFixture(
     writePiThemeSetting,
     errorSink,
     compatibility,
+    observeTerminalRecovery: observeRecovery,
   });
   return {
     ui, ctx, pi, widgets, readPiThemeSetting, writePiThemeSetting, errorSink,
@@ -383,6 +386,65 @@ describe("public layout and lifecycle contract", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(requestRender).toHaveBeenCalledOnce();
     await fixture.emit("session_shutdown", {}, fixture.ctx);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["regular", "fullscreen"] as const)("keeps background working refreshes alive before recovering %s mode once", async (mode) => {
+    vi.useFakeTimers();
+    let recoveryEvents: TerminalRecoveryCallbacks | undefined;
+    const disposeRecovery = vi.fn();
+    const observeRecovery = vi.fn((_target, callbacks: TerminalRecoveryCallbacks) => {
+      recoveryEvents = callbacks;
+      return { dispose: disposeRecovery };
+    });
+    const fixture = makeFixture("tui", undefined, undefined, undefined, observeRecovery);
+    await fixture.emit("session_start", {}, fixture.ctx);
+    const tui = { mode, terminal: { columns: 120, rows: 40 }, requestRender: vi.fn() };
+    fixture.editorFactory(tui, { borderColor: () => "" }, {});
+    fixture.widgets.get("tokyo-status")(tui, theme);
+    try {
+      expect(observeRecovery).toHaveBeenCalledOnce();
+      await fixture.emit("agent_start", {}, fixture.ctx);
+      recoveryEvents!.onFocus(false);
+      fixture.ui.setWorkingMessage.mockClear();
+      tui.requestRender.mockClear();
+
+      await vi.advanceTimersByTimeAsync(1000);
+
+      expect(fixture.ui.setWorkingMessage).toHaveBeenCalled();
+      const message = fixture.ui.setWorkingMessage.mock.calls.at(-1)?.[0] as string;
+      const elapsed = message.replace(/\x1b\[[0-9;]*m/g, "").match(/Waiting ([\d.]+)s/);
+      expect(Number(elapsed?.[1])).toBeGreaterThan(0.5);
+      expect(tui.requestRender).toHaveBeenCalledWith();
+      expect(tui.requestRender).not.toHaveBeenCalledWith(true);
+
+      const messagesBeforeResize = fixture.ui.setWorkingMessage.mock.calls.length;
+      tui.terminal.columns = 96;
+      recoveryEvents!.onResize();
+      await vi.advanceTimersByTimeAsync(400);
+      expect(fixture.ui.setWorkingMessage.mock.calls.length).toBeGreaterThan(messagesBeforeResize);
+      expect(tui.requestRender).not.toHaveBeenCalledWith(true);
+
+      tui.requestRender.mockClear();
+      recoveryEvents!.onFocus(true);
+      await vi.advanceTimersByTimeAsync(199);
+      expect(tui.requestRender).not.toHaveBeenCalledWith(true);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(tui.requestRender.mock.calls.filter(([force]) => force === true)).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(tui.requestRender.mock.calls.filter(([force]) => force === true)).toHaveLength(1);
+
+      recoveryEvents!.onActive(false);
+      recoveryEvents!.onFocus(false);
+      fixture.ui.setWorkingMessage.mockClear();
+      tui.requestRender.mockClear();
+      await vi.advanceTimersByTimeAsync(400);
+      expect(fixture.ui.setWorkingMessage).not.toHaveBeenCalled();
+      expect(tui.requestRender).not.toHaveBeenCalled();
+    } finally {
+      await fixture.emit("session_shutdown", {}, fixture.ctx);
+    }
+    expect(disposeRecovery).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
   });
 
