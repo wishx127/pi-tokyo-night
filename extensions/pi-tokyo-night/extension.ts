@@ -134,7 +134,7 @@ type SessionState = {
   liveUsageRevision: number;
   liveUsageReconcileTimeout: ReturnType<typeof setTimeout> | undefined;
   liveUsageReconcileAttempts: number;
-  outputTpsFirstDeltaAt: number | undefined;
+  outputTpsStartedAt: number | undefined;
   outputTpsTokens: number | undefined;
   outputTps: number | undefined;
   outputTpsLast: number | undefined;
@@ -145,6 +145,7 @@ type SessionState = {
 const WORKING_ANIMATION_INTERVAL_MS = 100;
 const WORKING_INDICATOR_INTERVAL_MS = 80;
 const MIN_OUTPUT_TPS_INTERVAL_MS = 100;
+const MAX_OUTPUT_TPS = 10_000;
 const TOKYO_WORKING_GLYPHS = Object.freeze([
   "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
 ] as const);
@@ -391,21 +392,28 @@ export function registerTokyoNightExtension(
   };
 
   const resetOutputTps = (session: SessionState): void => {
-    session.outputTpsFirstDeltaAt = undefined;
+    session.outputTpsStartedAt = undefined;
     session.outputTpsTokens = undefined;
     if (session.outputTps === undefined) return;
     session.outputTps = undefined;
     if (configManager.get().statusModules.tokens) requestStatusRenderFor(session);
   };
 
-  const updateOutputTps = (session: SessionState, value: unknown, final = false): void => {
+  const updateOutputTps = (session: SessionState, value: unknown, final = false, durationMs?: unknown): void => {
+    // Final usage replaces provisional samples, even when its timing is unusable.
+    if (final && session.outputTps !== undefined) {
+      session.outputTps = undefined;
+      if (configManager.get().statusModules.tokens) requestStatusRenderFor(session);
+    }
     const output = isRecord(value) ? finiteNonNegative(value.output) : undefined;
-    const startedAt = session.outputTpsFirstDeltaAt;
-    if (output === undefined || output === 0 || startedAt === undefined) return;
+    const startedAt = session.outputTpsStartedAt;
+    if (output === undefined || output === 0) return;
     if (!final && output === session.outputTpsTokens) return;
-    const elapsedMs = performance.now() - startedAt;
-    if (elapsedMs <= 0 || (!final && elapsedMs < MIN_OUTPUT_TPS_INTERVAL_MS)) return;
+    const elapsedMs = (final ? finiteNonNegative(durationMs) : undefined) ??
+      (startedAt === undefined ? undefined : performance.now() - startedAt);
+    if (elapsedMs === undefined || !Number.isFinite(elapsedMs) || elapsedMs < MIN_OUTPUT_TPS_INTERVAL_MS) return;
     const next = output * 1000 / elapsedMs;
+    if (!Number.isFinite(next) || Math.round(next) >= MAX_OUTPUT_TPS) return;
     session.outputTpsTokens = output;
     if (next === session.outputTps) return;
     session.outputTps = next;
@@ -1127,6 +1135,7 @@ export function registerTokyoNightExtension(
     const session = sessionsByIdentity.get(identityOf(ctx));
     if (!session || !isCurrent(session)) return;
     resetOutputTps(session);
+    session.outputTpsStartedAt = performance.now();
     finalizeLiveUsage(session);
     if (session.working.phaseStartedAt === undefined) return;
     setWorkingPhase(session, "waiting", true);
@@ -1149,25 +1158,15 @@ export function registerTokyoNightExtension(
     resetWorking(session);
     restoreWorkingUi(session);
   });
+  pi.on("message_start", async (event, ctx) => {
+    const session = sessionsByIdentity.get(identityOf(ctx));
+    if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI || event.message.role !== "assistant") return;
+    session.outputTpsStartedAt ??= performance.now();
+  });
   pi.on("message_update", async (event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
     if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI) return;
     const assistantEvent = event.assistantMessageEvent;
-    if (assistantEvent.type === "start") {
-      resetOutputTps(session);
-    }
-    if (
-      session.outputTpsFirstDeltaAt === undefined &&
-      (assistantEvent.type === "text_delta" ||
-        assistantEvent.type === "thinking_delta" ||
-        assistantEvent.type === "toolcall_delta")
-    ) {
-      session.outputTpsFirstDeltaAt = performance.now();
-      const usage = "partial" in assistantEvent ? assistantEvent.partial.usage : undefined;
-      session.outputTpsTokens = isRecord(usage)
-        ? finiteNonNegative(usage.output)
-        : undefined;
-    }
     if ("partial" in assistantEvent) {
       updateLiveUsage(session, assistantEvent.partial.usage);
       updateOutputTps(session, assistantEvent.partial.usage);
@@ -1182,8 +1181,9 @@ export function registerTokyoNightExtension(
     if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI) return;
     if (event.message.role === "assistant") {
       updateLiveUsage(session, event.message.usage);
-      if (event.message.usage?.output > 0 && session.outputTpsFirstDeltaAt !== undefined) {
-        updateOutputTps(session, event.message.usage, true);
+      if (event.message.usage?.output > 0) {
+        updateOutputTps(session, event.message.usage, true,
+          "durationMs" in event.message ? event.message.durationMs : undefined);
       }
       if (session.outputTps !== undefined) session.outputTpsLast = session.outputTps;
       resetOutputTps(session);
@@ -1315,7 +1315,7 @@ export function registerTokyoNightExtension(
       liveUsageRevision: 0,
       liveUsageReconcileTimeout: undefined,
       liveUsageReconcileAttempts: 0,
-      outputTpsFirstDeltaAt: undefined,
+      outputTpsStartedAt: undefined,
       outputTpsTokens: undefined,
       outputTps: undefined,
       outputTpsLast: undefined,

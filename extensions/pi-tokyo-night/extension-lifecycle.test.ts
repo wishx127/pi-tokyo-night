@@ -865,6 +865,7 @@ describe("public layout and lifecycle contract", () => {
       theme,
     );
 
+    await fixture.emit("message_start", { message: { role: "assistant" } }, fixture.ctx);
     await fixture.emit("message_update", {
       assistantMessageEvent: { type: "text_delta", delta: "A", partial: { usage: { output: 0 } } },
     }, fixture.ctx);
@@ -878,9 +879,7 @@ describe("public layout and lifecycle contract", () => {
     }, fixture.ctx);
 
     expect(status.render(500).join("\n")).toContain("TPS 40");
-    await fixture.emit("message_update", {
-      assistantMessageEvent: { type: "start", partial: {} },
-    }, fixture.ctx);
+    await fixture.emit("turn_start", { turnIndex: 1 }, fixture.ctx);
     expect(status.render(500).join("\n")).not.toContain("TPS");
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
@@ -895,6 +894,7 @@ describe("public layout and lifecycle contract", () => {
       theme,
     );
 
+    await fixture.emit("message_start", { message: { role: "assistant" } }, fixture.ctx);
     await fixture.emit("message_update", {
       assistantMessageEvent: { type: "text_delta", delta: "A", partial: {} },
     }, fixture.ctx);
@@ -908,9 +908,7 @@ describe("public layout and lifecycle contract", () => {
 
     await fixture.emit("turn_start", { turnIndex: 1 }, fixture.ctx);
     expect(status.render(500).join("\n")).toContain("TPS 10");
-    await fixture.emit("message_update", {
-      assistantMessageEvent: { type: "start", partial: {} },
-    }, fixture.ctx);
+    await fixture.emit("message_start", { message: { role: "assistant" } }, fixture.ctx);
     expect(status.render(500).join("\n")).toContain("TPS 10");
     await fixture.emit("message_end", {
       message: { role: "assistant", usage: { output: 0 } },
@@ -931,6 +929,7 @@ describe("public layout and lifecycle contract", () => {
       theme,
     );
 
+    await fixture.emit("message_start", { message: { role: "assistant" } }, fixture.ctx);
     await fixture.emit("message_update", {
       assistantMessageEvent: { type: "text_delta", delta: "A", partial: { usage: { output: 0 } } },
     }, fixture.ctx);
@@ -941,9 +940,7 @@ describe("public layout and lifecycle contract", () => {
     expect(status.render(500).join("\n")).toContain("TPS 10");
 
     await fixture.emit("turn_start", { turnIndex: 1 }, fixture.ctx);
-    await fixture.emit("message_update", {
-      assistantMessageEvent: { type: "start", partial: {} },
-    }, fixture.ctx);
+    await fixture.emit("message_start", { message: { role: "assistant" } }, fixture.ctx);
     expect(status.render(500).join("\n")).toContain("TPS 10");
     await fixture.emit("message_update", {
       assistantMessageEvent: { type: "text_delta", delta: "B", partial: { usage: { output: 0 } } },
@@ -982,6 +979,7 @@ describe("public layout and lifecycle contract", () => {
       theme,
     );
 
+    await fixture.emit("message_start", { message: { role: "assistant" } }, fixture.ctx);
     await fixture.emit("message_update", {
       assistantMessageEvent: { type: "text_delta", delta: "A", partial: { usage: { output: 0 } } },
     }, fixture.ctx);
@@ -1000,7 +998,7 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
-  it("hides TPS when a model reports usage without output deltas", async () => {
+  it("shows average TPS for responses without output deltas", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
     const fixture = makeFixture();
@@ -1010,15 +1008,13 @@ describe("public layout and lifecycle contract", () => {
       theme,
     );
 
-    await fixture.emit("message_update", {
-      assistantMessageEvent: { type: "start", partial: {} },
-    }, fixture.ctx);
+    await fixture.emit("message_start", { message: { role: "assistant" } }, fixture.ctx);
     await vi.advanceTimersByTimeAsync(2000);
     await fixture.emit("message_end", {
       message: { role: "assistant", usage: { output: 20 } },
     }, fixture.ctx);
 
-    expect(status.render(500).join("\n")).not.toContain("TPS");
+    expect(status.render(500).join("\n")).toContain("TPS 10");
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
@@ -1032,6 +1028,7 @@ describe("public layout and lifecycle contract", () => {
       theme,
     );
 
+    await fixture.emit("message_start", { message: { role: "assistant" } }, fixture.ctx);
     await fixture.emit("message_update", {
       assistantMessageEvent: { type: "text_delta", delta: "A", partial: { usage: { output: 0 } } },
     }, fixture.ctx);
@@ -1045,10 +1042,10 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
-  it("waits for a second sample when the first output delta already reports tokens", async () => {
+  it("measures TPS from response start when the first delta already reports tokens", async () => {
     vi.useFakeTimers();
     let now = 0;
-    vi.spyOn(performance, "now").mockImplementation(() => now++);
+    vi.spyOn(performance, "now").mockImplementation(() => now);
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
     const status = fixture.widgets.get("tokyo-status")(
@@ -1056,20 +1053,46 @@ describe("public layout and lifecycle contract", () => {
       theme,
     );
 
+    await fixture.emit("message_start", { message: { role: "assistant" } }, fixture.ctx);
+    now = 1000;
     await fixture.emit("message_update", {
       assistantMessageEvent: { type: "text_delta", delta: "A", partial: { usage: { output: 40 } } },
     }, fixture.ctx);
 
-    expect(status.render(500).join("\n")).not.toContain("TPS");
-    now = 1000;
+    expect(status.render(500).join("\n")).toContain("TPS 40");
+    now = 2000;
     await fixture.emit("message_update", {
       assistantMessageEvent: { type: "text_delta", delta: "B", partial: { usage: { output: 80 } } },
     }, fixture.ctx);
-    expect(status.render(500).join("\n")).toContain("TPS 80");
+    expect(status.render(500).join("\n")).toContain("TPS 40");
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
-  it("excludes first-token latency from final TPS", async () => {
+  it("uses the provider response duration for final TPS", async () => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      theme,
+    );
+
+    await fixture.emit("turn_start", { turnIndex: 0 }, fixture.ctx);
+    await fixture.emit("message_start", { message: { role: "assistant" } }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(1000);
+    await fixture.emit("message_update", {
+      assistantMessageEvent: { type: "text_delta", delta: "A", partial: { usage: { output: 40 } } },
+    }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(1000);
+    await fixture.emit("message_end", {
+      message: { role: "assistant", usage: { output: 80 }, durationMs: 4000 },
+    }, fixture.ctx);
+
+    expect(status.render(500).join("\n")).toContain("TPS 20");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("includes request wait time in TPS when provider duration is unavailable", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
     const fixture = makeFixture();
@@ -1079,24 +1102,24 @@ describe("public layout and lifecycle contract", () => {
       theme,
     );
 
-    await fixture.emit("message_update", {
-      assistantMessageEvent: { type: "start", partial: {} },
-    }, fixture.ctx);
-    await vi.advanceTimersByTimeAsync(1000);
+    await fixture.emit("turn_start", { turnIndex: 0 }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(900);
+    await fixture.emit("message_start", { message: { role: "assistant" } }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(100);
     await fixture.emit("message_update", {
       assistantMessageEvent: { type: "text_delta", delta: "A", partial: { usage: { output: 40 } } },
     }, fixture.ctx);
-    expect(status.render(500).join("\n")).not.toContain("TPS");
+    expect(status.render(500).join("\n")).toContain("TPS 40");
     await vi.advanceTimersByTimeAsync(1000);
     await fixture.emit("message_end", {
       message: { role: "assistant", usage: { output: 40 } },
     }, fixture.ctx);
 
-    expect(status.render(500).join("\n")).toContain("TPS 40");
+    expect(status.render(500).join("\n")).toContain("TPS 20");
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
-  it("shows final TPS for short responses with reported output usage", async () => {
+  it.each([undefined, 0, 1, 40, 99])("rejects final TPS for short responses (provider duration: %s)", async (durationMs) => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
     const fixture = makeFixture();
@@ -1106,19 +1129,125 @@ describe("public layout and lifecycle contract", () => {
       theme,
     );
 
-    await fixture.emit("message_update", {
-      assistantMessageEvent: { type: "start", partial: {} },
-    }, fixture.ctx);
+    await fixture.emit("turn_start", { turnIndex: 0 }, fixture.ctx);
+    await fixture.emit("message_start", { message: { role: "assistant" } }, fixture.ctx);
     await vi.advanceTimersByTimeAsync(10);
     await fixture.emit("message_update", {
       assistantMessageEvent: { type: "text_delta", delta: "A", partial: { usage: { output: 0 } } },
     }, fixture.ctx);
     await vi.advanceTimersByTimeAsync(40);
     await fixture.emit("message_end", {
-      message: { role: "assistant", usage: { output: 10 } },
+      message: { role: "assistant", usage: { output: 1532 }, durationMs },
     }, fixture.ctx);
 
-    expect(status.render(500).join("\n")).toContain("TPS 250");
+    expect(status.render(500).join("\n")).not.toContain("TPS");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it.each([
+    { output: 15321, durationMs: 100 },
+    { output: 22006, durationMs: 500 },
+    { output: 10000, durationMs: 1000 },
+    { output: 19999, durationMs: 2000 },
+  ])("retains the last credible TPS instead of displaying an outlier ($output tokens / $durationMs ms)", async ({ output, durationMs }) => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      theme,
+    );
+
+    await fixture.emit("turn_start", { turnIndex: 0 }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(1000);
+    await fixture.emit("message_end", {
+      message: { role: "assistant", usage: { output: 40 }, durationMs: 1000 },
+    }, fixture.ctx);
+    expect(status.render(500).join("\n")).toContain("TPS 40");
+
+    await fixture.emit("turn_start", { turnIndex: 1 }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(durationMs);
+    await fixture.emit("message_update", {
+      assistantMessageEvent: { type: "toolcall_delta", delta: "{}", partial: { usage: { output } } },
+    }, fixture.ctx);
+    expect(status.render(500).join("\n")).toContain("TPS 40");
+    await fixture.emit("message_end", {
+      message: { role: "assistant", usage: { output }, durationMs },
+    }, fixture.ctx);
+    await fixture.emit("turn_start", { turnIndex: 2 }, fixture.ctx);
+    expect(status.render(500).join("\n")).toContain("TPS 40");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it.each([
+    { output: 80, durationMs: 40 },
+    { output: 10000, durationMs: 1000 },
+  ])("does not retain a provisional TPS when the final measurement is invalid ($durationMs ms)", async ({ output, durationMs }) => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      theme,
+    );
+
+    await fixture.emit("message_end", {
+      message: { role: "assistant", usage: { output: 10 }, durationMs: 1000 },
+    }, fixture.ctx);
+    await fixture.emit("turn_start", { turnIndex: 1 }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(1000);
+    await fixture.emit("message_update", {
+      assistantMessageEvent: { type: "text_delta", delta: "A", partial: { usage: { output: 40 } } },
+    }, fixture.ctx);
+    expect(status.render(500).join("\n")).toContain("TPS 40");
+
+    await fixture.emit("message_end", {
+      message: { role: "assistant", usage: { output }, durationMs },
+    }, fixture.ctx);
+    expect(status.render(500).join("\n")).toContain("TPS 10");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it.each([undefined, 60000])("uses full response timing for batched tool-call output (provider duration: %s)", async (durationMs) => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      theme,
+    );
+
+    await fixture.emit("turn_start", { turnIndex: 0 }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(60000);
+    await fixture.emit("message_start", { message: { role: "assistant" } }, fixture.ctx);
+    await fixture.emit("message_update", {
+      assistantMessageEvent: { type: "toolcall_delta", delta: "{}", partial: { usage: { output: 15321 } } },
+    }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(1);
+    await fixture.emit("message_end", {
+      message: { role: "assistant", usage: { output: 15321 }, durationMs },
+    }, fixture.ctx);
+
+    expect(status.render(500).join("\n")).toContain("TPS 255");
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1, "1000"])("falls back to local response timing for invalid provider duration %s", async (durationMs) => {
+    vi.useFakeTimers();
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const status = fixture.widgets.get("tokyo-status")(
+      { requestRender: vi.fn(), mode: "regular" },
+      theme,
+    );
+
+    await fixture.emit("turn_start", { turnIndex: 0 }, fixture.ctx);
+    await vi.advanceTimersByTimeAsync(2000);
+    await fixture.emit("message_end", {
+      message: { role: "assistant", usage: { output: 100 }, durationMs },
+    }, fixture.ctx);
+
+    expect(status.render(500).join("\n")).toContain("TPS 50");
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
