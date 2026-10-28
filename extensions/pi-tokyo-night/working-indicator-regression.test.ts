@@ -148,6 +148,11 @@ describe("working indicator compatibility regression", () => {
 
   it("resumes visible rain when native editor input frees its row budget", async () => {
     vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.4);
+    vi.mocked(TokyoConfigManager.prototype.read).mockImplementation(async function (this: TokyoConfigManager) {
+      this.set("rainMode", "manual");
+      this.set("rainTickMs", 50);
+    });
     const fixture = makeFixture();
     const host = mountHost(fixture, false);
     host.terminal.rows = 12;
@@ -172,6 +177,7 @@ describe("working indicator compatibility regression", () => {
       host.reset();
       await vi.advanceTimersByTimeAsync(1000);
       expect(host.renders).toBeGreaterThan(0);
+      expect(host.widgets.get("tokyo-rain").render(120).map(stripAnsi).join("\n")).toContain("\\");
     } finally {
       await fixture.emit("session_shutdown", {}, fixture.ctx);
       host.stop();

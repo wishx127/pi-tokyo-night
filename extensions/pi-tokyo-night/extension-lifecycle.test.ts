@@ -1872,6 +1872,7 @@ describe("public layout and lifecycle contract", () => {
 
   it("lets working heartbeat renders carry rain frames without extra rain requests", async () => {
     vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.4);
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
     const tui = { requestRender: vi.fn() };
@@ -1883,6 +1884,7 @@ describe("public layout and lifecycle contract", () => {
     tui.requestRender.mockClear();
     await vi.advanceTimersByTimeAsync(1000);
     expect(rain.render(40)).not.toEqual(beforeFrame);
+    expect(rain.render(40).join("\n")).toContain("\\");
     expect(tui.requestRender.mock.calls.length).toBeGreaterThan(0);
     expect(tui.requestRender.mock.calls.length).toBeLessThanOrEqual(20);
     const activeRequests = tui.requestRender.mock.calls.length;
@@ -1911,6 +1913,7 @@ describe("public layout and lifecycle contract", () => {
 
   it("keeps rain refreshes alive when working UI updates fail", async () => {
     vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.4);
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
     const tui = { requestRender: vi.fn() };
@@ -1928,6 +1931,7 @@ describe("public layout and lifecycle contract", () => {
     expect(tui.requestRender).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(1000);
     expect(rain.render(40)).not.toEqual(beforeFrame);
+    expect(rain.render(40).join("\n")).toContain("\\");
     expect(tui.requestRender.mock.calls.length).toBeGreaterThan(1);
     expect(tui.requestRender.mock.calls.length).toBeLessThanOrEqual(21);
 
