@@ -11,6 +11,26 @@ function makeTheme(name = "tokyo-night-dark"): Theme {
 }
 
 describe("Tokyo Night theme palette", () => {
+  it("shades rain ink toward the active background instead of changing glyphs to fake depth", () => {
+    const palette = createTokyoNightPalette({
+      name: "custom-theme",
+      fg: () => "\x1b[38;2;200;100;50m\x1b[39m",
+      bg: () => "\x1b[48;2;20;30;40m\x1b[49m",
+    } as unknown as Theme);
+    expect(palette.rainShade?.("rain", 0.5, "\\")).toBe(
+      "\x1b[38;2;110;65;45m\\\x1b[39m",
+    );
+  });
+
+  it("fades toward a light background for custom light themes using terminal default backgrounds", () => {
+    const palette = createTokyoNightPalette({
+      name: "custom-light", appearance: "light",
+      fg: () => "\x1b[38;2;9;121;165m\x1b[39m",
+      bg: () => "",
+    } as unknown as Theme);
+    expect(palette.rainShade?.("rain", 0.125, ".")).toBe("\x1b[38;2;198;213;223m.\x1b[39m");
+  });
+
   it("derives extension foreground roles from the active Theme", () => {
     const palette = createTokyoNightPalette(makeTheme());
 

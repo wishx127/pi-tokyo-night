@@ -1,4 +1,3 @@
-import { visibleWidth } from "@earendil-works/pi-tui";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { TokyoConfigManager } from "../core/config";
@@ -13,12 +12,9 @@ import {
   type TokyoNightThemePalette,
 } from "../ui/theme-palette";
 import type { RainAnimationManager, RainFrameSnapshot } from "./rain-manager";
+import { MOON, STAR, RAIN_DROP, renderRainScene } from "./rain-scene";
 
-export const MOON = "🌙";
-export const MOON_COL = 2;
-export const MOON_ROW = 0;
-export const STAR = "✦";
-export const RAIN_DROP = "`";
+export { MOON, STAR, RAIN_DROP } from "./rain-scene";
 
 export interface RainPanelRenderOptions {
   width: number;
@@ -31,64 +27,10 @@ export interface RainPanelRenderOptions {
 export function renderRainPanelLines(
   options: RainPanelRenderOptions,
 ): string[] {
-  const outputWidth = Math.max(0, Math.floor(options.width));
-  const bodyRows = Math.max(0, Math.floor(options.rainRows));
+  const outputWidth = Number.isFinite(options.width) ? Math.max(0, Math.floor(options.width)) : 0;
+  const bodyRows = Number.isFinite(options.rainRows) ? Math.max(0, Math.floor(options.rainRows)) : 0;
   const innerWidth = getFrameContentWidth(outputWidth, options.frameEnabled);
-  const lines: string[] = [];
-
-  const dropSet = new Set<number>();
-  for (const drop of options.snapshot.drops) {
-    if (
-      Number.isInteger(drop.col) &&
-      Number.isInteger(drop.row) &&
-      drop.col >= 0 &&
-      drop.col < innerWidth &&
-      drop.row >= 0 &&
-      drop.row < bodyRows
-    ) {
-      dropSet.add(drop.row * innerWidth + drop.col);
-    }
-  }
-  const starSet = new Set<number>();
-  for (const star of options.snapshot.stars) {
-    if (
-      Number.isInteger(star.col) &&
-      Number.isInteger(star.row) &&
-      star.col >= 0 &&
-      star.col < innerWidth &&
-      star.row >= 0 &&
-      star.row < bodyRows
-    ) {
-      starSet.add(star.row * innerWidth + star.col);
-    }
-  }
-
-  const moonWidth = visibleWidth(MOON);
-  for (let rowIndex = 0; rowIndex < bodyRows; rowIndex++) {
-    let row = "";
-    let column = 0;
-    while (column < innerWidth) {
-      const position = rowIndex * innerWidth + column;
-      if (
-        rowIndex === MOON_ROW &&
-        column === MOON_COL &&
-        column + moonWidth <= innerWidth
-      ) {
-        row += options.palette?.fg("moon", MOON) ?? MOON;
-        column += moonWidth;
-      } else if (dropSet.has(position)) {
-        row += options.palette?.fg("rain", RAIN_DROP) ?? RAIN_DROP;
-        column += 1;
-      } else if (starSet.has(position)) {
-        row += options.palette?.fg("star", STAR) ?? STAR;
-        column += 1;
-      } else {
-        row += " ";
-        column += 1;
-      }
-    }
-    lines.push(row);
-  }
+  const lines = renderRainScene(innerWidth, bodyRows, options.snapshot, options.palette);
   return renderFrameSegment({
     width: outputWidth,
     lines,
@@ -111,6 +53,8 @@ function paletteSignature(palette: TokyoNightThemePalette | undefined): string {
   return palette ? [
     palette.fg("rain", RAIN_DROP), palette.fg("star", STAR),
     palette.fg("moon", MOON), palette.fg("frame", "│"),
+    ...(["rain", "moon", "star", "water"] as const)
+      .map((role) => palette.rainShade?.(role, 0.5, ".") ?? ""),
   ].join("\0") : "";
 }
 
@@ -144,6 +88,14 @@ export class RainPanelComponent implements Component {
     this.pendingFrame = undefined;
   }
 
+  private effectiveRows(width: number, configuredRows: number, frameEnabled: boolean): number {
+    const topRows = frameEnabled ? 1 : 0;
+    const availableRows = this.dependencies.getAvailableRows?.(width) ?? configuredRows + topRows;
+    return Math.min(configuredRows, Math.max(0,
+      (Number.isFinite(availableRows) ? Math.floor(availableRows) : 0) - topRows,
+    ));
+  }
+
   /** Whether a rain tick can change the last rendered panel. */
   hasVisibleChanges(): boolean {
     if (this.disposed) return false;
@@ -156,6 +108,7 @@ export class RainPanelComponent implements Component {
         cached.configuredRows !== config.rainRows ||
         cached.terminalRows !== this.tui.terminal?.rows ||
         cached.terminalColumns !== this.tui.terminal?.columns) return true;
+      if (cached.effectiveRows !== this.effectiveRows(cached.width, config.rainRows, config.editorFrame)) return true;
       const theme = this.dependencies.getTheme?.();
       const palette = theme ? createTokyoNightPalette(theme) : this.dependencies.palette;
       const colors = paletteSignature(palette);
@@ -197,14 +150,10 @@ export class RainPanelComponent implements Component {
         : this.dependencies.palette;
       const colors = paletteSignature(palette);
       const outputWidth = Math.max(0, Math.floor(width));
-      const topRows = config.editorFrame ? 1 : 0;
-      const availableRows = this.dependencies.getAvailableRows?.(outputWidth)
-        ?? config.rainRows + topRows;
-      const effectiveRows = Math.min(config.rainRows, Math.max(0,
-        (Number.isFinite(availableRows) ? Math.floor(availableRows) : 0) - topRows,
-      ));
+      const effectiveRows = this.effectiveRows(outputWidth, config.rainRows, config.editorFrame);
       this.dependencies.rain.setRenderWidth(
         getFrameContentWidth(outputWidth, config.editorFrame),
+        effectiveRows,
       );
       const revision = this.dependencies.rain.frameRevision;
       const cached = this.pendingFrame ?? this.cache;

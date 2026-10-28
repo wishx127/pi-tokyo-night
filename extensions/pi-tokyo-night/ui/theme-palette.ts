@@ -36,6 +36,7 @@ export type TokyoNightBackgroundRole =
 
 export interface TokyoNightThemePalette {
   fg(role: TokyoNightForegroundRole, text: string): string;
+  rainShade?(role: "rain" | "moon" | "star" | "water", intensity: number, text: string): string;
   workingPulse(text: string, intensity: number): string;
   bg(role: TokyoNightBackgroundRole, text: string): string;
   transition(
@@ -141,8 +142,36 @@ export function createTokyoNightPalette(
   const workingColors = theme.name?.includes("light")
     ? WORKING_TEXT_COLORS.light
     : WORKING_TEXT_COLORS.dark;
+  const rainTokens = {
+    rain: "thinkingLow", water: "thinkingLow",
+    moon: "warning", star: "accent",
+  } as const;
+  const rainStyles = new Map<string, string>();
+  const rgbFromAnsi = (ansi: string): RgbColor | undefined => {
+    const match = /\x1b\[(?:38|48);2;(\d+);(\d+);(\d+)m/.exec(ansi);
+    return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : undefined;
+  };
+  let rainBackground: RgbColor | undefined = theme.name === "tokyo-night-light" ? [225, 226, 231]
+    : theme.name === "tokyo-night-dark" ? [26, 27, 38]
+      : undefined;
 
   return {
+    rainShade: (role, intensity, text) => {
+      const token = rainTokens[role];
+      const level = Number.isFinite(intensity) ? Math.max(0, Math.min(1, intensity)) : 0;
+      const key = `${role}:${level}`;
+      let style = rainStyles.get(key);
+      if (!style) {
+        const foreground = rgbFromAnsi(theme.fg(token, ""));
+        if (!foreground) return theme.fg(token, text);
+        rainBackground ??= rgbFromAnsi(theme.bg?.("userMessageBg", "") ?? "") ??
+          ((theme as Theme & { appearance?: string }).appearance === "light" || theme.name?.includes("light")
+            ? [225, 226, 231] : [26, 27, 38]);
+        style = fgRgb(interpolateRgb(rainBackground, foreground, level));
+        rainStyles.set(key, style);
+      }
+      return `${style}${text}${RESET_FG}`;
+    },
     fg: (role, text) => {
       if (role === "workingText") {
         return renderRgbForeground(workingColors.base, text);

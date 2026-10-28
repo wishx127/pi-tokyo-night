@@ -111,6 +111,7 @@ describe("Pi TUI smoke contract", () => {
       codexQuota: false,
       kimiQuota: false,
       iconMode: "ascii",
+      rainRows: 4,
     });
   });
 
@@ -121,7 +122,7 @@ describe("Pi TUI smoke contract", () => {
         iconMode: "ascii",
       }),
     ).toEqual([
-      "🌙",
+      "╭",
       " @ ",
       "Neon Studio",
       "Theme: Tokyo Night Dark",

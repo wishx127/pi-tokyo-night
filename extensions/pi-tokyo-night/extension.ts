@@ -86,6 +86,7 @@ type BranchState = {
 type WorkingPhase = "waiting" | "thinking" | "streaming";
 type WorkingTool = { name: string; startedAt: number };
 type NativeWorkingState = {
+  active: boolean;
   phase: WorkingPhase;
   phaseStartedAt: number | undefined;
   activeTools: Map<string, WorkingTool>;
@@ -125,7 +126,6 @@ type SessionState = {
   terminalRecovery: { dispose(): void } | undefined;
   codexCountdownRefreshTimeout: ReturnType<typeof setTimeout> | undefined;
   working: NativeWorkingState;
-  rainActivity: RainActivity;
   kimiUsageStore: KimiUsageStore;
   statusRenderCache: StatusRenderCache;
   liveUsage: LiveSessionUsage | undefined;
@@ -528,6 +528,7 @@ export function registerTokyoNightExtension(
   };
   const resetWorking = (session: SessionState): void => {
     stopWorking(session);
+    session.working.active = false;
     session.working.phase = "waiting";
     session.working.phaseStartedAt = undefined;
     session.working.activeTools.clear();
@@ -785,13 +786,16 @@ export function registerTokyoNightExtension(
     kimiPollTimer.unref?.();
   };
 
-  const applyRainProfile = (
-    session: SessionState,
-    activity: RainActivity,
-  ): void => {
-    session.rainActivity = activity;
+  const rainProfileFor = (session: SessionState) => {
+    const { working } = session;
+    const activity: RainActivity = !working.active ? "idle"
+      : working.activeTools.size > 0 ? "tools" : working.phase;
+    return resolveRainRuntimeProfile(configManager.get(), activity);
+  };
+
+  const applyRainProfile = (session: SessionState): void => {
     const config = configManager.get();
-    const profile = resolveRainRuntimeProfile(config, activity);
+    const profile = rainProfileFor(session);
     if (config.rainMode === "auto") session.refreshScheduler?.setFrameInterval(profile.tickMs);
     const manager = session.resources.rainManager;
     if (!manager || !manager.isRunning) return;
@@ -802,7 +806,7 @@ export function registerTokyoNightExtension(
     const manager = session.resources.rainManager;
     if (!manager) return;
     const config = configManager.get();
-    const profile = resolveRainRuntimeProfile(config, session.rainActivity);
+    const profile = rainProfileFor(session);
     session.refreshScheduler?.setFrameInterval(
       config.rainMode === "auto" ? profile.tickMs
         : config.rainMode === "manual" ? Math.min(100, config.rainTickMs) : 100,
@@ -1125,9 +1129,10 @@ export function registerTokyoNightExtension(
   pi.on("agent_start", async (_event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
     if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI) return;
-    applyRainProfile(session, "active");
+    session.working.active = true;
     setWorkingPhase(session, "waiting", true);
     session.working.activeTools.clear();
+    applyRainProfile(session);
     session.ui.setWorkingVisible(true);
     startWorking(session);
   });
@@ -1137,14 +1142,18 @@ export function registerTokyoNightExtension(
     resetOutputTps(session);
     session.outputTpsStartedAt = performance.now();
     finalizeLiveUsage(session);
-    if (session.working.phaseStartedAt === undefined) return;
+    if (!session.working.active) return;
     setWorkingPhase(session, "waiting", true);
+    applyRainProfile(session);
     updateWorking(session);
     session.refreshScheduler?.flushNow();
   });
   pi.on("agent_end", async (_event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
     if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI) return;
+    session.working.active = false;
+    session.working.activeTools.clear();
+    applyRainProfile(session);
     stopWorking(session);
     finalizeLiveUsage(session);
     try { requestRainRender(session); }
@@ -1153,9 +1162,9 @@ export function registerTokyoNightExtension(
   pi.on("agent_settled", async (_event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
     if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI || !ctx.isIdle()) return;
-    applyRainProfile(session, "idle");
     finalizeLiveUsage(session);
     resetWorking(session);
+    applyRainProfile(session);
     restoreWorkingUi(session);
   });
   pi.on("message_start", async (event, ctx) => {
@@ -1173,7 +1182,10 @@ export function registerTokyoNightExtension(
     }
     const type = assistantEvent.type;
     const phase: WorkingPhase | undefined = type.includes("thinking") || type.includes("toolcall") ? "thinking" : type.includes("text") ? "streaming" : undefined;
-    if (session.working.phaseStartedAt !== undefined && phase && setWorkingPhase(session, phase)) updateWorking(session);
+    if (session.working.active && phase && setWorkingPhase(session, phase)) {
+      applyRainProfile(session);
+      updateWorking(session);
+    }
     session.refreshScheduler?.hostWillRender();
   });
   pi.on("message_end", async (event, ctx) => {
@@ -1202,19 +1214,20 @@ export function registerTokyoNightExtension(
   });
   pi.on("tool_execution_start", async (event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
-    if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI || session.working.phaseStartedAt === undefined) return;
-    applyRainProfile(session, "tools");
+    if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI || !session.working.active) return;
+    if (session.working.activeTools.has(event.toolCallId)) return;
+    if (session.working.activeTools.size === 0) setWorkingPhase(session, "waiting");
     session.working.activeTools.set(event.toolCallId, { name: event.toolName, startedAt: Date.now() });
+    applyRainProfile(session);
     updateWorking(session);
     session.refreshScheduler?.flushNow();
   });
   pi.on("tool_execution_end", async (event, ctx) => {
     const session = sessionsByIdentity.get(identityOf(ctx));
-    if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI || session.working.phaseStartedAt === undefined) return;
-    session.working.activeTools.delete(event.toolCallId);
+    if (!session || !isCurrent(session) || session.mode !== "tui" || !session.hasUI || !session.working.active) return;
+    if (!session.working.activeTools.delete(event.toolCallId)) return;
     if (session.working.activeTools.size === 0) {
-      applyRainProfile(session, "active");
-      setWorkingPhase(session, "waiting");
+      applyRainProfile(session);
     }
     updateWorking(session);
     session.refreshScheduler?.flushNow();
@@ -1295,6 +1308,7 @@ export function registerTokyoNightExtension(
       terminalRecovery: undefined,
       codexCountdownRefreshTimeout: undefined,
       working: {
+        active: false,
         phase: "waiting",
         phaseStartedAt: undefined,
         activeTools: new Map(),
@@ -1306,7 +1320,6 @@ export function registerTokyoNightExtension(
         pending: false,
         setIndicator: resolveWorkingIndicatorSetter(sessionUI),
       },
-      rainActivity: "idle",
       kimiUsageStore: createKimiUsageStore(),
       statusRenderCache: new StatusRenderCache(),
       liveUsage: undefined,

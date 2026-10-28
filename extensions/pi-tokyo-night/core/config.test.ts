@@ -28,6 +28,10 @@ afterEach(() => {
 });
 
 describe("TokyoConfigManager validation", () => {
+  it("starts new rain scenes with enough height and cadence for layered ASCII motion", () => {
+    expect(new TokyoConfigManager().get()).toMatchObject({ rainRows: 8, rainTickMs: 50 });
+  });
+
   it("keeps exported defaults immutable and stable for new managers", () => {
     const originalDefaults = { ...DEFAULT_CONFIG };
 

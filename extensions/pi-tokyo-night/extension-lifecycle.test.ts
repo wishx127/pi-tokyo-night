@@ -285,12 +285,12 @@ describe("public layout and lifecycle contract", () => {
     const studio = fixture.command.handler("", fixture.ctx);
     await vi.waitFor(() => expect(fixture.customComponent).toBeDefined());
 
-    expect(rain.render(80).join("\n")).toContain("🌙");
+    expect(rain.render(80)).toHaveLength(9);
     tui.terminal.rows = 12;
     expect(rain.render(80)).toHaveLength(1);
     expect(rain.render(80)[0]).toContain("╭");
     tui.terminal.rows = 60;
-    expect(rain.render(80).join("\n")).toContain("🌙");
+    expect(rain.render(80)).toHaveLength(9);
 
     fixture.customComponent.handleInput("\x1b");
     await studio;
@@ -367,24 +367,21 @@ describe("public layout and lifecycle contract", () => {
     fixture.widgets.get("tokyo-status")({ requestRender }, theme);
     await fixture.emit("agent_start", {}, fixture.ctx);
     requestRender.mockClear();
-    await vi.advanceTimersByTimeAsync(129);
-    expect(requestRender).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    expect(requestRender).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(requestRender.mock.calls.length).toBeGreaterThan(0);
+    expect(requestRender.mock.calls.length).toBeLessThanOrEqual(panel ? 5 : 3);
 
     await fixture.emit("tool_execution_start", { toolCallId: "tool", toolName: "read" }, fixture.ctx);
     requestRender.mockClear();
-    await vi.advanceTimersByTimeAsync(109);
-    expect(requestRender).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    expect(requestRender).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(requestRender.mock.calls.length).toBeGreaterThan(0);
+    expect(requestRender.mock.calls.length).toBeLessThanOrEqual(panel ? 6 : 3);
 
     await fixture.emit("tool_execution_end", { toolCallId: "tool" }, fixture.ctx);
     requestRender.mockClear();
-    await vi.advanceTimersByTimeAsync(129);
-    expect(requestRender).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    expect(requestRender).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(requestRender.mock.calls.length).toBeGreaterThan(0);
+    expect(requestRender.mock.calls.length).toBeLessThanOrEqual(panel ? 5 : 3);
     await fixture.emit("session_shutdown", {}, fixture.ctx);
     expect(vi.getTimerCount()).toBe(0);
   });
@@ -820,7 +817,7 @@ describe("public layout and lifecycle contract", () => {
 
     expect(status.render(500).join("\n")).toContain("↑120 ↓34 R40 W6");
     expect(status.render(500).join("\n")).toContain("$0.03");
-    await vi.advanceTimersByTimeAsync(99);
+    await vi.advanceTimersByTimeAsync(49);
     expect(statusTui.requestRender).not.toHaveBeenCalled();
 
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
@@ -1776,6 +1773,67 @@ describe("public layout and lifecycle contract", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("drives rain from model phases and keeps parallel tools in control until they all finish", async () => {
+    vi.useFakeTimers();
+    let seed = 12345;
+    vi.spyOn(Math, "random").mockImplementation(() => {
+      seed = Math.imul(seed, 1664525) + 1013904223 | 0;
+      return (seed >>> 0) / 4294967296;
+    });
+    vi.mocked(TokyoConfigManager.prototype.read).mockImplementation(async function (this: TokyoConfigManager) {
+      this.set("rainRows", 4);
+      this.set("editorFrame", false);
+    });
+    const fixture = makeFixture();
+    await fixture.emit("session_start", {}, fixture.ctx);
+    const rain = fixture.widgets.get("tokyo-rain")({ requestRender: vi.fn() });
+    rain.render(180);
+    const sample = async () => {
+      await vi.advanceTimersByTimeAsync(1200);
+      let strokes = 0;
+      for (let frame = 0; frame < 10; frame++) {
+        await vi.advanceTimersByTimeAsync(100);
+        strokes += (rain.render(180).join("").match(/\\/g) ?? []).length;
+      }
+      return strokes;
+    };
+    const phase = (type: string) => fixture.emit("message_update", { assistantMessageEvent: { type } }, fixture.ctx);
+    try {
+      expect(await sample()).toBe(0);
+      await fixture.emit("agent_start", {}, fixture.ctx);
+      const waiting = await sample();
+      expect(waiting).toBeGreaterThan(0);
+      await phase("thinking_delta");
+      const thinking = await sample();
+      expect(thinking).toBeGreaterThan(waiting);
+      await phase("text_delta");
+      const streaming = await sample();
+      expect(streaming).toBeGreaterThan(thinking);
+      for (const toolCallId of ["first", "second"]) {
+        await fixture.emit("tool_execution_start", { toolCallId, toolName: "read" }, fixture.ctx);
+      }
+      const tools = await sample();
+      expect(tools).toBeGreaterThan(streaming);
+      await phase("thinking_delta");
+      await fixture.emit("tool_execution_end", { toolCallId: "first" }, fixture.ctx);
+      expect(await sample()).toBeGreaterThan(streaming);
+      await phase("text_delta");
+      await fixture.emit("tool_execution_end", { toolCallId: "second" }, fixture.ctx);
+      expect(await sample()).toBeLessThan(tools);
+      await fixture.emit("agent_end", {}, fixture.ctx);
+      // Existing slow background drops finish falling after births stop.
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(await sample()).toBe(0);
+      await fixture.emit("tool_execution_start", { toolCallId: "late", toolName: "read" }, fixture.ctx);
+      await phase("text_delta");
+      expect(await sample()).toBe(0);
+      await fixture.emit("agent_settled", {}, fixture.ctx);
+      expect(await sample()).toBe(0);
+    } finally {
+      await fixture.emit("session_shutdown", {}, fixture.ctx);
+    }
+  });
+
   it("auto rain follows Pi activity without clearing the visible frame", async () => {
     vi.useFakeTimers();
     const fixture = makeFixture();
@@ -1785,16 +1843,14 @@ describe("public layout and lifecycle contract", () => {
     const rain = fixture.widgets.get("tokyo-rain")(rainTui);
     rain.render(80);
 
-    await vi.advanceTimersByTimeAsync(160);
+    await vi.advanceTimersByTimeAsync(1000);
     const idleFrame = rain.render(80).join("\n");
-    expect(idleFrame).toContain("`");
+    expect(idleFrame).not.toContain("\\");
 
     await fixture.emit("agent_start", {}, fixture.ctx);
     const activeFrame = rain.render(80).join("\n");
     expect(activeFrame).toBe(idleFrame);
-    await vi.advanceTimersByTimeAsync(159);
-    expect(rain.render(80).join("\n")).toBe(activeFrame);
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(1000);
     const activeTickFrame = rain.render(80).join("\n");
     expect(activeTickFrame).not.toBe(activeFrame);
 
@@ -1803,15 +1859,12 @@ describe("public layout and lifecycle contract", () => {
       { toolCallId: "tool", toolName: "read", args: {} },
       fixture.ctx,
     );
-    await vi.advanceTimersByTimeAsync(129);
     expect(rain.render(80).join("\n")).toBe(activeTickFrame);
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(200);
     expect(rain.render(80).join("\n")).not.toBe(activeTickFrame);
     const firstToolFrame = rain.render(80).join("\n");
-    await vi.advanceTimersByTimeAsync(109);
-    expect(rain.render(80).join("\n")).toBe(firstToolFrame);
     vi.mocked(Math.random).mockReturnValue(0.6);
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(200);
     expect(rain.render(80).join("\n")).not.toBe(firstToolFrame);
 
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
@@ -1823,18 +1876,22 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
     const tui = { requestRender: vi.fn() };
     const rain = fixture.widgets.get("tokyo-rain")(tui);
-    rain.render(40);
+    const beforeFrame = rain.render(40);
     tui.requestRender.mockClear();
 
     await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
     tui.requestRender.mockClear();
     await vi.advanceTimersByTimeAsync(1000);
-    expect(tui.requestRender).toHaveBeenCalledTimes(7);
+    expect(rain.render(40)).not.toEqual(beforeFrame);
+    expect(tui.requestRender.mock.calls.length).toBeGreaterThan(0);
+    expect(tui.requestRender.mock.calls.length).toBeLessThanOrEqual(20);
+    const activeRequests = tui.requestRender.mock.calls.length;
 
     await fixture.emit("agent_end", { type: "agent_end" }, fixture.ctx);
-    expect(tui.requestRender).toHaveBeenCalledTimes(7);
-    await vi.advanceTimersByTimeAsync(130);
-    expect(tui.requestRender).toHaveBeenCalledTimes(8);
+    expect(tui.requestRender).toHaveBeenCalledTimes(activeRequests);
+    await vi.advanceTimersByTimeAsync(66);
+    expect(tui.requestRender.mock.calls.length).toBeGreaterThan(activeRequests);
+    expect(tui.requestRender.mock.calls.length).toBeLessThanOrEqual(activeRequests + 2);
 
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
@@ -1845,6 +1902,7 @@ describe("public layout and lifecycle contract", () => {
     await fixture.emit("session_start", {}, fixture.ctx);
     const requestRender = vi.fn(() => { throw new Error(message); });
     fixture.widgets.get("tokyo-rain")({ requestRender }).render(80);
+    await fixture.emit("agent_start", {}, fixture.ctx);
     await expect(vi.advanceTimersByTimeAsync(3000)).resolves.not.toThrow();
     expect(requestRender).toHaveBeenCalledTimes(message.includes("stale") ? 1 : 3);
     expect(vi.getTimerCount()).toBe(0);
@@ -1856,7 +1914,8 @@ describe("public layout and lifecycle contract", () => {
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
     const tui = { requestRender: vi.fn() };
-    fixture.widgets.get("tokyo-rain")(tui).render(40);
+    const rain = fixture.widgets.get("tokyo-rain")(tui);
+    const beforeFrame = rain.render(40);
     fixture.ui.setWorkingIndicator.mockImplementation(() => {
       throw new Error("This extension instance is stale");
     });
@@ -1867,8 +1926,10 @@ describe("public layout and lifecycle contract", () => {
 
     await fixture.emit("agent_start", { type: "agent_start" }, fixture.ctx);
     expect(tui.requestRender).toHaveBeenCalledOnce();
-    await vi.advanceTimersByTimeAsync(130);
-    expect(tui.requestRender).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(rain.render(40)).not.toEqual(beforeFrame);
+    expect(tui.requestRender.mock.calls.length).toBeGreaterThan(1);
+    expect(tui.requestRender.mock.calls.length).toBeLessThanOrEqual(21);
 
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
@@ -2420,9 +2481,12 @@ describe("public layout and lifecycle contract", () => {
     vi.spyOn(Math, "random").mockReturnValue(0.4);
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await fixture.emit("agent_start", {}, fixture.ctx);
     const rainTui = { requestRender: vi.fn() };
     const rain = fixture.widgets.get("tokyo-rain")(rainTui);
     rain.render(80);
+    // Use falling drops to observe cadence; an untouched water plane stays empty.
+    await vi.advanceTimersByTimeAsync(1320);
 
     const studio = fixture.command.handler("", fixture.ctx);
     await Promise.resolve();
@@ -2435,14 +2499,15 @@ describe("public layout and lifecycle contract", () => {
     fixture.customComponent.handleInput("\x1b[C");
     await vi.advanceTimersByTimeAsync(100);
     const beforeFirstTick = rain.render(80).join("\n");
-    await vi.advanceTimersByTimeAsync(59);
+    await vi.advanceTimersByTimeAsync(25);
     expect(rain.render(80).join("\n")).toBe(beforeFirstTick);
     await vi.advanceTimersByTimeAsync(1);
     const firstTick = rain.render(80).join("\n");
     expect(firstTick).not.toBe(beforeFirstTick);
-    await vi.advanceTimersByTimeAsync(139);
+    await vi.advanceTimersByTimeAsync(59);
     expect(rain.render(80).join("\n")).toBe(firstTick);
-    await vi.advanceTimersByTimeAsync(1);
+    // A simulation tick can map to the same cells; let a drop enter the sky.
+    await vi.advanceTimersByTimeAsync(61);
     expect(rain.render(80).join("\n")).not.toBe(firstTick);
     expect(rainTui.requestRender).toHaveBeenCalled();
 
@@ -2485,7 +2550,7 @@ describe("public layout and lifecycle contract", () => {
 
     fixture.customComponent.handleInput("\t");
     fixture.customComponent.handleInput("\r");
-    await vi.advanceTimersByTimeAsync(160);
+    await vi.advanceTimersByTimeAsync(66);
 
     expect(statusTui.requestRender).toHaveBeenCalledOnce();
     expect(status.render(500).join("\n")).not.toContain("pi-agent");
@@ -3039,8 +3104,10 @@ describe("public layout and lifecycle contract", () => {
 
   it("keeps the panel running when /tokyo-night off cannot be persisted", async () => {
     vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.4);
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    await fixture.emit("agent_start", {}, fixture.ctx);
     const rainTui = { requestRender: vi.fn() };
     const rain = fixture.widgets.get("tokyo-rain")(rainTui);
     expect(rain.render(40).length).toBeGreaterThan(0);
@@ -3048,7 +3115,7 @@ describe("public layout and lifecycle contract", () => {
 
     vi.mocked(TokyoConfigManager.prototype.write).mockResolvedValue(false);
     await fixture.command.handler("off", fixture.ctx);
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(1500);
 
     expect(rain.render(40).length).toBeGreaterThan(0);
     expect(rainTui.requestRender).toHaveBeenCalled();
@@ -3438,6 +3505,7 @@ describe("public layout and lifecycle contract", () => {
 
   it("releases old rain and footer resources when the replacement uses another UI", async () => {
     vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.4);
     const fixture = makeFixture("tui", "first");
     const replacement = makeFixture("tui", "second");
     await fixture.emit("session_start", { reason: "start" }, fixture.ctx);
@@ -3471,11 +3539,12 @@ describe("public layout and lifecycle contract", () => {
     const newTui = { requestRender: vi.fn(), mode: "regular" };
     const newPanel = replacement.widgets.get("tokyo-rain")(newTui, theme);
     expect(newPanel.render(80).length).toBeGreaterThan(0);
+    await fixture.emit("agent_start", {}, replacement.ctx);
     oldTui.requestRender.mockClear();
     newTui.requestRender.mockClear();
     oldPanel.requestRender(true);
     oldBranchListener();
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(1500);
     expect(oldTui.requestRender).not.toHaveBeenCalled();
     expect(newTui.requestRender).toHaveBeenCalled();
     footer.dispose();

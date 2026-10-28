@@ -651,7 +651,7 @@ export class NeonStudioComponent implements Component {
         label: "Rain Mode",
         value: config.rainMode === "auto" ? "Auto" : config.rainMode === "static" ? "Static" : "Manual",
         description: config.rainMode === "auto"
-          ? "Slow rain slightly when idle; speed and density follow Pi activity"
+          ? "Dry while idle; waiting, thinking, output and tools shape the rain"
           : config.rainMode === "static"
             ? "Keep the scene visible without rain animation"
             : "Use the saved Rain Tick and Max Rain Drops values",
