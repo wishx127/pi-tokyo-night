@@ -135,6 +135,132 @@ describe("RainPanelComponent", () => {
     }
   });
 
+  it.each([[4, 3], [10, 7]])("uses quiet horizontal glints throughout a %i-row impact's life", (rainRows, skyRows) => {
+    for (const age of [0.05, 0.35, 0.55, 1.2, 2.8]) {
+      const water = renderRainPanelLines({
+        width: 60, frameEnabled: false, rainRows,
+        snapshot: {
+          drops: [], stars: [],
+          splashes: [{ col: 30, depth: 2, age }],
+          waterMarks: [{ col: 30, depth: 2, age }],
+        },
+      }).slice(skyRows).join("");
+      expect(water.trim()).not.toBe("");
+      expect(water).toMatch(/^[ .-]+$/);
+    }
+  });
+
+  it.each([[40, 4, 3], [100, 4, 3], [40, 10, 7], [100, 10, 7]])(
+    "keeps dense water highlights short and separated in %i by %i cells",
+    (width, rainRows, skyRows) => {
+      const impacts = Array.from({ length: 192 }, (_, index) => ({
+        col: (index * 7.3) % width, depth: index % 3, age: 0.3 + index % 7 * 0.1,
+      }));
+      const lines = renderRainPanelLines({
+        width, frameEnabled: false, rainRows,
+        snapshot: { drops: [], stars: [], splashes: impacts.slice(-64), waterMarks: impacts },
+      }).slice(skyRows);
+      expect(lines.some((line) => line.trim().length > 0)).toBe(true);
+      for (const line of lines) {
+        expect(line.replace(/ /g, "").length).toBeLessThanOrEqual(Math.max(1, Math.floor(width * 0.3)));
+        expect(line).not.toMatch(/[.-]{4}/);
+      }
+    },
+  );
+
+  it("varies the length of short reflections with the actual impact footprint", () => {
+    const lengths = [30, 30.25, 30.5, 30.75].map((col) => renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows: 4,
+      snapshot: { drops: [], stars: [], waterMarks: [{ col, depth: 2, age: 1.2 }] },
+    })[3].trim().length);
+    expect(lengths.every((length) => length > 0 && length <= 3)).toBe(true);
+    expect(new Set(lengths).size).toBeGreaterThan(1);
+  });
+
+  it.each([[33.5, 0.025, 0.030], [34.5, 0.057, 0.058], [35.5, 0.057, 0.058]])(
+    "blends glints at 30.5 and %f continuously when their brightness crosses",
+    (rightCol, beforeTime, afterTime) => {
+      const columns = (time: number) => {
+        const impacts = [
+          { col: 30.5, depth: 2, age: 0.4 + time }, { col: rightCol, depth: 2, age: 1 + time },
+        ];
+        const line = renderRainPanelLines({
+          width: 60, frameEnabled: false, rainRows: 4,
+          snapshot: { drops: [], stars: [], splashes: impacts, waterMarks: impacts },
+        })[3];
+        return [...line].flatMap((cell, col) => cell === " " ? [] : [col + 0.5]);
+      };
+      const before = columns(beforeTime), after = columns(afterTime);
+      const center = (values: number[]) => values.reduce((sum, col) => sum + col, 0) / values.length;
+      expect(before.length).toBeGreaterThan(0);
+      expect(after.length).toBeGreaterThan(0);
+      expect(Math.abs(center(after) - center(before))).toBeLessThanOrEqual(1);
+      expect(Math.abs(after.length - before.length)).toBeLessThanOrEqual(1);
+    },
+  );
+
+  it("keeps an early reflection centered while it spreads into a wet trace", () => {
+    let previousWidth = 0;
+    for (const age of [0.05, 0.125, 0.25, 0.3, 0.35, 0.55, 0.8]) {
+      const impact = { col: 30.5, depth: 2, age };
+      const line = renderRainPanelLines({
+        width: 60, frameEnabled: false, rainRows: 4,
+        snapshot: { drops: [], stars: [], splashes: [impact], waterMarks: [impact] },
+      })[3];
+      const columns = [...line].flatMap((cell, col) => cell === " " ? [] : [col + 0.5]);
+      expect(columns.length).toBeGreaterThanOrEqual(previousWidth);
+      expect(Math.abs(columns.reduce((sum, col) => sum + col, 0) / columns.length - 30.5)).toBeLessThanOrEqual(0.5);
+      previousWidth = columns.length;
+    }
+  });
+
+  it.each([12, 14, 16, 19, 60])("keeps distant wet regions visible without filling their dry gap at width %i", (width) => {
+    const line = renderRainPanelLines({
+      width, frameEnabled: false, rainRows: 4,
+      snapshot: { drops: [], stars: [], waterMarks: [
+        { col: 1.5, depth: 2, age: 1.2 }, { col: width - 1.5, depth: 2, age: 1.2 },
+      ] },
+    })[3];
+    expect(line.slice(0, 4).trim()).not.toBe("");
+    expect(line.slice(-4).trim()).not.toBe("");
+    expect(line.slice(4, -4).trim()).toBe("");
+  });
+
+  it("keeps a distant faint trace visible when a stronger impact appears elsewhere", () => {
+    const line = renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows: 4,
+      snapshot: { drops: [], stars: [], waterMarks: [
+        { col: 10.5, depth: 2, age: 0.55 }, { col: 50.5, depth: 0, age: 1.8 },
+      ] },
+    })[3];
+    expect(line.slice(8, 14).trim()).not.toBe("");
+    expect(line.slice(48, 54).trim()).not.toBe("");
+  });
+
+  it.each([4, 10])("merges neighboring traces while keeping distant impacts separate in %i rows", (rainRows) => {
+    const draw = (columns: number[]) => renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows,
+      snapshot: { drops: [], stars: [], waterMarks: columns.map((col) => ({ col, depth: 2, age: 1.2 })) },
+    }).at(-1)!;
+    expect(draw([30.1, 30.5, 31]).match(/-+/g)).toHaveLength(1);
+    expect(draw([30.1, 45.1]).match(/-+/g)).toHaveLength(2);
+    expect(draw([30.1, 45.1]).slice(34, 42).trim()).toBe("");
+  });
+
+  it.each([4, 10])("merges %i-row impacts without double brightness or input-order changes", (rainRows) => {
+    const draw = (impacts: Array<{ col: number; depth: number; age: number }>) => renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows,
+      palette: createTokyoNightPalette(readTokyoTheme("dark")),
+      snapshot: { drops: [], stars: [], waterMarks: impacts, splashes: impacts },
+    });
+    const impacts = [
+      { col: 29.7, depth: 2, age: 0.05 }, { col: 30.4, depth: 2, age: 0.35 },
+      { col: 45.2, depth: 1, age: 1.2 }, { col: 12.5, depth: 0, age: 2.1 },
+    ];
+    expect(draw([...impacts].reverse())).toEqual(draw(impacts));
+    expect(draw([...impacts, ...impacts])).toEqual(draw(impacts));
+  });
+
   it.each([4, 10])("leaves a local fading water trace after a ripple in a %i-row scene", (rainRows) => {
     const draw = (age: number, col = 30) => {
       const levels: number[] = [];
@@ -158,6 +284,31 @@ describe("RainPanelComponent", () => {
     expect(draw(1.2, 45).lines.at(-1)!.slice(40, 50).trim()).not.toBe("");
     expect(draw(1.2, 45).lines.at(-1)!.slice(25, 35).trim()).toBe("");
     expect(draw(4.3).lines.at(-1)!.trim()).toBe("");
+  });
+
+  it("keeps an edge reflection independent of impacts on another water row", () => {
+    const draw = (extra: boolean) => renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows: 10,
+      snapshot: {
+        drops: [], stars: [], waterMarks: [
+          { col: 0.5, depth: 1, age: 2.2 },
+          ...(extra ? [{ col: 59.5, depth: 0, age: 0.7 }] : []),
+        ],
+      },
+    });
+    expect(draw(false)[8].trim()).not.toBe("");
+    expect(draw(true)[8]).toBe(draw(false)[8]);
+  });
+
+  it.each([[4, 3], [10, 7]])("shows the first distant contact on a %i-row water surface", (rainRows, skyRows) => {
+    for (const age of [0, 0.025, 0.05, 0.1]) {
+      const lines = renderRainPanelLines({
+        width: 60, frameEnabled: false, rainRows,
+        snapshot: { drops: [], stars: [], splashes: [{ col: 30.2, depth: 0, age }] },
+      });
+      expect(lines[skyRows][30]).toBe(".");
+      expect(lines.slice(1, skyRows).every((line) => line.trim() === "")).toBe(true);
+    }
   });
 
   it.each([[4, 0], [10, 0], [4, 2], [10, 2]])("hands a %i-row depth-%i impact continuously to a visible wet trace", (rainRows, depth) => {
@@ -303,14 +454,21 @@ describe("RainPanelComponent", () => {
   });
 
   it("keeps compact water reflections tied to the breathing stars when the moon is hidden", () => {
-    const draw = (phase: number) => renderRainPanelLines({
-      width: 60, frameEnabled: false, rainRows: 3,
-      palette: { ...palette, rainShade: (role, light, text) =>
-        role === "water" && light > 0.4 ? text.replace(/\S/g, "g") : text },
-      snapshot: { time: 1, drops: [], stars: [{ col: 30, row: 0, period: 4, phase }],
-        waterMarks: [{ col: 30, depth: 2, age: 1.2 }] },
-    }).slice(2);
-    expect(draw(0)).not.toEqual(draw(0.5));
+    const draw = (phase: number) => {
+      const levels: number[] = [];
+      const lines = renderRainPanelLines({
+        width: 60, frameEnabled: false, rainRows: 3,
+        palette: { ...palette, rainShade: (role, light, text) => {
+          if (role === "water" && /\S/.test(text)) levels.push(light);
+          return text;
+        } },
+        snapshot: { time: 1, drops: [], stars: [{ col: 30, row: 0, period: 4, phase }],
+          waterMarks: [{ col: 30, depth: 2, age: 1.2 }] },
+      }).slice(2);
+      return { lines, peak: Math.max(0, ...levels) };
+    };
+    expect(draw(0).lines).toEqual(draw(0.5).lines);
+    expect(draw(0).peak).toBeGreaterThan(draw(0.5).peak);
   });
 
   it("shrinks impact rings to the depth of a compact water plane", () => {
@@ -318,7 +476,7 @@ describe("RainPanelComponent", () => {
       const lines = renderRainPanelLines({
         width: 60, frameEnabled: false, rainRows,
         palette: { ...palette, rainShade: (role, light, text) =>
-          role === "water" && light > 0.3 ? text.replace(/\S/g, "o") : text },
+          role === "water" && light > 0 ? text.replace(/\S/g, "o") : text },
         snapshot: { time: 1, drops: [], stars: [], splashes: [{ col: 30, depth: 2, age: 0.55 }] },
       });
       return [...lines.at(-1)!].flatMap((cell, index) => cell === "o" ? [index] : []);
@@ -468,10 +626,10 @@ describe("RainPanelComponent", () => {
     expect(lines.every((line) => visibleWidth(line) === 80)).toBe(true);
     expect(lines.join("\n").replaceAll("\u{1f319}", "")).toMatch(/^[\x20-\x7e\n]+$/);
     expect(lines.slice(1, 4).join("\n")).toContain("\\");
-    expect(new Set(lines.join("").replace(/\s/g, "")).size).toBeGreaterThan(5);
+    expect(lines.slice(5).join("")).toMatch(/[.-]/);
   });
 
-  it("turns a landing into a small droplet, expanding ring and wet trace, then clears it", () => {
+  it("turns a landing into a surface glint, spreading reflection and fading wet trace", () => {
     const draw = (age?: number) => renderRainPanelLines({
       width: 60, frameEnabled: false, rainRows: 8,
       snapshot: {
@@ -480,10 +638,11 @@ describe("RainPanelComponent", () => {
         waterMarks: age === undefined ? [] : [{ col: 30, depth: 2, age }],
       },
     });
-    expect(draw(0.05)[6][30]).toBe(".");
-    expect(draw(0.55).at(-1)).toContain("(");
-    expect(draw(0.55).at(-1)).toContain(")");
-    expect(draw(1.5).at(-1)!.trim()).toMatch(/^[.~-]+$/);
+    const columns = (age: number) => [...draw(age).at(-1)!].flatMap((cell, col) => cell === " " ? [] : [col]);
+    const fresh = columns(0.05), spread = columns(0.55);
+    expect(draw(0.05)[7][30]).toBe(".");
+    expect(spread.at(-1)! - spread[0]).toBeGreaterThan(fresh.at(-1)! - fresh[0]);
+    expect(draw(1.5).at(-1)!.trim()).toMatch(/^-+$/);
     expect(draw(4.3)).toEqual(draw());
   });
 

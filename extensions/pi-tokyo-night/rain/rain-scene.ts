@@ -1,6 +1,7 @@
 import type { TokyoNightThemePalette } from "../ui/theme-palette";
 import type { RainFrameSnapshot } from "./rain-manager";
-import { rainDrift, rainHorizon, rainLandingRow, rainMoonBounds, rainStarRows, rainVerticalScale, rainWaterMarkLife } from "./rain-geometry";
+import { rainDrift, rainHorizon, rainLandingRow, rainMoonBounds, rainStarRows, rainVerticalScale } from "./rain-geometry";
+import { rasterizeRainWater } from "./rain-water";
 
 export type RainInk = "rain" | "moon" | "star" | "water";
 type Cell = { glyph: string; ink: RainInk; light: number; order: number };
@@ -12,19 +13,11 @@ export const RAIN_DROP = "\\";
 const clamp = (n: number, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, n));
 const smooth = (n: number) => { const t = clamp(n); return t * t * (3 - 2 * t); };
 
-/** Stable noise varies each impact's wet trace without flickering. */
+/** Stable fallback phases for stars in snapshots without lifecycle metadata. */
 function hash(x: number, y: number): number {
   let n = Math.imul(x, 374761393) ^ Math.imul(y, 668265263);
   n = Math.imul(n ^ (n >>> 13), 1274126177);
   return ((n ^ (n >>> 16)) >>> 0) / 4294967295;
-}
-
-function noise(x: number, y: number): number {
-  const ix = Math.floor(x), iy = Math.floor(y);
-  const u = smooth(x - ix), v = smooth(y - iy);
-  const a = hash(ix, iy), b = hash(ix + 1, iy);
-  const c = hash(ix, iy + 1), d = hash(ix + 1, iy + 1);
-  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
 }
 
 /** Rasterize the scene into terminal cells; physics and the host clock stay outside. */
@@ -52,7 +45,7 @@ export function renderRainScene(
     const previous = cells[i];
     if (previous && (previous.order > order ||
       (previous.order === order && previous.light > light))) return;
-    const levels = ink === "star" || ink === "moon" ? 32 : 8;
+    const levels = ink === "rain" ? 8 : 32;
     cells[i] = { glyph, ink, light: Math.round(clamp(light) * levels) / levels, order };
   };
 
@@ -82,33 +75,16 @@ export function renderRainScene(
     }
   }
 
-  // Only landed drops leave water marks; reflections shade those wet footprints.
-  if (horizon < rows) for (const mark of snapshot.waterMarks ?? []) {
-    if (!Number.isFinite(mark.col) || !Number.isFinite(mark.depth) ||
-      !Number.isFinite(mark.age) || mark.col < 0 || mark.col >= width || mark.age < 0) continue;
-    const depth = clamp(mark.depth, 0, 2);
-    const life = rainWaterMarkLife(depth);
-    if (mark.age >= life) continue;
-    const y = Math.floor(rainLandingRow(rows, depth));
-    const progress = smooth(mark.age / life);
-    const wetness = smooth(mark.age / (0.15 + depth * 0.2)) * (1 - progress);
-    const radius = 0.8 + depth * 0.55 + progress * (1.2 + depth * 0.3);
-    for (let c = Math.max(0, Math.floor(mark.col - radius)); c <= Math.min(width - 1, Math.ceil(mark.col + radius)); c++) {
-      const dx = c + 0.5 - mark.col;
-      const edge = Math.sqrt(Math.max(0, 1 - (dx / (radius + 0.5)) ** 2));
-      const grain = noise(dx * 0.9, mark.col * 0.37 + depth * 3.1);
-      const glyph = grain > 0.6 ? "~" : grain > 0.35 ? "-" : ".";
-      const light = (0.16 + depth * 0.12) * wetness * edge;
-      const moonlight = curvedMoon
-        ? Math.exp(-(((c + 0.5 - moonCol - moonWidth / 2) / (2 + (y - horizon) * 2.5)) ** 2)) : 0;
-      let starlight = 0;
-      for (const star of starReflections) {
-        starlight = Math.max(starlight, star.light *
-          Math.exp(-(((c + 0.5 - star.col) / (1 + (y - horizon) * 1.5)) ** 2)));
-      }
-      put(c, y, glyph, moonlight > 0.28 ? "moon" : "water",
-        light * (1 + Math.max(moonlight * 0.5, starlight * 0.6)), 1);
+  for (const cell of rasterizeRainWater(width, rows, snapshot)) {
+    const moonlight = curvedMoon
+      ? Math.exp(-(((cell.col + 0.5 - moonCol - moonWidth / 2) / (2 + (cell.row - horizon) * 2.5)) ** 2)) : 0;
+    let starlight = 0;
+    for (const star of starReflections) {
+      starlight = Math.max(starlight, star.light *
+        Math.exp(-(((cell.col + 0.5 - star.col) / (1 + (cell.row - horizon) * 1.5)) ** 2)));
     }
+    put(cell.col, cell.row, cell.glyph, moonlight > 0.28 ? "moon" : "water",
+      cell.light * (1 + Math.max(moonlight * 0.5, starlight * 0.6)), 1);
   }
 
   for (const drop of snapshot.drops) {
@@ -122,34 +98,6 @@ export function renderRainScene(
       if (y >= rainLandingRow(rows, depth)) continue;
       put(drop.col - drift * s, y, s > length * 0.75 ? "." : glyph,
         "rain", (0.58 + depth * 0.14) * (1 - s / (length + 0.5)), 10 + depth);
-    }
-  }
-
-  if (horizon < rows) for (const splash of snapshot.splashes ?? []) {
-    if (!Number.isFinite(splash.col) || !Number.isFinite(splash.age) ||
-      !Number.isFinite(splash.depth) || splash.age < 0 || splash.age > 1.4) continue;
-    const depth = clamp(splash.depth, 0, 2);
-    const y = rainLandingRow(rows, depth);
-    if (depth < 0.5) {
-      if (splash.age < 0.22) put(splash.col, y, ".", "water", 0.3 * (1 - splash.age / 0.22), 20);
-      continue;
-    }
-    const life = 0.45 + depth * 0.35;
-    if (splash.age >= life) continue;
-    const radius = splash.age * (3.5 + depth * 1.6) * Math.min(1, (rows - horizon) / 3);
-    const light = (0.5 + depth * 0.15) * (1 - splash.age / life);
-    if (splash.age < 0.14 && depth > 0) {
-      const drift = rainDrift(wind, depth) * splash.age * 4;
-      put(splash.col + drift, y - 1, ".", "water", light, 20);
-    }
-    for (let r = horizon; r < rows; r++) {
-      for (let c = Math.max(0, Math.floor(splash.col - radius - 1)); c <= Math.min(width - 1, splash.col + radius + 1); c++) {
-        const dx = c + 0.5 - splash.col, dy = (r + 0.5 - y) * 3.2;
-        if (Math.abs(Math.hypot(dx, dy) - radius) > 0.45) continue;
-        const glyph = splash.age > life * 0.65 ? "."
-          : Math.abs(dy) > Math.abs(dx) * 0.45 ? "-" : dx < 0 ? "(" : ")";
-        put(c, r, glyph, "water", light, 20);
-      }
     }
   }
 
