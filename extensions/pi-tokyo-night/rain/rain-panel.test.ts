@@ -53,10 +53,10 @@ const snapshot: RainFrameSnapshot = {
   stars: [{ col: 5, row: 0 }],
 };
 
-const palette = createTokyoNightPalette({
+const palette = { ...createTokyoNightPalette({
   fg: (color: string, text: string) => `<fg:${color}>${text}</fg:${color}>`,
   bg: (color: string, text: string) => `<bg:${color}>${text}</bg:${color}>`,
-} as unknown as Theme);
+} as unknown as Theme), rippleShade: undefined };
 
 function makeConfig(panel: boolean, editorFrame = true) {
   return {
@@ -135,8 +135,134 @@ describe("RainPanelComponent", () => {
     }
   });
 
-  it.each([[4, 3], [10, 7]])("uses quiet horizontal glints throughout a %i-row impact's life", (rainRows, skyRows) => {
-    for (const age of [0.05, 0.35, 0.55, 1.2, 2.8]) {
+  it("keeps a visible contact at the real landing point until the first compact ring can be drawn", () => {
+    const draw = (age: number) => renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows: 4,
+      palette: { ...palette, rainShade: (_role, _light, text) => text.replace(/\S/g, " "),
+        rippleShade: (_light, _wet, text) => text },
+      snapshot: { wind: 0.25, drops: [], stars: [], splashes: [{ col: 30, depth: 1, age }] },
+    })[3];
+    for (const age of [0, 0.05, 0.15, 0.225, 0.35, 0.45]) {
+      expect(draw(age)[30]).toBe(".");
+      expect(draw(age).replace(/ /g, "")).toBe(".");
+    }
+    expect(draw(0.5).slice(29, 31)).toBe("--");
+    expect(draw(1.3).trim()).toBe("");
+  });
+
+  it.each([4, 10])("keeps the original late dotted ring alive for its slower %i-row lifetime", (rainRows) => {
+    const draw = (age: number) => renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows,
+      palette: { ...palette, rainShade: (_role, _light, text) => text.replace(/\S/g, " "),
+        rippleShade: (_light, _wet, text) => text },
+      snapshot: { drops: [], stars: [], splashes: [{ col: 30.5, depth: 2, age }] },
+    }).slice(rainRows === 4 ? 3 : 7).join("");
+    expect(draw(1.45)).toContain(".");
+    expect(draw(1.45)).not.toMatch(/[()_\\/:]/);
+    expect(draw(1.85).trim()).toBe("");
+  });
+
+  it.each([4, 10])("spreads curved wave edges around the wet surface in %i rows", (rainRows) => {
+    const draw = (age: number) => renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows,
+      snapshot: { drops: [], stars: [], splashes: [{ col: 30, depth: 2, age }] },
+    }).at(-1)!;
+    const early = draw(0.08), later = draw(0.85);
+    expect(later).toMatch(/^[ .~():-]+$/);
+    expect(later).toContain("(");
+    expect(later).toContain(")");
+    expect(later.slice(0, 30).trim()).not.toBe("");
+    expect(later.slice(30).trim()).not.toBe("");
+    expect(later.trim().length).toBeGreaterThan(early.trim().length);
+    for (const age of [0, 0.05, 0.1, 0.125, 0.15, 0.175, 0.35, 0.55, 0.75]) {
+      expect(draw(age).trim()).not.toBe("");
+    }
+    expect(draw(1.85).trim()).toBe("");
+  });
+
+  it.each([4, 10])("keeps the original single early splash point above a %i-row landing", (rainRows) => {
+    for (const age of [0.025, 0.05, 0.2]) {
+      const lines = renderRainPanelLines({
+        width: 60, frameEnabled: false, rainRows,
+        snapshot: { drops: [], stars: [], splashes: [{ col: 30, depth: 2, age }] },
+      });
+      expect(lines[rainRows - 2].trim()).toBe(".");
+    }
+  });
+
+  it.each([4, 10])("restores the original %i-row hard-ring contour at a stretched middle phase", (rainRows) => {
+    const lines = renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows,
+      palette: { ...palette, rainShade: (_role, _light, text) => text.replace(/\S/g, " "),
+        rippleShade: (_light, _wet, text) => text },
+      snapshot: { drops: [], stars: [], splashes: [{ col: 30.5, depth: 2, age: 0.88 }] },
+    });
+    expect(lines.at(-1)!.slice(24, 37)).toBe(rainRows === 4 ? "     ( )     " : "  (       )  ");
+    if (rainRows === 10) expect(lines[8].slice(24, 37)).toBe("    -- --    ");
+  });
+
+  it.each([[4, 3], [10, 7]])("keeps the %i-row splash as small curved edges without a rigid cup", (rainRows, horizon) => {
+    const lines = renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows,
+      snapshot: { drops: [], stars: [], splashes: [{ col: 30, depth: 2, age: 0.3 }] },
+    });
+    const water = lines.slice(horizon).join("");
+    expect(water).toContain("(");
+    expect(water).toContain(")");
+    expect(water).not.toMatch(/[\\/:]|_{3}/);
+    expect(lines.slice(0, horizon).join("").replaceAll("\u{1f319}", "")).not.toMatch(/[()_\\/]/);
+  });
+
+  it.each([4, 10])("keeps the restored %i-row ripple independent of experimental seeds and redraw randomness", (rainRows) => {
+    const draw = (seed?: number) => renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows,
+      palette: { ...palette, rainShade: (role, _light, text) => role === "water" ? text.replace(/\S/g, " ") : text,
+        rippleShade: (_light, _wet, text) => text },
+      snapshot: { drops: [], stars: [], splashes: [{ col: 30.5, depth: 2, age: 0.55, seed }] },
+    }).join("\n");
+    const random = vi.spyOn(Math, "random").mockImplementation(() => { throw new Error("drawing must stay deterministic"); });
+    try {
+      const seeds = [0, 1, 3127, 0x12345678, 0xcafebabe, 0xffffffff];
+      for (const seed of seeds) expect(draw(seed)).toBe(draw());
+      expect(draw(Number.NaN)).toBe(draw());
+      expect(draw(Number.POSITIVE_INFINITY)).toBe(draw());
+    } finally {
+      random.mockRestore();
+    }
+  });
+
+  it.each([
+    [0xcafebabe, 32, 0.632, 0.633],
+    [0, 28, 0.606, 0.607],
+  ])("keeps the wave and wet-trace colors continuous late in an impact (seed %i)", (seed, col, before, after) => {
+    for (const theme of ["dark", "light"] as const) {
+      const draw = (age: number) => {
+        const line = renderRainPanelLines({
+          width: 60, frameEnabled: false, rainRows: 4,
+          palette: createTokyoNightPalette(readTokyoTheme(theme)),
+          snapshot: { wind: 0.25, drops: [], stars: [],
+            splashes: [{ col: 30.5, depth: 2, age, seed }],
+            waterMarks: [{ col: 30.5, depth: 2, age, seed }],
+          },
+        })[3];
+        let offset = 0, color: number[] | undefined;
+        for (const part of line.split(/(\x1b\[[\d;]*m)/)) {
+          const rgb = /^\x1b\[38;2;(\d+);(\d+);(\d+)m$/.exec(part);
+          if (rgb) color = rgb.slice(1).map(Number);
+          else if (/^\x1b\[/.test(part)) color = undefined;
+          else for (const _ of part) if (offset++ === col) return color;
+        }
+        return undefined;
+      };
+      const start = draw(before), end = draw(after);
+      expect(start).toBeDefined();
+      expect(end).toBeDefined();
+      expect(Math.max(...end!.map((value, channel) => Math.abs(value - start![channel])))).toBeLessThanOrEqual(18);
+    }
+  });
+
+  it.each([[4, 3], [10, 7]])("leaves quiet wet bands after the %i-row ripple has faded", (rainRows, skyRows) => {
+    for (const age of [1.2, 2.8]) {
       const water = renderRainPanelLines({
         width: 60, frameEnabled: false, rainRows,
         snapshot: {
@@ -146,34 +272,160 @@ describe("RainPanelComponent", () => {
         },
       }).slice(skyRows).join("");
       expect(water.trim()).not.toBe("");
-      expect(water).toMatch(/^[ .-]+$/);
+      expect(water).toMatch(/^[ .~-]+$/);
     }
   });
 
   it.each([[40, 4, 3], [100, 4, 3], [40, 10, 7], [100, 10, 7]])(
-    "keeps dense water highlights short and separated in %i by %i cells",
+    "keeps dense wet bands separated with open water in %i by %i cells",
     (width, rainRows, skyRows) => {
       const impacts = Array.from({ length: 192 }, (_, index) => ({
         col: (index * 7.3) % width, depth: index % 3, age: 0.3 + index % 7 * 0.1,
       }));
       const lines = renderRainPanelLines({
         width, frameEnabled: false, rainRows,
-        snapshot: { drops: [], stars: [], splashes: impacts.slice(-64), waterMarks: impacts },
+        snapshot: { drops: [], stars: [], waterMarks: impacts },
       }).slice(skyRows);
       expect(lines.some((line) => line.trim().length > 0)).toBe(true);
       for (const line of lines) {
         expect(line.replace(/ /g, "").length).toBeLessThanOrEqual(Math.max(1, Math.floor(width * 0.3)));
-        expect(line).not.toMatch(/[.-]{4}/);
+        expect(line).not.toMatch(/[.~-]{8}/);
+        expect(line).toContain(" ");
       }
     },
   );
 
-  it("varies the length of short reflections with the actual impact footprint", () => {
+  it.each([4, 10])("mixes waves and short strokes with more visible dots in mature %i-row water", (rainRows) => {
+    const draw = (seed?: number) => renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows,
+      snapshot: { drops: [], stars: [], waterMarks: [{ col: 30.5, depth: 2, age: 1.2, seed }] },
+    }).at(-1)!.trim();
+    expect(draw().length).toBeGreaterThanOrEqual(5);
+    const samples = [draw(), ...Array.from({ length: 32 }, (_, seed) => draw(seed))];
+    const surface = samples.join("");
+    expect(surface).toMatch(/^[~.-]+$/);
+    for (const glyph of ["~", "-", "."]) expect(surface).toContain(glyph);
+    expect((surface.match(/\./g) ?? []).length).toBeGreaterThan(surface.length * 0.1);
+    expect((surface.match(/\./g) ?? []).length).toBeLessThan(surface.length * 0.25);
+    for (const sample of samples) {
+      expect((sample.match(/\./g) ?? []).length).toBeLessThanOrEqual(1);
+      if (sample.length <= 2) expect(sample).not.toContain(".");
+    }
+  });
+
+  it.each([4, 10])("varies the %i-row wet footprint from stable impact seeds without redrawing random shapes", (rainRows) => {
+    const draw = (seed: number) => renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows,
+      snapshot: { drops: [], stars: [], waterMarks: [{ col: 30.5, depth: 2, age: 1.2, seed }] },
+    }).at(-1)!;
+    const seeds = [1, 3127, 0x12345678, 0xcafebabe];
+    const samples = seeds.map(draw);
+    expect(new Set(samples.map((line) => line.trim())).size).toBeGreaterThanOrEqual(3);
+    for (const [index, seed] of seeds.entries()) {
+      expect(draw(seed)).toBe(samples[index]);
+      expect(samples[index].slice(0, 24).trim()).toBe("");
+      expect(samples[index].slice(37).trim()).toBe("");
+      expect(samples[index]).toMatch(/^[ .~-]+$/);
+    }
+  });
+
+  it.each([4, 10])("keeps each random wet trace within five columns in %i rows", (rainRows) => {
+    for (const seed of [undefined, 0, 1, 3127, 0x12345678, 0xcafebabe]) {
+      for (const col of [30, 30.5]) for (const age of [0.6, 1.2, 2]) {
+        const trace = renderRainPanelLines({
+          width: 60, frameEnabled: false, rainRows,
+          snapshot: { drops: [], stars: [], waterMarks: [{ col, depth: 2, age, seed }] },
+        }).at(-1)!.trim();
+        expect(trace.length).toBeGreaterThan(0);
+        expect(trace.length).toBeLessThanOrEqual(5);
+      }
+    }
+  });
+
+  it("keeps seeded wet textures stable across redraws, time, and overlapping impact order", () => {
+    const colors = createTokyoNightPalette(readTokyoTheme("dark"));
+    const impacts = [
+      { col: 30.5, depth: 2, age: 1.2, seed: 1 },
+      { col: 33, depth: 2, age: 0.8, seed: 3127 },
+      { col: 12.5, depth: 1, age: 1.4, seed: 0 },
+    ];
+    const draw = (records: typeof impacts, time = 0) => renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows: 10, palette: colors,
+      snapshot: { time, drops: [], stars: [], waterMarks: records, splashes: records },
+    });
+    const random = vi.spyOn(Math, "random").mockImplementation(() => { throw new Error("drawing must not reroll wet textures"); });
+    try {
+      const expected = draw(impacts);
+      expect(draw(impacts)).toEqual(expected);
+      expect(draw(impacts, 20)).toEqual(expected);
+      expect(draw([...impacts].reverse())).toEqual(expected);
+      expect(draw([...impacts, ...impacts])).toEqual(expected);
+      expect(random).not.toHaveBeenCalled();
+    } finally {
+      random.mockRestore();
+    }
+  });
+
+  it("prioritizes complete wet bands while retaining small contacts on a busy surface", () => {
+    const water = renderRainPanelLines({
+      width: 80, frameEnabled: false, rainRows: 4,
+      snapshot: { drops: [], stars: [], waterMarks: Array.from({ length: 8 }, (_, index) => ({
+        col: 5.5 + index * 10, depth: 2, age: 1.2,
+      })) },
+    })[3];
+    const bands = water.match(/[.~-]+/g)!;
+    const complete = bands.filter((band) => band.length >= 5);
+    expect(complete.length).toBeGreaterThanOrEqual(3);
+    expect(complete.length).toBeLessThanOrEqual(4);
+    expect(bands.filter((band) => band.length < 5).every((band) => /^[~-]+$/.test(band))).toBe(true);
+    expect(water.replace(/ /g, "").length).toBeLessThanOrEqual(24);
+  });
+
+  it("keeps established wet bands steady as a distant region appears and fades", () => {
+    const draw = (age?: number) => renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows: 4,
+      snapshot: { drops: [], stars: [], waterMarks: [
+        ...[10.5, 30.5, 50.5].map((col) => ({ col, depth: 2, age: 1.2 })),
+        ...(age === undefined ? [] : [{ col: 40.5, depth: 2, age }]),
+      ] },
+    })[3].slice(25, 36);
+    const established = draw();
+    expect(established.trim().length).toBeGreaterThanOrEqual(5);
+    for (const age of [0.1, 0.11, 1.2, 3.37, 3.38]) expect(draw(age)).toBe(established);
+  });
+
+  it("does not replace a mature wet band with a faint new contact in the same part of the surface", () => {
+    const draw = (age?: number) => renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows: 4,
+      snapshot: { drops: [], stars: [], waterMarks: [
+        { col: 2.5, depth: 2, age: 1.2 }, { col: 50.5, depth: 2, age: 1.2 },
+        ...(age === undefined ? [] : [{ col: 10.5, depth: 2, age }]),
+      ] },
+    })[3].slice(0, 6);
+    const established = draw();
+    expect(established.trim().length).toBeGreaterThanOrEqual(5);
+    for (const age of [0.1, 0.11, 1.2, 3.37, 3.38]) expect(draw(age)).toBe(established);
+  });
+
+  it("keeps both wet bands visible when a soft edge crosses the fade threshold", () => {
+    for (const time of [0.078, 0.079]) {
+      const water = renderRainPanelLines({
+        width: 60, frameEnabled: false, rainRows: 4,
+        snapshot: { drops: [], stars: [], waterMarks: [
+          { col: 4.9, depth: 2, age: 1.15 + time }, { col: 15.1, depth: 2, age: 0.75 + time },
+        ] },
+      })[3];
+      expect(water.slice(0, 10).trim().length).toBeGreaterThanOrEqual(4);
+      expect(water.slice(10, 21).trim().length).toBeGreaterThanOrEqual(4);
+    }
+  });
+
+  it("varies the wet band width with the actual impact footprint", () => {
     const lengths = [30, 30.25, 30.5, 30.75].map((col) => renderRainPanelLines({
       width: 60, frameEnabled: false, rainRows: 4,
       snapshot: { drops: [], stars: [], waterMarks: [{ col, depth: 2, age: 1.2 }] },
     })[3].trim().length);
-    expect(lengths.every((length) => length > 0 && length <= 3)).toBe(true);
+    expect(lengths.every((length) => length >= 4 && length <= 7)).toBe(true);
     expect(new Set(lengths).size).toBeGreaterThan(1);
   });
 
@@ -242,8 +494,8 @@ describe("RainPanelComponent", () => {
       width: 60, frameEnabled: false, rainRows,
       snapshot: { drops: [], stars: [], waterMarks: columns.map((col) => ({ col, depth: 2, age: 1.2 })) },
     }).at(-1)!;
-    expect(draw([30.1, 30.5, 31]).match(/-+/g)).toHaveLength(1);
-    expect(draw([30.1, 45.1]).match(/-+/g)).toHaveLength(2);
+    expect(draw([30.1, 30.5, 31]).match(/[.~-]+/g)).toHaveLength(1);
+    expect(draw([30.1, 45.1]).match(/[.~-]+/g)).toHaveLength(2);
     expect(draw([30.1, 45.1]).slice(34, 42).trim()).toBe("");
   });
 
@@ -259,6 +511,50 @@ describe("RainPanelComponent", () => {
     ];
     expect(draw([...impacts].reverse())).toEqual(draw(impacts));
     expect(draw([...impacts, ...impacts])).toEqual(draw(impacts));
+  });
+
+  it.each([4, 10])("holds a %i-row wet trace until its ripple ends before starting the fade", (rainRows) => {
+    const draw = (age: number) => renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows,
+      palette: createTokyoNightPalette(readTokyoTheme("dark")),
+      snapshot: { drops: [], stars: [], waterMarks: [{ col: 30.5, depth: 2, age, seed: 1 }] },
+    }).at(-1)!;
+    const established = draw(0.8);
+    expect(established.replace(/\x1b\[[\d;]*m/g, "").trim()).not.toBe("");
+    expect(draw(1.6)).toBe(established);
+    expect(draw(1.84)).toBe(established);
+    expect(draw(2.8)).not.toBe(established);
+    expect(draw(6.6).replace(/\x1b\[[\d;]*m/g, "").trim()).not.toBe("");
+    expect(draw(8.5).trim()).toBe("");
+  });
+
+  it.each([4, 10])("gradually dims a horizontal wet trace over several visible seconds in %i rows", (rainRows) => {
+    for (const theme of ["dark", "light"] as const) {
+      const background = theme === "dark" ? [26, 27, 38] : [225, 226, 231];
+      const draw = (age: number) => {
+        const line = renderRainPanelLines({
+          width: 60, frameEnabled: false, rainRows,
+          palette: createTokyoNightPalette(readTokyoTheme(theme)),
+          snapshot: { drops: [], stars: [], waterMarks: [{ col: 30.5, depth: 2, age, seed: 1 }] },
+        }).at(-1)!;
+        let visible = "", color = background, contrast = 0;
+        for (const part of line.split(/(\x1b\[[\d;]*m)/)) {
+          const rgb = /^\x1b\[38;2;(\d+);(\d+);(\d+)m$/.exec(part);
+          if (rgb) color = rgb.slice(1).map(Number);
+          else if (/^\x1b\[/.test(part)) color = background;
+          else {
+            visible += part;
+            if (/\S/.test(part)) contrast = Math.max(contrast,
+              color.reduce((sum, channel, index) => sum + Math.abs(channel - background[index]), 0));
+          }
+        }
+        return { visible: visible.trim(), contrast };
+      };
+      const stages = [1.84, 3.04, 4.24, 5.44, 6.64].map(draw);
+      for (const stage of stages) expect(stage.visible).toMatch(/^[.~-]+$/);
+      for (let index = 1; index < stages.length; index++) expect(stages[index].contrast).toBeLessThan(stages[index - 1].contrast);
+      expect(draw(8.5).visible).toBe("");
+    }
   });
 
   it.each([4, 10])("leaves a local fading water trace after a ripple in a %i-row scene", (rainRows) => {
@@ -283,7 +579,137 @@ describe("RainPanelComponent", () => {
     expect(trace.slice(35).trim()).toBe("");
     expect(draw(1.2, 45).lines.at(-1)!.slice(40, 50).trim()).not.toBe("");
     expect(draw(1.2, 45).lines.at(-1)!.slice(25, 35).trim()).toBe("");
-    expect(draw(4.3).lines.at(-1)!.trim()).toBe("");
+    expect(draw(8.5).lines.at(-1)!.trim()).toBe("");
+  });
+
+  it.each([4, 10])("keeps the %i-row water reflection clearly visible after the ripple ends", (rainRows) => {
+    const levels: number[] = [];
+    const lines = renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows,
+      palette: { ...palette, rainShade: (role, light, text) => {
+        if (role === "water" && /\S/.test(text)) levels.push(light);
+        return text;
+      } },
+      snapshot: { drops: [], stars: [], waterMarks: [{ col: 30, depth: 2, age: 1.2 }] },
+    });
+    expect(lines.at(-1)!.trim()).not.toBe("");
+    expect(Math.max(0, ...levels)).toBeGreaterThanOrEqual(0.4);
+  });
+
+  it("does not dim wet reflections while a ripple fades over them", () => {
+    const draw = (age: number, ripple: boolean, drop = false) => renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows: 4,
+      palette: { ...palette, rainShade: (role, light, text) => role === "water" || role === "rain"
+        ? text.replace(/\S/g, String.fromCharCode(65 + Math.round(light * 20))) : text },
+      snapshot: {
+        drops: drop ? [{ col: 30, row: 3.1, depth: 2 }] : [], stars: [],
+        waterMarks: [{ col: 30, depth: 1, age }],
+        splashes: ripple ? [{ col: 30, depth: 1, age }] : [],
+      },
+    })[3];
+    for (const age of [0.7, 0.72, 0.726, 0.73]) for (const drop of [false, true]) {
+      const wet = draw(age, false), combined = draw(age, true, drop);
+      for (const col of [29, 30]) {
+        expect(wet[col]).not.toBe(" ");
+        expect(combined.charCodeAt(col)).toBeGreaterThanOrEqual(wet.charCodeAt(col));
+      }
+    }
+  });
+
+  it.each(["dark", "light"] as const)("distinguishes both ripple crests from the resting water in the %s theme", (theme) => {
+    const colors = (line: string) => {
+      const cells: Array<number[] | undefined> = [];
+      let color: number[] | undefined;
+      for (const part of line.split(/(\x1b\[[\d;]*m)/)) {
+        const rgb = /^\x1b\[38;2;(\d+);(\d+);(\d+)m$/.exec(part);
+        if (rgb) color = rgb.slice(1).map(Number);
+        else if (/^\x1b\[/.test(part)) color = undefined;
+        else for (const _ of part) cells.push(color);
+      }
+      return cells;
+    };
+    const draw = (ripple: boolean) => colors(renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows: 4,
+      palette: createTokyoNightPalette(readTokyoTheme(theme)),
+      snapshot: { drops: [], stars: [],
+        waterMarks: [{ col: 30, depth: 2, age: 1.2 }],
+        splashes: ripple ? [{ col: 30, depth: 2, age: 0.8 }] : [],
+      },
+    })[3]);
+    const resting = draw(false), spreading = draw(true);
+    const background = theme === "dark" ? [26, 27, 38] : [225, 226, 231];
+    const distance = (a: number[], b: number[]) => a.reduce((sum, value, index) => sum + Math.abs(value - b[index]), 0);
+    for (const col of [28, 31]) {
+      expect(resting[col]).toBeDefined();
+      expect(spreading[col]).toBeDefined();
+      expect(distance(spreading[col]!, resting[col]!)).toBeGreaterThan(50);
+      expect(distance(spreading[col]!, background)).toBeGreaterThan(distance(resting[col]!, background) * 1.5);
+    }
+  });
+
+  it.each(["dark", "light"] as const)("uses the rain's cyan for the tips of a fresh splash in the %s theme", (name) => {
+    const theme = readTokyoTheme(name);
+    const lines = renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows: 4,
+      palette: createTokyoNightPalette(theme),
+      snapshot: { drops: [], stars: [], splashes: [{ col: 30, depth: 2, age: 0.15 }] },
+    });
+    expect(lines.join("")).toContain(theme.fg("thinkingLow", "."));
+  });
+
+  it.each([["dark", [26, 27, 38], 270], ["light", [225, 226, 231], 180]] as const)(
+    "keeps resting water clearly visible and blue against the %s background", (name, background, minimumContrast) => {
+      const water = renderRainPanelLines({
+        width: 60, frameEnabled: false, rainRows: 4,
+        palette: createTokyoNightPalette(readTokyoTheme(name)),
+        snapshot: { drops: [], stars: [], waterMarks: [{ col: 30, depth: 2, age: 1.2 }] },
+      })[3];
+      const colors = [...water.matchAll(/\x1b\[38;2;(\d+);(\d+);(\d+)m/g)].map((match) => match.slice(1).map(Number));
+      const contrast = colors.map((rgb) => rgb.reduce((sum, channel, index) => sum + Math.abs(channel - background[index]), 0));
+      expect(Math.max(0, ...contrast)).toBeGreaterThanOrEqual(minimumContrast);
+      const peak = colors[contrast.indexOf(Math.max(...contrast))];
+      expect(peak[2] - peak[0]).toBeGreaterThanOrEqual(60);
+    },
+  );
+
+  it("keeps overlapping ripple shapes independent of impact order and wet reflection brightness", () => {
+    const impacts = [
+      { col: 30, depth: 1, age: 0.6 }, { col: 29, depth: 2, age: 0.6 },
+      { col: 30, depth: 2, age: 0.55 },
+    ];
+    const draw = (records: typeof impacts) => renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows: 4,
+      palette: createTokyoNightPalette(readTokyoTheme("dark")),
+      snapshot: { drops: [], stars: [], splashes: records, waterMarks: records },
+    });
+    expect(draw([...impacts].reverse())).toEqual(draw(impacts));
+    expect(draw([...impacts, ...impacts])).toEqual(draw(impacts));
+  });
+
+  it.each(["bare", "water", "moon"] as const)("refreshes a static frame when only the %s ripple color changes", (base) => {
+    let color = 1;
+    const config = makeConfig(true, false);
+    config.get.mockReturnValue({ ...config.get(), rainRows: 10 });
+    const rain = { frameRevision: 1, setRenderWidth() {}, getSnapshot: () => ({
+      drops: [], stars: [],
+      waterMarks: [5, 30].map((col) => ({ col, depth: 2, age: 1.2 })),
+      splashes: [5, 30].map((col) => ({ col, depth: 2, age: base === "bare" ? 0.8 : 0.32 })),
+    }) };
+    const panel = new RainPanelComponent({ requestRender() {} } as any, {
+      config: config as any, rain: rain as any,
+      palette: { ...createTokyoNightPalette(readTokyoTheme("dark")), rippleShade: (_wave: number, wet: number, text: string, ink = "water") => {
+        const active = base === "bare" ? wet === 0 : wet > 0 && ink === base;
+        return `\x1b[38;5;${active ? color : 1}m${text}\x1b[39m`;
+      } },
+    });
+    panel.render(40);
+    expect(panel.hasVisibleChanges()).toBe(false);
+    color = 2;
+    expect(panel.render(40).join("")).toContain("\x1b[38;5;2m");
+    expect(panel.hasVisibleChanges()).toBe(false);
+    color = 3;
+    expect(panel.hasVisibleChanges()).toBe(true);
+    expect(panel.render(40).join("")).toContain("\x1b[38;5;3m");
   });
 
   it("keeps an edge reflection independent of impacts on another water row", () => {
@@ -443,14 +869,18 @@ describe("RainPanelComponent", () => {
     }
   });
 
-  it("shortens foreground rain tails to leave the compact sky readable", () => {
-    const draw = (rainRows: number) => renderRainPanelLines({
-      width: 60, frameEnabled: false, rainRows,
-      snapshot: { time: 1, wind: 0, stars: [], drops: [{ col: 30.9, row: 2.45, depth: 2 }] },
-    });
-    expect(draw(8)[0][30]).toBe("\\");
-    expect(draw(4)[0][30]).toBe(" ");
-    expect(draw(4)[1][30]).toBe("\\");
+  it.each([4, 8, 10])("keeps %i-row rain particles short with one clear head and at most one soft tail", (rainRows) => {
+    for (const depth of [0, 1, 2]) for (const row of [2.1, 2.45, 2.9]) {
+      const lines = renderRainPanelLines({
+        width: 60, frameEnabled: false, rainRows,
+        snapshot: { wind: 0.4, stars: [], drops: [{ col: 30.9, row, depth }] },
+      }).map((line) => line.slice(25, 35));
+      const particle = lines.join("").replace(/ /g, "");
+      expect(particle.match(/\\/g)).toHaveLength(1);
+      expect(particle).toMatch(/^[.\\]+$/);
+      expect(particle.length).toBeLessThanOrEqual(depth <= 1 ? 1 : 2);
+      expect(lines.filter((line) => line.trim())).toHaveLength(particle.length);
+    }
   });
 
   it("keeps compact water reflections tied to the breathing stars when the moon is hidden", () => {
@@ -629,7 +1059,7 @@ describe("RainPanelComponent", () => {
     expect(lines.slice(5).join("")).toMatch(/[.-]/);
   });
 
-  it("turns a landing into a surface glint, spreading reflection and fading wet trace", () => {
+  it("turns a landing into an impact droplet, expanding ripple and fading wet trace", () => {
     const draw = (age?: number) => renderRainPanelLines({
       width: 60, frameEnabled: false, rainRows: 8,
       snapshot: {
@@ -640,10 +1070,12 @@ describe("RainPanelComponent", () => {
     });
     const columns = (age: number) => [...draw(age).at(-1)!].flatMap((cell, col) => cell === " " ? [] : [col]);
     const fresh = columns(0.05), spread = columns(0.55);
-    expect(draw(0.05)[7][30]).toBe(".");
+    expect(draw(0.05)[6][30]).toBe(".");
+    expect(draw(0.55).join("")).toContain("(");
+    expect(draw(0.55).join("")).toContain(")");
     expect(spread.at(-1)! - spread[0]).toBeGreaterThan(fresh.at(-1)! - fresh[0]);
-    expect(draw(1.5).at(-1)!.trim()).toMatch(/^-+$/);
-    expect(draw(4.3)).toEqual(draw());
+    expect(draw(2.4).at(-1)!.trim()).toMatch(/^[.~-]+$/);
+    expect(draw(8.5)).toEqual(draw());
   });
 
   it.each([0, 1, 2, 12, 40, 100])("clips every layer to a %i-column terminal with or without a frame", (width) => {

@@ -30,9 +30,14 @@ export function rainLandingRow(rows: number, depth: number): number {
   return horizon === rows ? rows : horizon + depth * (rows - horizon - 0.5) / 2;
 }
 
-/** Wet traces linger after the impact ring has faded. */
+/** Preserve the original ripple's stages while playing them more slowly. */
+export function rainRippleLife(depth: number): number {
+  return (0.45 + depth * 0.35) * 1.6;
+}
+
+/** Wet traces hold through the ripple, then use their full fade-out duration. */
 export function rainWaterMarkLife(depth: number): number {
-  return 3 + depth * 0.6;
+  return rainRippleLife(depth) + 5 + depth * 0.8;
 }
 
 /** Keep a smaller moon at the top, with open sky before the water plane. */

@@ -134,7 +134,7 @@ describe("RainAnimationManager", () => {
   });
 
   it.each([2, 3, 4, 5])("keeps rain landing and ripples alive in a %i-row scene", (rainRows) => {
-    vi.spyOn(Math, "random").mockReturnValue(0.4);
+    vi.spyOn(Math, "random").mockReturnValue(0.1);
     const manager = new RainAnimationManager(
       makeConfig({ rainRows, rainTickMs: 50, maxRainDrops: 25 }),
       { requestRender: vi.fn() },
@@ -227,8 +227,36 @@ describe("RainAnimationManager", () => {
     fast.stop();
   });
 
+  it.each([4, 10])("creates ripples for about half of actual impacts in a %i-row scene", (rainRows) => {
+    let seed = 12345;
+    vi.spyOn(Math, "random").mockImplementation(() => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) | 0;
+      return (seed >>> 0) / 4294967296;
+    });
+    const manager = new RainAnimationManager(
+      makeConfig({ rainRows, rainTickMs: 50, maxRainDrops: 35 }),
+      { requestRender: vi.fn() },
+    );
+    const impacts = new Set<number>(), ripples = new Set<number>();
+    manager.start();
+    manager.setRenderWidth(60, rainRows);
+    for (let tick = 0; tick < 400; tick++) {
+      vi.advanceTimersByTime(50);
+      const frame = manager.getSnapshot();
+      for (const mark of frame.waterMarks!) impacts.add(mark.seed!);
+      for (const splash of frame.splashes!) {
+        ripples.add(splash.seed!);
+        expect(frame.waterMarks).toContainEqual(splash);
+      }
+    }
+    expect(impacts.size).toBeGreaterThan(100);
+    expect(ripples.size / impacts.size).toBeGreaterThan(0.4);
+    expect(ripples.size / impacts.size).toBeLessThan(0.6);
+    manager.stop();
+  });
+
   it("creates water marks only at rain impacts and lets them outlive the ripples", () => {
-    vi.spyOn(Math, "random").mockReturnValue(0.4);
+    vi.spyOn(Math, "random").mockReturnValue(0.1);
     const manager = new RainAnimationManager(
       makeConfig({ rainRows: 4, rainTickMs: 50, maxRainDrops: 25 }),
       { requestRender: vi.fn() },
@@ -244,15 +272,54 @@ describe("RainAnimationManager", () => {
     }
     const impact = manager.getSnapshot();
     expect(impact.splashes!.length).toBeGreaterThan(0);
-    expect(impact.waterMarks).toEqual(impact.splashes);
+    expect(impact.waterMarks).toEqual(expect.arrayContaining([...impact.splashes!]));
     const first = impact.waterMarks![0];
+    expect(first.seed).toEqual(expect.any(Number));
+    expect(first.seed).toBeGreaterThanOrEqual(0);
+    expect(first.seed).toBeLessThan(2 ** 32);
     manager.applyProfile({ tickMs: 50, maxDrops: 0 });
-    vi.advanceTimersByTime(1500);
+    vi.advanceTimersByTime(1900);
     const after = manager.getSnapshot();
     expect(after.waterMarks!.some((mark) => mark.col === first.col && mark.depth === first.depth)).toBe(true);
+    expect(after.waterMarks!.find((mark) => mark.col === first.col && mark.depth === first.depth)!.seed).toBe(first.seed);
     expect(after.splashes!.some((splash) => splash.col === first.col && splash.depth === first.depth)).toBe(false);
     vi.advanceTimersByTime(8000);
     expect(manager.getSnapshot().waterMarks).toEqual([]);
+    manager.stop();
+  });
+
+  it("retains a real near wet trace through its delayed fade under maximum manual rain", () => {
+    let random = 12345;
+    vi.spyOn(Math, "random").mockImplementation(() => {
+      random = (Math.imul(random, 1664525) + 1013904223) | 0;
+      return (random >>> 0) / 4294967296;
+    });
+    const manager = new RainAnimationManager(
+      makeConfig({ rainRows: 5, rainTickMs: 50, maxRainDrops: 100 }),
+      { requestRender: vi.fn() },
+    );
+    manager.start();
+    manager.setRenderWidth(100, 5);
+    for (let tick = 0; tick < 80 && !manager.getSnapshot().splashes!.some((splash) => splash.depth === 2); tick++) {
+      vi.advanceTimersByTime(50);
+    }
+    const first = manager.getSnapshot().splashes!.find((splash) => splash.depth === 2)!;
+    expect(first).toBeDefined();
+    const tracked = () => manager.getSnapshot().waterMarks!.find((mark) =>
+      mark.seed === first.seed && mark.col === first.col && mark.depth === first.depth);
+    vi.advanceTimersByTime(1500);
+    expect(manager.getSnapshot().splashes!.some((splash) =>
+      splash.seed === first.seed && splash.col === first.col && splash.depth === first.depth)).toBe(true);
+    vi.advanceTimersByTime(3500);
+    expect(tracked()).toBeDefined();
+    expect(tracked()!.age).toBeGreaterThanOrEqual(5);
+    expect(tracked()!.age).toBeLessThan(8.44);
+    expect(manager.getSnapshot().drops.length).toBeGreaterThan(0);
+    vi.advanceTimersByTime(3300);
+    expect(tracked()).toBeDefined();
+    expect(tracked()!.age).toBeGreaterThanOrEqual(8.3);
+    vi.advanceTimersByTime(150);
+    expect(tracked()).toBeUndefined();
     manager.stop();
   });
 
@@ -369,11 +436,11 @@ describe("RainAnimationManager", () => {
     vi.advanceTimersByTime(5000);
     const frame = manager.getSnapshot();
     expect(frame.splashes!.length).toBeGreaterThan(0);
-    expect(frame.splashes!.length).toBeLessThanOrEqual(64);
-    expect(frame.splashes!.every((splash) => splash.age >= 0 && splash.age < 1.4)).toBe(true);
+    expect(frame.splashes!.length).toBeLessThanOrEqual(256);
+    expect(frame.splashes!.every((splash) => splash.age >= 0 && splash.age < 1.84)).toBe(true);
     expect(frame.waterMarks!.length).toBeGreaterThan(0);
-    expect(frame.waterMarks!.length).toBeLessThanOrEqual(192);
-    expect(frame.waterMarks!.every((mark) => mark.age >= 0 && mark.age < 4.2)).toBe(true);
+    expect(frame.waterMarks!.length).toBeLessThanOrEqual(1024);
+    expect(frame.waterMarks!.every((mark) => mark.age >= 0 && mark.age < 8.44)).toBe(true);
     (frame.splashes![0] as { col: number }).col = -999;
     (frame.waterMarks![0] as { col: number }).col = -999;
     expect(manager.getSnapshot().splashes!.every((splash) => splash.col >= 0)).toBe(true);

@@ -37,6 +37,7 @@ export type TokyoNightBackgroundRole =
 export interface TokyoNightThemePalette {
   fg(role: TokyoNightForegroundRole, text: string): string;
   rainShade?(role: "rain" | "moon" | "star" | "water", intensity: number, text: string): string;
+  rippleShade?(intensity: number, waterIntensity: number, text: string, waterInk?: "water" | "moon"): string;
   workingPulse(text: string, intensity: number): string;
   bg(role: TokyoNightBackgroundRole, text: string): string;
   transition(
@@ -143,7 +144,7 @@ export function createTokyoNightPalette(
     ? WORKING_TEXT_COLORS.light
     : WORKING_TEXT_COLORS.dark;
   const rainTokens = {
-    rain: "thinkingLow", water: "thinkingLow",
+    rain: "thinkingLow", water: "syntaxFunction",
     moon: "warning", star: "accent",
   } as const;
   const rainStyles = new Map<string, string>();
@@ -154,20 +155,41 @@ export function createTokyoNightPalette(
   let rainBackground: RgbColor | undefined = theme.name === "tokyo-night-light" ? [225, 226, 231]
     : theme.name === "tokyo-night-dark" ? [26, 27, 38]
       : undefined;
+  const lightSurface = (theme as Theme & { appearance?: string }).appearance === "light" || theme.name?.includes("light");
+  const surfaceBackground = (): RgbColor => rainBackground ??= rgbFromAnsi(theme.bg?.("userMessageBg", "") ?? "") ??
+    (lightSurface ? [225, 226, 231] : [26, 27, 38]);
+  const surfaceRgb = (role: keyof typeof rainTokens, level: number): RgbColor | undefined => {
+    const foreground = rgbFromAnsi(theme.fg(rainTokens[role], ""));
+    if (!foreground) return undefined;
+    return interpolateRgb(surfaceBackground(), foreground, level * (role === "water" ? lightSurface ? 1.2 : 1.5 : 1));
+  };
+  const surfaceLevel = (intensity: number) => Math.round((Number.isFinite(intensity) ? Math.max(0, Math.min(1, intensity)) : 0) * 32) / 32;
 
   return {
     rainShade: (role, intensity, text) => {
       const token = rainTokens[role];
-      const level = Number.isFinite(intensity) ? Math.max(0, Math.min(1, intensity)) : 0;
+      const level = role === "water" ? surfaceLevel(intensity)
+        : Number.isFinite(intensity) ? Math.max(0, Math.min(1, intensity)) : 0;
       const key = `${role}:${level}`;
       let style = rainStyles.get(key);
       if (!style) {
-        const foreground = rgbFromAnsi(theme.fg(token, ""));
-        if (!foreground) return theme.fg(token, text);
-        rainBackground ??= rgbFromAnsi(theme.bg?.("userMessageBg", "") ?? "") ??
-          ((theme as Theme & { appearance?: string }).appearance === "light" || theme.name?.includes("light")
-            ? [225, 226, 231] : [26, 27, 38]);
-        style = fgRgb(interpolateRgb(rainBackground, foreground, level));
+        const color = surfaceRgb(role, level);
+        if (!color) return theme.fg(token, text);
+        style = fgRgb(color);
+        rainStyles.set(key, style);
+      }
+      return `${style}${text}${RESET_FG}`;
+    },
+    rippleShade: (intensity, waterIntensity, text, waterInk = "water") => {
+      const wave = surfaceLevel(intensity), water = surfaceLevel(waterIntensity);
+      const key = `ripple:${waterInk}:${wave}:${water}`;
+      let style = rainStyles.get(key);
+      if (!style) {
+        const base = surfaceRgb(waterInk, water);
+        if (!base) return theme.fg(wave === 0 ? rainTokens[waterInk] : rainTokens.rain, text);
+        const foreground = wave === 0 ? base : rgbFromAnsi(theme.fg(rainTokens.rain, ""));
+        if (!foreground) return theme.fg(rainTokens.rain, text);
+        style = fgRgb(interpolateRgb(base, foreground, Math.min(1, wave * 2)));
         rainStyles.set(key, style);
       }
       return `${style}${text}${RESET_FG}`;

@@ -4,7 +4,7 @@ import {
 } from "../core/errors";
 import { TokyoConfigManager } from "../core/config";
 import type { RainRuntimeProfile } from "./rain-profile";
-import { rainDrift, rainHorizon, rainLandingRow, rainMoonBounds, rainStarRows, rainVerticalScale, rainWaterMarkLife, rainWind } from "./rain-geometry";
+import { rainDrift, rainHorizon, rainLandingRow, rainMoonBounds, rainRippleLife, rainStarRows, rainVerticalScale, rainWaterMarkLife, rainWind } from "./rain-geometry";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -35,12 +35,14 @@ export interface RainSplash {
   readonly col: number;
   readonly depth: number;
   readonly age: number;
+  readonly seed?: number;
 }
 
 export interface RainWaterMark {
   readonly col: number;
   readonly depth: number;
   readonly age: number;
+  readonly seed?: number;
 }
 
 type RainDrop = { col: number; row: number; depth: number; speed: number };
@@ -387,7 +389,7 @@ export class RainAnimationManager {
       }
       this.splashes = this.splashes
         .map((splash) => ({ ...splash, age: splash.age + dt }))
-        .filter((splash) => splash.age < 1.4);
+        .filter((splash) => splash.age < rainRippleLife(splash.depth));
       this.waterMarks = this.waterMarks
         .map((mark) => ({ ...mark, age: mark.age + dt }))
         .filter((mark) => mark.age < rainWaterMarkLife(mark.depth));
@@ -407,8 +409,10 @@ export class RainAnimationManager {
               col: contactCol,
               depth: drop.depth,
               age: (drop.row - landingRow) / speed,
+              seed: Math.floor(Math.random() * 2 ** 32),
             };
-            this.splashes.push(impact);
+            // Reuse the impact's random seed so half raise visible ripples.
+            if (impact.seed < 0x80000000) this.splashes.push(impact);
             this.waterMarks.push({ ...impact });
           }
         } else if (drop.col >= -4 && drop.col < this.lastWidth + 4) {
@@ -416,8 +420,8 @@ export class RainAnimationManager {
         }
       }
       this.drops = falling;
-      this.splashes = this.splashes.slice(-64);
-      this.waterMarks = this.waterMarks.slice(-192);
+      this.splashes = this.splashes.slice(-256);
+      this.waterMarks = this.waterMarks.slice(-1024);
 
       // Births depend on elapsed time and travel distance, independently of FPS.
       if (rows > 0 && this.lastWidth > 0 && this.drops.length < maxDrops) {
