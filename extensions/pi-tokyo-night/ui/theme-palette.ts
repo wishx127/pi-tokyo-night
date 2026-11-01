@@ -168,17 +168,18 @@ export function createTokyoNightPalette(
   return {
     rainShade: (role, intensity, text) => {
       const token = rainTokens[role];
+      const styledText = role === "rain" ? text.replace(/[\\|]+/g, "\x1b[1m$&\x1b[22m") : text;
       const level = role === "water" ? surfaceLevel(intensity)
         : Number.isFinite(intensity) ? Math.max(0, Math.min(1, intensity)) : 0;
       const key = `${role}:${level}`;
       let style = rainStyles.get(key);
       if (!style) {
         const color = surfaceRgb(role, level);
-        if (!color) return theme.fg(token, text);
+        if (!color) return theme.fg(token, styledText);
         style = fgRgb(color);
         rainStyles.set(key, style);
       }
-      return `${style}${text}${RESET_FG}`;
+      return `${style}${styledText}${RESET_FG}`;
     },
     rippleShade: (intensity, waterIntensity, text, waterInk = "water") => {
       const wave = surfaceLevel(intensity), water = surfaceLevel(waterIntensity);

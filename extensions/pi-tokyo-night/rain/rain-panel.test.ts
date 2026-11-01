@@ -851,7 +851,31 @@ describe("RainPanelComponent", () => {
     },
   );
 
-  it.each([4, 10])("keeps rain and fresh impact droplets free of opposing strokes in %i rows", (rainRows) => {
+  it.each(["dark", "light"] as const)("keeps %s calm heads short and windy heads bold without thickening tails", (theme) => {
+    for (const wind of [0, 0.4]) {
+      const lines = renderRainPanelLines({
+        width: 60, frameEnabled: false, rainRows: 4,
+        palette: createTokyoNightPalette(readTokyoTheme(theme)),
+        snapshot: {
+          wind, stars: [{ col: 45, row: 0 }],
+          drops: [{ col: 12.1, row: 2.45, depth: 0 },
+            { col: 20.1, row: 2.45, depth: 1 }, { col: 30.1, row: 2.45, depth: 2 }],
+          waterMarks: [{ col: 40.5, depth: 2, age: 1.2, seed: 1 }],
+        },
+      });
+      const output = lines.join("\n");
+      const heads = [...output.matchAll(/\x1b\[1m([\\|]+)\x1b\[22m/g)];
+      expect(heads.map((head) => head[1])).toEqual(wind === 0 ? [] : Array(3).fill("\\"));
+      expect(output.match(/\x1b\[1m/g) ?? []).toHaveLength(wind === 0 ? 0 : 3);
+      expect(output.match(/\x1b\[22m/g) ?? []).toHaveLength(wind === 0 ? 0 : 3);
+      expect(output.match(/╻/g) ?? []).toHaveLength(wind === 0 ? 3 : 0);
+      expect(lines.every((line) => visibleWidth(line) === 60)).toBe(true);
+      const tail = lines[1].replace(/\x1b\[[0-9;]*m/g, "");
+      expect(tail[wind === 0 ? 30 : 29]).toBe(".");
+    }
+  });
+
+  it.each([4, 10])("shows vertical rain in calms and rightward strokes in wind in %i rows", (rainRows) => {
     for (const wind of [-0.8, 0, 0.25, 0.7, NaN, Infinity]) {
       const lines = renderRainPanelLines({
         width: 60, frameEnabled: false, rainRows,
@@ -863,9 +887,15 @@ describe("RainPanelComponent", () => {
           splashes: [{ col: 45, depth: 2, age: 0.05 }],
         },
       });
-      expect(lines.join("\n")).toContain("\\");
+      const calm = wind <= 0;
+      expect(lines.join("\n")).toContain(calm ? "╻" : "\\");
+      expect(lines.join("\n")).not.toContain(calm ? "\\" : "╻");
+      if (calm) {
+        expect(lines[1][35]).toBe(".");
+        expect(lines[2][35]).toBe("╻");
+      }
       expect(lines.join("\n")).not.toContain(",");
-      expect(lines.join("\n")).not.toMatch(/[\/|]/);
+      expect(lines.join("\n")).not.toContain("/");
     }
   });
 
@@ -1422,7 +1452,7 @@ describe("RainPanelComponent", () => {
     });
 
     expect(lines.slice(0, 3).join("\n")).toContain("<fg:warning>\u{1f319}</fg:warning>");
-    expect(lines.join("\n")).toContain("<fg:thinkingLow>\\</fg:thinkingLow>");
+    expect(lines.join("\n")).toContain("<fg:thinkingLow>\x1b[1m\\\x1b[22m</fg:thinkingLow>");
     expect(lines.join("\n")).toContain("<fg:accent>+</fg:accent>");
   });
 
@@ -1431,7 +1461,7 @@ describe("RainPanelComponent", () => {
       "dark",
       {
         moon: "\x1b[38;2;224;175;104m",
-        rain: "\x1b[38;2;100;162;201m\\\x1b[39m",
+        rain: "\x1b[38;2;100;162;201m\x1b[1m\\\x1b[22m\x1b[39m",
         star: "\x1b[38;2;187;154;247m+\x1b[39m",
       },
     ],
@@ -1439,7 +1469,7 @@ describe("RainPanelComponent", () => {
       "light",
       {
         moon: "\x1b[38;2;136;94;22m",
-        rain: "\x1b[38;2;63;147;182m\\\x1b[39m",
+        rain: "\x1b[38;2;63;147;182m\x1b[1m\\\x1b[22m\x1b[39m",
         star: "\x1b[38;2;102;54;186m+\x1b[39m",
       },
     ],

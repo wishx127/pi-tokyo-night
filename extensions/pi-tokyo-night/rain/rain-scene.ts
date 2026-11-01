@@ -99,7 +99,7 @@ export function renderRainScene(
     if (drop.row >= rainLandingRow(rows, depth)) continue;
     const length = (0.4 + Math.max(0, depth - 1) * 0.55) * verticalScale;
     const drift = rainDrift(wind, depth);
-    put(drop.col, drop.row, RAIN_DROP, "rain", 0.58 + depth * 0.14, 10 + depth);
+    put(drop.col, drop.row, drift === 0 ? "╻" : RAIN_DROP, "rain", 0.58 + depth * 0.14, 10 + depth);
     if (depth > 1 && Math.floor(drop.row - length) < Math.floor(drop.row)) {
       put(drop.col - drift * length, drop.row - length, ".", "rain", 0.18 + depth * 0.1, 10 + depth);
     }

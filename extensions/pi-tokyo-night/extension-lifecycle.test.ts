@@ -1793,7 +1793,7 @@ describe("public layout and lifecycle contract", () => {
       let strokes = 0;
       for (let frame = 0; frame < 10; frame++) {
         await vi.advanceTimersByTimeAsync(100);
-        strokes += (rain.render(180).join("").match(/\\/g) ?? []).length;
+        strokes += (rain.render(180).join("").match(/[\\╻]/g) ?? []).length;
       }
       return strokes;
     };

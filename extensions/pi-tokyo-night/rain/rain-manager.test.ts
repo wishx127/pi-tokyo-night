@@ -844,7 +844,7 @@ describe("RainAnimationManager", () => {
     mgr.stop();
   });
 
-  it.each([4, 10])("keeps every surviving drop moving downwind to the right throughout a %i-row scene", (rainRows) => {
+  it.each([4, 10])("lets %i-row rain fall vertically through a sustained calm before rightward wind resumes", (rainRows) => {
     let seed = 12345;
     vi.spyOn(Math, "random").mockImplementation(() => {
       seed = Math.imul(seed, 1664525) + 1013904223 | 0;
@@ -858,22 +858,70 @@ describe("RainAnimationManager", () => {
     let previous = manager.getSnapshot();
     const strengths = new Set<number>();
     let compared = 0;
+    let calmTicks = 0, longestCalm = 0, calmCompared = 0;
+    let resumed = false;
     for (let tick = 0; tick < 400; tick++) {
       vi.advanceTimersByTime(50);
       const frame = manager.getSnapshot();
-      expect(frame.wind).toBeGreaterThanOrEqual(0.2);
+      expect(frame.wind).toBeGreaterThanOrEqual(0);
+      expect(frame.wind).toBeLessThanOrEqual(0.7);
+      expect(Math.abs(frame.wind! - previous.wind!)).toBeLessThan(0.02);
+      if (frame.wind === 0) {
+        longestCalm = Math.max(longestCalm, ++calmTicks);
+      } else {
+        calmTicks = 0;
+      }
       strengths.add(Math.round(frame.wind! * 100));
       for (const drop of previous.drops) {
         const next = frame.drops.find((point) => point.depth === drop.depth && point.speed === drop.speed);
         if (!next) continue;
-        expect(next.col).toBeGreaterThan(drop.col);
+        expect(next.col).toBeGreaterThanOrEqual(drop.col);
+        if (frame.wind === 0 && previous.wind === 0) {
+          expect(next.col).toBe(drop.col);
+          calmCompared++;
+        } else if (frame.wind! > 0) {
+          expect(next.col).toBeGreaterThan(drop.col);
+          if (longestCalm >= 40) resumed = true;
+        }
         expect(next.row).toBeGreaterThan(drop.row);
         compared++;
       }
       previous = frame;
     }
     expect(compared).toBeGreaterThan(100);
+    expect(calmCompared).toBeGreaterThan(100);
+    expect(longestCalm).toBeGreaterThanOrEqual(40);
+    expect(resumed).toBe(true);
     expect(strengths.size).toBeGreaterThan(10);
+    manager.stop();
+  });
+
+  it.each([4, 10])("settles to fewer rain drops in a %i-row calm and restores their number with the wind", (rainRows) => {
+    let seed = 12345;
+    vi.spyOn(Math, "random").mockImplementation(() => {
+      seed = Math.imul(seed, 1664525) + 1013904223 | 0;
+      return (seed >>> 0) / 4294967296;
+    });
+    const manager = new RainAnimationManager(
+      makeConfig({ rainRows, rainTickMs: 50, maxRainDrops: 100 }), { requestRender: vi.fn() },
+    );
+    const windy: number[] = [], calm: number[] = [], restored: number[] = [];
+    manager.start();
+    manager.setRenderWidth(1000, rainRows);
+    for (let tick = 0; tick < 400; tick++) {
+      vi.advanceTimersByTime(50);
+      const frame = manager.getSnapshot();
+      if (frame.time! >= 2 && frame.time! <= 5) windy.push(frame.drops.length);
+      if (frame.time! >= 12.2 && frame.time! <= 13.8) {
+        expect(frame.wind).toBe(0);
+        calm.push(frame.drops.length);
+      }
+      if (frame.time! >= 16 && frame.time! <= 19) restored.push(frame.drops.length);
+    }
+    const average = (counts: number[]) => counts.reduce((sum, count) => sum + count, 0) / counts.length;
+    expect(average(calm) / average(windy)).toBeGreaterThan(0.6);
+    expect(average(calm) / average(windy)).toBeLessThan(0.8);
+    expect(average(restored) / average(windy)).toBeGreaterThan(0.9);
     manager.stop();
   });
 

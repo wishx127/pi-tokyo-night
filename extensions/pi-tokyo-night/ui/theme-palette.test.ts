@@ -18,7 +18,7 @@ describe("Tokyo Night theme palette", () => {
       bg: () => "\x1b[48;2;20;30;40m\x1b[49m",
     } as unknown as Theme);
     expect(palette.rainShade?.("rain", 0.5, "\\")).toBe(
-      "\x1b[38;2;110;65;45m\\\x1b[39m",
+      "\x1b[38;2;110;65;45m\x1b[1m\\\x1b[22m\x1b[39m",
     );
   });
 

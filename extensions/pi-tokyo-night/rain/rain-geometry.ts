@@ -13,14 +13,14 @@ export function rainVerticalScale(rows: number): number {
   return Math.min(1, Math.max(1, rainHorizon(rows)) / 5);
 }
 
-/** Wind strength varies while the scene keeps falling toward the right. */
+/** Rightward wind eases into sustained calms before picking up again. */
 export function rainWind(time: number): number {
-  return Math.max(0.2, 0.25 + 0.32 * Math.sin(time * 0.37) + 0.13 * Math.sin(time * 0.91));
+  return Math.max(0, 0.25 + 0.32 * Math.sin(time * 0.37) + 0.13 * Math.sin(time * 0.91));
 }
 
 /** Share a rightward slope between simulation, rain tails and impact droplets. */
 export function rainDrift(wind: number, depth: number): number {
-  const strength = Number.isFinite(wind) ? Math.max(0.2, Math.min(0.7, wind)) : rainWind(0);
+  const strength = Number.isFinite(wind) ? Math.max(0, Math.min(0.7, wind)) : rainWind(0);
   return strength * (0.85 + depth * 0.3);
 }
 

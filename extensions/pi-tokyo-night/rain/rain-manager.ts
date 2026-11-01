@@ -365,7 +365,7 @@ export class RainAnimationManager {
   /** Animation tick: advance drops, spawn new ones, then notify the renderer. */
   private tick(): void {
     const cfg = this.config.get();
-    const maxDrops = Math.round(this.getDensity());
+    const density = this.getDensity();
     const now = Date.now();
     // A stalled terminal must not replay seconds of missed simulation.
     let remaining = Math.max(0, Math.min(
@@ -379,6 +379,8 @@ export class RainAnimationManager {
       this.fallSpeed = this.getFallSpeed(now - remaining * 1000);
       this.time += dt;
       this.wind = rainWind(this.time);
+      const breeze = Math.min(1, this.wind / 0.2);
+      const maxDrops = Math.round(density * (0.7 + 0.3 * breeze * breeze * (3 - 2 * breeze)));
       const rows = this.lastHeight ?? cfg.rainRows;
       const verticalScale = rainVerticalScale(rows);
       this.stars = this.stars.map((star) => ({ ...star, age: star.age + dt }))
