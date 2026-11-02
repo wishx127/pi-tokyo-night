@@ -913,7 +913,7 @@ export function registerTokyoNightExtension(
       getDimensions: () => ({ columns: tui.terminal.columns, rows: tui.terminal.rows }),
       pause: () => session.refreshScheduler?.setPaused(true),
       resume: () => session.refreshScheduler?.setPaused(false),
-      recover: () => {
+      recover: (force) => {
         if (!isCurrent(session)) return;
         session.statusRenderCache.invalidate();
         session.resources.rainPanel?.invalidate();
@@ -921,7 +921,7 @@ export function registerTokyoNightExtension(
           session.working.pending = true;
           publishWorking(session);
         }
-        requestHostRender(tui, true);
+        requestHostRender(tui, force);
       },
       onError: (error) => {
         if (!isStaleExtensionContextError(error)) handleExtensionError(error, "screen recovery");

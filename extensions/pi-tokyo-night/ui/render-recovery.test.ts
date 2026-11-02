@@ -47,10 +47,11 @@ describe("RenderRecoveryCoordinator", () => {
   it("keeps background updates active and repaints once after focus settles", () => {
     vi.useFakeTimers();
     const calls: string[] = [];
+    const recover = vi.fn(() => { calls.push("recover"); });
     const recovery = new RenderRecoveryCoordinator({
       getDimensions: () => ({ columns: 80, rows: 24 }),
       pause: () => calls.push("pause"),
-      recover: () => calls.push("recover"),
+      recover,
       resume: () => calls.push("resume"),
     });
 
@@ -64,6 +65,7 @@ describe("RenderRecoveryCoordinator", () => {
     expect(calls).toEqual(["pause"]);
     vi.advanceTimersByTime(1);
     expect(calls).toEqual(["pause", "recover", "resume"]);
+    expect(recover).toHaveBeenCalledWith(false);
     vi.advanceTimersByTime(1000);
     expect(calls).toEqual(["pause", "recover", "resume"]);
   });
@@ -117,6 +119,30 @@ describe("RenderRecoveryCoordinator", () => {
     expect(resume).toHaveBeenCalledOnce();
   });
 
+  it.each(["while unfocused", "while focus settles"])("forces a redraw when dimensions change silently %s", (when) => {
+    vi.useFakeTimers();
+    let dimensions = { columns: 80, rows: 24 };
+    const recover = vi.fn();
+    const recovery = new RenderRecoveryCoordinator({
+      getDimensions: () => dimensions,
+      pause() {},
+      recover,
+      resume() {},
+    });
+
+    recovery.setFocused(false);
+    if (when === "while focus settles") recovery.setFocused(true);
+    dimensions = { columns: 96, rows: 30 };
+    if (when === "while unfocused") recovery.setFocused(true);
+    vi.advanceTimersByTime(400);
+    expect(recover.mock.calls).toEqual([[true]]);
+
+    recovery.setFocused(false);
+    recovery.setFocused(true);
+    vi.advanceTimersByTime(200);
+    expect(recover.mock.calls).toEqual([[true], [false]]);
+  });
+
   it("recovers when unavailable dimensions return silently during the bounded probe window", () => {
     vi.useFakeTimers();
     let dimensions = { columns: 0, rows: 0 };
@@ -161,6 +187,35 @@ describe("RenderRecoveryCoordinator", () => {
     recovery.setActive(true);
     vi.advanceTimersByTime(200);
     expect(calls).toEqual(["pause", "recover", "resume"]);
+  });
+
+  it.each(["resize", "restart"])("preserves a pending %s redraw across an interrupted focus recovery", (reason) => {
+    vi.useFakeTimers();
+    const recover = vi.fn();
+    const recovery = new RenderRecoveryCoordinator({
+      getDimensions: () => ({ columns: 80, rows: 24 }),
+      pause() {},
+      recover,
+      resume() {},
+    });
+
+    if (reason === "resize") recovery.resized();
+    else {
+      recovery.setActive(false);
+      recovery.setActive(true);
+    }
+    vi.advanceTimersByTime(100);
+    recovery.setFocused(false);
+    vi.advanceTimersByTime(1000);
+    expect(recover).not.toHaveBeenCalled();
+    recovery.setFocused(true);
+    vi.advanceTimersByTime(200);
+    expect(recover.mock.calls).toEqual([[true]]);
+
+    recovery.setFocused(false);
+    recovery.setFocused(true);
+    vi.advanceTimersByTime(200);
+    expect(recover.mock.calls).toEqual([[true], [false]]);
   });
 
   it("cancels pending recovery and ignores further terminal events after disposal", () => {
@@ -216,9 +271,10 @@ describe("RenderRecoveryCoordinator", () => {
     expect(vi.getTimerCount()).toBe(0);
 
     dimensions = { columns: 80, rows: 24 };
-    recovery.resized();
+    recovery.setFocused(true);
     vi.advanceTimersByTime(200);
     expect(recover).toHaveBeenCalledOnce();
+    expect(recover).toHaveBeenCalledWith(true);
     expect(resume).toHaveBeenCalledTimes(2);
   });
 
@@ -242,9 +298,10 @@ describe("RenderRecoveryCoordinator", () => {
     expect(resume).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
 
-    recovery.resized();
+    recovery.setFocused(true);
     vi.advanceTimersByTime(200);
     expect(recover).toHaveBeenCalledTimes(2);
+    expect(recover).toHaveBeenNthCalledWith(2, true);
     expect(resume).toHaveBeenCalledTimes(2);
   });
 
@@ -296,6 +353,27 @@ describe("RenderRecoveryCoordinator", () => {
     expect(calls).toEqual(["pause", "recover"]);
     vi.advanceTimersByTime(1);
     expect(calls).toEqual(["pause", "recover", "recover", "resume"]);
+  });
+
+  it("forces a resize requested synchronously by an ordinary focus repaint", () => {
+    vi.useFakeTimers();
+    const recover = vi.fn((_force: boolean) => {});
+    const resume = vi.fn();
+    const recovery = new RenderRecoveryCoordinator({
+      getDimensions: () => ({ columns: 80, rows: 24 }),
+      pause() {},
+      recover,
+      resume,
+    });
+    recover.mockImplementationOnce(() => recovery.resized());
+
+    recovery.setFocused(true);
+    vi.advanceTimersByTime(200);
+    expect(recover.mock.calls).toEqual([[false]]);
+    expect(resume).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(200);
+    expect(recover.mock.calls).toEqual([[false], [true]]);
+    expect(resume).toHaveBeenCalledOnce();
   });
 
   it("restarts the quiet period on repeated focus reports and cancels it on blur", () => {

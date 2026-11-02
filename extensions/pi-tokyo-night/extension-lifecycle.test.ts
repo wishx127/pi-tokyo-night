@@ -445,6 +445,46 @@ describe("public layout and lifecycle contract", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it.each(["regular", "fullscreen"] as const)("preserves the draft and avoids forced redraw on a same-size focus return in %s mode", async (mode) => {
+    vi.useFakeTimers();
+    let recoveryEvents: TerminalRecoveryCallbacks | undefined;
+    const observeRecovery = vi.fn((_target, callbacks: TerminalRecoveryCallbacks) => {
+      recoveryEvents = callbacks;
+      return { dispose() {} };
+    });
+    const fixture = makeFixture("tui", undefined, undefined, undefined, observeRecovery);
+    await fixture.emit("session_start", {}, fixture.ctx);
+    const tui = { mode, terminal: { columns: 120, rows: 40 }, requestRender: vi.fn() };
+    const editor = fixture.editorFactory(tui, { borderColor: () => "" }, {});
+    fixture.widgets.get("tokyo-status")(tui, theme);
+    editor.setText("中文 input draft");
+    const cursor = editor.getCursor();
+    try {
+      recoveryEvents!.onFocus(false);
+      await vi.advanceTimersByTimeAsync(1000);
+      tui.requestRender.mockClear();
+      recoveryEvents!.onFocus(true);
+      await vi.advanceTimersByTimeAsync(199);
+      expect(tui.requestRender).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(tui.requestRender).toHaveBeenCalledWith();
+      expect(tui.requestRender).not.toHaveBeenCalledWith(true);
+      expect(editor.getText()).toBe("中文 input draft");
+      expect(editor.getCursor()).toEqual(cursor);
+
+      recoveryEvents!.onActive(false);
+      tui.requestRender.mockClear();
+      await vi.advanceTimersByTimeAsync(400);
+      expect(tui.requestRender).not.toHaveBeenCalled();
+      recoveryEvents!.onActive(true);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(tui.requestRender.mock.calls.filter(([force]) => force === true)).toHaveLength(1);
+    } finally {
+      await fixture.emit("session_shutdown", {}, fixture.ctx);
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("does not rescan pending usage on animation renders and reconciles delayed persistence", async () => {
     vi.useFakeTimers();
     const fixture = makeFixture();
@@ -1891,7 +1931,7 @@ describe("public layout and lifecycle contract", () => {
 
     await fixture.emit("agent_end", { type: "agent_end" }, fixture.ctx);
     expect(tui.requestRender).toHaveBeenCalledTimes(activeRequests);
-    await vi.advanceTimersByTimeAsync(66);
+    await vi.advanceTimersByTimeAsync(160);
     expect(tui.requestRender.mock.calls.length).toBeGreaterThan(activeRequests);
     expect(tui.requestRender.mock.calls.length).toBeLessThanOrEqual(activeRequests + 2);
 
@@ -2503,7 +2543,7 @@ describe("public layout and lifecycle contract", () => {
     fixture.customComponent.handleInput("\x1b[C");
     await vi.advanceTimersByTimeAsync(100);
     const beforeFirstTick = rain.render(80).join("\n");
-    await vi.advanceTimersByTimeAsync(25);
+    await vi.advanceTimersByTimeAsync(29);
     expect(rain.render(80).join("\n")).toBe(beforeFirstTick);
     await vi.advanceTimersByTimeAsync(1);
     const firstTick = rain.render(80).join("\n");
@@ -2554,7 +2594,7 @@ describe("public layout and lifecycle contract", () => {
 
     fixture.customComponent.handleInput("\t");
     fixture.customComponent.handleInput("\r");
-    await vi.advanceTimersByTimeAsync(66);
+    await vi.advanceTimersByTimeAsync(160);
 
     expect(statusTui.requestRender).toHaveBeenCalledOnce();
     expect(status.render(500).join("\n")).not.toContain("pi-agent");

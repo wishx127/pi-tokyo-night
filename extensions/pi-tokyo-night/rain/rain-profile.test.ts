@@ -11,11 +11,11 @@ describe("resolveRainRuntimeProfile", () => {
   });
 
   it.each([
-    ["idle", { tickMs: 66, maxDrops: 0, fallSpeed: 0.65, densityTransitionMs: 0, fallSpeedTransitionMs: 600 }],
-    ["waiting", { tickMs: 66, maxDrops: 5, fallSpeed: 0.65, densityTransitionMs: 600, fallSpeedTransitionMs: 600 }],
-    ["thinking", { tickMs: 50, maxDrops: 12, fallSpeed: 0.85, densityTransitionMs: 600, fallSpeedTransitionMs: 600 }],
-    ["streaming", { tickMs: 50, maxDrops: 22, fallSpeed: 1, densityTransitionMs: 600, fallSpeedTransitionMs: 600 }],
-    ["tools", { tickMs: 40, maxDrops: 35, fallSpeed: 1.4, densityTransitionMs: 250, fallSpeedTransitionMs: 250 }],
+    ["idle", { tickMs: 160, maxDrops: 0, fallSpeed: 0.65, densityTransitionMs: 0, fallSpeedTransitionMs: 600 }],
+    ["waiting", { tickMs: 130, maxDrops: 5, fallSpeed: 0.65, densityTransitionMs: 600, fallSpeedTransitionMs: 600 }],
+    ["thinking", { tickMs: 130, maxDrops: 12, fallSpeed: 0.85, densityTransitionMs: 600, fallSpeedTransitionMs: 600 }],
+    ["streaming", { tickMs: 130, maxDrops: 22, fallSpeed: 1, densityTransitionMs: 600, fallSpeedTransitionMs: 600 }],
+    ["tools", { tickMs: 110, maxDrops: 35, fallSpeed: 1.4, densityTransitionMs: 250, fallSpeedTransitionMs: 250 }],
   ] as const)("maps auto %s activity to its rain profile", (activity, expected) => {
     expect(resolveRainRuntimeProfile({
       ...DEFAULT_CONFIG,

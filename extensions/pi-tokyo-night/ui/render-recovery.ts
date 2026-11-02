@@ -6,7 +6,7 @@ export interface RenderDimensions {
 export interface RenderRecoveryDependencies {
   getDimensions(): RenderDimensions;
   pause(): void;
-  recover(): void;
+  recover(force: boolean): void;
   resume(): void;
   onError?(error: unknown): void;
 }
@@ -25,6 +25,7 @@ export class RenderRecoveryCoordinator {
   private active = true;
   private disposed = false;
   private revision = 0;
+  private force = false;
   private invalidDimensionProbes = MAX_INVALID_DIMENSION_PROBES;
   private dimensions: RenderDimensions | undefined;
   private readonly settleMs: number;
@@ -40,7 +41,7 @@ export class RenderRecoveryCoordinator {
   setFocused(focused: boolean): void {
     if (this.disposed) return;
     this.focused = focused;
-    this.resized();
+    this.requestRecovery(false);
   }
 
   setActive(active: boolean): void {
@@ -52,12 +53,24 @@ export class RenderRecoveryCoordinator {
   }
 
   resized(): void {
+    this.requestRecovery(true);
+  }
+
+  private requestRecovery(force: boolean): void {
     if (this.disposed) return;
+    this.force ||= force;
     const revision = ++this.revision;
     this.invalidDimensionProbes = MAX_INVALID_DIMENSION_PROBES;
     if (this.timer !== undefined) clearTimeout(this.timer);
     this.timer = undefined;
     if (this.active && !this.focused) {
+      try {
+        const dimensions = this.readDimensions();
+        if (!this.disposed && this.revision === revision) this.observeDimensions(dimensions);
+      } catch (error) {
+        this.force = true;
+        this.reportError(error);
+      }
       this.resume(revision);
       return;
     }
@@ -74,12 +87,13 @@ export class RenderRecoveryCoordinator {
     try {
       dimensions = this.readDimensions();
     } catch (error) {
+      this.force = true;
       this.reportError(error);
       this.resume(revision);
       return;
     }
     if (!this.isCurrent(revision)) return;
-    this.dimensions = dimensions;
+    this.observeDimensions(dimensions);
     this.schedule(revision);
   }
 
@@ -97,12 +111,14 @@ export class RenderRecoveryCoordinator {
       try {
         dimensions = this.readDimensions();
       } catch (error) {
+        this.force = true;
         this.reportError(error);
         this.resume(revision);
         return;
       }
       if (!this.isCurrent(revision)) return;
       if (!dimensions) {
+        this.force = true;
         this.dimensions = undefined;
         // Some backends recover without emitting another resize. Probe briefly,
         // then release the cosmetic clock instead of leaving it paused forever.
@@ -112,13 +128,17 @@ export class RenderRecoveryCoordinator {
       }
       if (dimensions.columns !== this.dimensions?.columns ||
         dimensions.rows !== this.dimensions.rows) {
+        this.force = true;
         this.dimensions = { ...dimensions };
         this.schedule(revision);
         return;
       }
+      const force = this.force;
+      this.force = false;
       try {
-        this.dependencies.recover();
+        this.dependencies.recover(force);
       } catch (error) {
+        this.force ||= force;
         this.reportError(error);
       } finally {
         this.resume(revision);
@@ -131,6 +151,13 @@ export class RenderRecoveryCoordinator {
     const { columns, rows } = this.dependencies.getDimensions();
     return Number.isInteger(columns) && columns > 0 && Number.isInteger(rows) && rows > 0
       ? { columns, rows } : undefined;
+  }
+
+  private observeDimensions(dimensions: RenderDimensions | undefined): void {
+    if (!dimensions || (this.dimensions && (
+      dimensions.columns !== this.dimensions.columns || dimensions.rows !== this.dimensions.rows
+    ))) this.force = true;
+    this.dimensions = dimensions;
   }
 
   private reportError(error: unknown): void {

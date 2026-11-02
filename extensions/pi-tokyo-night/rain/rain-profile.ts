@@ -14,11 +14,11 @@ export interface RainRuntimeProfile {
 }
 
 const AUTO_PROFILES: Readonly<Record<RainActivity, RainRuntimeProfile>> = Object.freeze({
-  idle: Object.freeze({ tickMs: 66, maxDrops: 0, fallSpeed: 0.65, densityTransitionMs: 0, fallSpeedTransitionMs: 600 }),
-  waiting: Object.freeze({ tickMs: 66, maxDrops: 5, fallSpeed: 0.65, densityTransitionMs: 600, fallSpeedTransitionMs: 600 }),
-  thinking: Object.freeze({ tickMs: 50, maxDrops: 12, fallSpeed: 0.85, densityTransitionMs: 600, fallSpeedTransitionMs: 600 }),
-  streaming: Object.freeze({ tickMs: 50, maxDrops: 22, fallSpeed: 1, densityTransitionMs: 600, fallSpeedTransitionMs: 600 }),
-  tools: Object.freeze({ tickMs: 40, maxDrops: 35, fallSpeed: 1.4, densityTransitionMs: 250, fallSpeedTransitionMs: 250 }),
+  idle: Object.freeze({ tickMs: 160, maxDrops: 0, fallSpeed: 0.65, densityTransitionMs: 0, fallSpeedTransitionMs: 600 }),
+  waiting: Object.freeze({ tickMs: 130, maxDrops: 5, fallSpeed: 0.65, densityTransitionMs: 600, fallSpeedTransitionMs: 600 }),
+  thinking: Object.freeze({ tickMs: 130, maxDrops: 12, fallSpeed: 0.85, densityTransitionMs: 600, fallSpeedTransitionMs: 600 }),
+  streaming: Object.freeze({ tickMs: 130, maxDrops: 22, fallSpeed: 1, densityTransitionMs: 600, fallSpeedTransitionMs: 600 }),
+  tools: Object.freeze({ tickMs: 110, maxDrops: 35, fallSpeed: 1.4, densityTransitionMs: 250, fallSpeedTransitionMs: 250 }),
 });
 
 export function resolveRainRuntimeProfile(
