@@ -49,7 +49,7 @@
     "README.md",
     "README.zh-CN.md",
     "assets/screenshot.png",
-    "assets/rain-moon/*"
+    "assets/rain-moon/*.png"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
