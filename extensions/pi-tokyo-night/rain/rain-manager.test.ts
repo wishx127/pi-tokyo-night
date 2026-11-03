@@ -74,7 +74,7 @@ describe("RainAnimationManager", () => {
     manager.stop();
   });
 
-  it.each([[1, 1], [2, 1], [3, 1], [4, 2], [5, 2], [6, 2], [7, 3], [8, 3], [9, 3], [10, 4]])(
+  it.each([[1, 1], [2, 1], [3, 1], [4, 1], [5, 2], [6, 2], [7, 2], [8, 3], [9, 3], [10, 3]])(
     "keeps new and replacement stars in a %i-row scene's top %i sky rows", (rainRows, starRows) => {
       vi.spyOn(Math, "random").mockReturnValue(0.99);
       const manager = new RainAnimationManager(makeConfig({ rainRows }), { requestRender: vi.fn() });
@@ -103,7 +103,7 @@ describe("RainAnimationManager", () => {
       manager.setRenderWidth(100, 4);
       const compact = manager.getSnapshot();
       expect(compact.stars).toHaveLength(before.stars.length);
-      expect(compact.stars.every((star) => star.row < 2)).toBe(true);
+      expect(compact.stars.every((star) => star.row === 0)).toBe(true);
       if (retire) expect(compact.stars.every((star) => star.age === 0)).toBe(true);
       else expect(compact.stars).toEqual(before.stars);
       expect(compact.time).toBe(before.time);
@@ -165,7 +165,7 @@ describe("RainAnimationManager", () => {
     const compactTravel = compact.getSnapshot().drops[0].row - compactRow;
     const fullTravel = full.getSnapshot().drops[0].row - fullRow;
     expect(compactTravel).toBeGreaterThan(0);
-    expect(compactTravel).toBeCloseTo(fullTravel * 0.6);
+    expect(compactTravel).toBeCloseTo(fullTravel * 0.4);
     compact.stop();
     full.stop();
   });
@@ -178,6 +178,7 @@ describe("RainAnimationManager", () => {
     const before = manager.getSnapshot();
     expect(before.drops.length).toBeGreaterThan(0);
     manager.setRenderWidth(0, 0);
+    vi.advanceTimersByTime(4200);
     manager.setRenderWidth(80, 8);
     expect(manager.getSnapshot()).toEqual(before);
     manager.stop();
@@ -197,7 +198,7 @@ describe("RainAnimationManager", () => {
     expect(compact.drops).toHaveLength(before.drops.length);
     for (let index = 0; index < before.drops.length; index++) {
       if (before.drops[index].depth === 0) {
-        expect(compact.drops[index].row).toBeCloseTo(before.drops[index].row * 0.6);
+        expect(compact.drops[index].row).toBeCloseTo(before.drops[index].row * 0.4);
       }
     }
     manager.stop();
@@ -246,7 +247,7 @@ describe("RainAnimationManager", () => {
       for (const mark of frame.waterMarks!) impacts.add(mark.seed!);
       for (const splash of frame.splashes!) {
         ripples.add(splash.seed!);
-        expect(frame.waterMarks).toContainEqual(splash);
+        expect(impacts.has(splash.seed!)).toBe(true);
       }
     }
     expect(impacts.size).toBeGreaterThan(100);
@@ -255,7 +256,7 @@ describe("RainAnimationManager", () => {
     manager.stop();
   });
 
-  it("creates water marks only at rain impacts and lets them outlive the ripples", () => {
+  it("shows contact only when rain hits the water and clears it before the ripple", () => {
     vi.spyOn(Math, "random").mockReturnValue(0.1);
     const manager = new RainAnimationManager(
       makeConfig({ rainRows: 4, rainTickMs: 50, maxRainDrops: 25 }),
@@ -278,17 +279,17 @@ describe("RainAnimationManager", () => {
     expect(first.seed).toBeGreaterThanOrEqual(0);
     expect(first.seed).toBeLessThan(2 ** 32);
     manager.applyProfile({ tickMs: 50, maxDrops: 0 });
-    vi.advanceTimersByTime(1900);
+    vi.advanceTimersByTime(750);
     const after = manager.getSnapshot();
-    expect(after.waterMarks!.some((mark) => mark.col === first.col && mark.depth === first.depth)).toBe(true);
-    expect(after.waterMarks!.find((mark) => mark.col === first.col && mark.depth === first.depth)!.seed).toBe(first.seed);
-    expect(after.splashes!.some((splash) => splash.col === first.col && splash.depth === first.depth)).toBe(false);
+    const matchesFirst = (point: typeof first) => point.col === first.col && point.depth === first.depth;
+    expect(after.waterMarks!.some(matchesFirst)).toBe(false);
+    expect(after.splashes!.some(matchesFirst)).toBe(true);
     vi.advanceTimersByTime(8000);
     expect(manager.getSnapshot().waterMarks).toEqual([]);
     manager.stop();
   });
 
-  it("retains a real near wet trace through its delayed fade under maximum manual rain", () => {
+  it("clears contact promptly while a near ripple is still visible under maximum manual rain", () => {
     let random = 12345;
     vi.spyOn(Math, "random").mockImplementation(() => {
       random = (Math.imul(random, 1664525) + 1013904223) | 0;
@@ -307,33 +308,29 @@ describe("RainAnimationManager", () => {
     expect(first).toBeDefined();
     const tracked = () => manager.getSnapshot().waterMarks!.find((mark) =>
       mark.seed === first.seed && mark.col === first.col && mark.depth === first.depth);
-    vi.advanceTimersByTime(1500);
+    vi.advanceTimersByTime(650);
+    expect(tracked()).toBeDefined();
+    vi.advanceTimersByTime(100);
+    expect(tracked()).toBeUndefined();
     expect(manager.getSnapshot().splashes!.some((splash) =>
       splash.seed === first.seed && splash.col === first.col && splash.depth === first.depth)).toBe(true);
-    vi.advanceTimersByTime(3500);
-    expect(tracked()).toBeDefined();
-    expect(tracked()!.age).toBeGreaterThanOrEqual(5);
-    expect(tracked()!.age).toBeLessThan(8.44);
     expect(manager.getSnapshot().drops.length).toBeGreaterThan(0);
-    vi.advanceTimersByTime(3300);
-    expect(tracked()).toBeDefined();
-    expect(tracked()!.age).toBeGreaterThanOrEqual(8.3);
-    vi.advanceTimersByTime(150);
-    expect(tracked()).toBeUndefined();
+    vi.advanceTimersByTime(800);
+    expect(manager.getSnapshot().splashes!.some((splash) => splash.seed === first.seed)).toBe(false);
     manager.stop();
   });
 
   it("uses the actual contact point to accept impacts at the viewport edges", () => {
-    vi.spyOn(Math, "random").mockReturnValue(0.7);
+    vi.spyOn(Math, "random").mockReturnValue(0.72);
     const manager = new RainAnimationManager(
       makeConfig({ rainRows: 4, rainTickMs: 50, maxRainDrops: 100 }),
       { requestRender: vi.fn() },
     );
     manager.start();
     manager.setRenderWidth(10, 4);
-    vi.advanceTimersByTime(650);
-    // This drop touches at 9.864569, then crosses column 10 before the tick ends.
-    expect(manager.getSnapshot().waterMarks!.some((mark) => Math.abs(mark.col - 9.864569) < 0.00001)).toBe(true);
+    vi.advanceTimersByTime(900);
+    // This drop touches at 9.96669, then crosses column 10 before the tick ends.
+    expect(manager.getSnapshot().waterMarks!.some((mark) => Math.abs(mark.col - 9.96669) < 0.00001)).toBe(true);
     vi.advanceTimersByTime(400);
     expect(manager.getSnapshot().waterMarks!.every((mark) => mark.col >= 0 && mark.col < 10)).toBe(true);
     expect(manager.getSnapshot().splashes!.every((splash) => splash.col >= 0 && splash.col < 10)).toBe(true);
@@ -350,7 +347,7 @@ describe("RainAnimationManager", () => {
       manager.start({ tickMs: 50, maxDrops: 25, fallSpeed: 0.65 });
       manager.setRenderWidth(100, 10);
     }
-    vi.advanceTimersByTime(500);
+    vi.advanceTimersByTime(650);
     const before = fast.getSnapshot();
     expect(before.drops[0].depth).toBe(0);
     fast.applyProfile({ tickMs: 50, maxDrops: 25, fallSpeed: 1.4, fallSpeedTransitionMs: 250 });
@@ -366,8 +363,8 @@ describe("RainAnimationManager", () => {
     vi.advanceTimersByTime(100);
     const early = fast.getSnapshot();
     const averageSpeed = (early.drops[0].row - peak.drops[0].row) / (peak.drops[0].speed! * 0.1);
-    expect(averageSpeed).toBeGreaterThan(0.9);
-    expect(averageSpeed).toBeLessThan(1.4);
+    expect(averageSpeed).toBeGreaterThan(0.85);
+    expect(averageSpeed).toBeLessThan(1.09);
     fast.stop();
     slow.stop();
   });
@@ -440,7 +437,7 @@ describe("RainAnimationManager", () => {
     expect(frame.splashes!.every((splash) => splash.age >= 0 && splash.age < 1.84)).toBe(true);
     expect(frame.waterMarks!.length).toBeGreaterThan(0);
     expect(frame.waterMarks!.length).toBeLessThanOrEqual(1024);
-    expect(frame.waterMarks!.every((mark) => mark.age >= 0 && mark.age < 8.44)).toBe(true);
+    expect(frame.waterMarks!.every((mark) => mark.age >= 0 && mark.age < 0.72)).toBe(true);
     (frame.splashes![0] as { col: number }).col = -999;
     (frame.waterMarks![0] as { col: number }).col = -999;
     expect(manager.getSnapshot().splashes!.every((splash) => splash.col >= 0)).toBe(true);
@@ -450,7 +447,7 @@ describe("RainAnimationManager", () => {
     expect(manager.getSnapshot().waterMarks).toEqual([]);
   });
 
-  it("preserves wet traces through static mode, resizing and a collapsed viewport", () => {
+  it("preserves contact flashes through static mode, resizing and a collapsed viewport", () => {
     vi.spyOn(Math, "random").mockReturnValue(0.4);
     const manager = new RainAnimationManager(
       makeConfig({ rainRows: 10, rainTickMs: 50, maxRainDrops: 25 }),
@@ -505,9 +502,9 @@ describe("RainAnimationManager", () => {
       counts.push(manager.getSnapshot().drops.length);
     }
 
-    expect(counts[0]).toBeLessThan(35);
-    expect(counts.at(-1)).toBe(35);
-    expect(counts.every((count, i) => i === 0 || count >= counts[i - 1])).toBe(true);
+    expect(counts[0]).toBeLessThan(Math.max(...counts));
+    expect(Math.max(...counts)).toBeLessThanOrEqual(10);
+    expect(Math.max(...counts)).toBeGreaterThanOrEqual(4);
     expect(render).toHaveBeenCalledTimes(8);
     expect(vi.getTimerCount()).toBe(1);
     manager.stop();
@@ -546,8 +543,8 @@ describe("RainAnimationManager", () => {
     manager.applyProfile(densityProfile(config, "tools"));
     vi.advanceTimersByTime(130);
     const before = manager.getSnapshot();
-    expect(before.drops.length).toBeGreaterThan(5);
-    expect(before.drops.length).toBeLessThan(35);
+    expect(before.drops.length).toBeGreaterThan(1);
+    expect(before.drops.length).toBeLessThan(8);
 
     manager.applyProfile(densityProfile(config, "waiting"));
     expect(manager.getSnapshot()).toEqual(before);
@@ -557,7 +554,7 @@ describe("RainAnimationManager", () => {
       counts.push(manager.getSnapshot().drops.length);
     }
     expect(counts[0]).toBeGreaterThan(counts.at(-1)!);
-    expect(counts.at(-1)).toBeLessThanOrEqual(5);
+    expect(counts.at(-1)).toBeLessThanOrEqual(1);
     manager.stop();
   });
 
@@ -566,7 +563,7 @@ describe("RainAnimationManager", () => {
     const config = makeConfig({ rainRows: 10 });
     const manager = new RainAnimationManager(config, { requestRender: vi.fn() });
     manager.start(densityProfile(config, "thinking"));
-    vi.advanceTimersByTime(130);
+    vi.advanceTimersByTime(910);
     const revision = manager.frameRevision;
     const before = manager.getSnapshot();
     manager.applyProfile(densityProfile(config, "tools"));
@@ -575,7 +572,7 @@ describe("RainAnimationManager", () => {
     vi.advanceTimersByTime(130);
     const drops = manager.getSnapshot().drops;
     expect(drops.length).toBeGreaterThan(before.drops.length);
-    expect(drops.length).toBeLessThanOrEqual(35);
+    expect(drops.length).toBeLessThanOrEqual(10);
     expect(drops[0].row - before.drops[0].row).toBeLessThanOrEqual(before.drops[0].speed! * 0.18 + 0.001);
     expect(manager.frameRevision).toBe(revision + 1);
     manager.stop();
@@ -667,7 +664,7 @@ describe("RainAnimationManager", () => {
     const mgr = new RainAnimationManager(config, { requestRender });
 
     mgr.start({ tickMs: 100, maxDrops: 25 });
-    vi.advanceTimersByTime(100);
+    vi.advanceTimersByTime(500);
     const before = mgr.getSnapshot();
     expect(before.drops.length).toBeGreaterThan(0);
 
@@ -844,7 +841,7 @@ describe("RainAnimationManager", () => {
     mgr.stop();
   });
 
-  it.each([4, 10])("lets %i-row rain fall vertically through a sustained calm before rightward wind resumes", (rainRows) => {
+  it.each([4, 10])("keeps %i-row rain drifting right even as the wind eases", (rainRows) => {
     let seed = 12345;
     vi.spyOn(Math, "random").mockImplementation(() => {
       seed = Math.imul(seed, 1664525) + 1013904223 | 0;
@@ -858,71 +855,56 @@ describe("RainAnimationManager", () => {
     let previous = manager.getSnapshot();
     const strengths = new Set<number>();
     let compared = 0;
-    let calmTicks = 0, longestCalm = 0, calmCompared = 0;
-    let resumed = false;
+    let gentleCompared = 0;
     for (let tick = 0; tick < 400; tick++) {
       vi.advanceTimersByTime(50);
       const frame = manager.getSnapshot();
-      expect(frame.wind).toBeGreaterThanOrEqual(0);
+      expect(frame.wind).toBeGreaterThanOrEqual(0.32);
       expect(frame.wind).toBeLessThanOrEqual(0.7);
       expect(Math.abs(frame.wind! - previous.wind!)).toBeLessThan(0.02);
-      if (frame.wind === 0) {
-        longestCalm = Math.max(longestCalm, ++calmTicks);
-      } else {
-        calmTicks = 0;
-      }
       strengths.add(Math.round(frame.wind! * 100));
       for (const drop of previous.drops) {
         const next = frame.drops.find((point) => point.depth === drop.depth && point.speed === drop.speed);
         if (!next) continue;
-        expect(next.col).toBeGreaterThanOrEqual(drop.col);
-        if (frame.wind === 0 && previous.wind === 0) {
-          expect(next.col).toBe(drop.col);
-          calmCompared++;
-        } else if (frame.wind! > 0) {
-          expect(next.col).toBeGreaterThan(drop.col);
-          if (longestCalm >= 40) resumed = true;
-        }
+        expect(next.col).toBeGreaterThan(drop.col);
         expect(next.row).toBeGreaterThan(drop.row);
+        if (frame.wind! < 0.33) gentleCompared++;
         compared++;
       }
       previous = frame;
     }
     expect(compared).toBeGreaterThan(100);
-    expect(calmCompared).toBeGreaterThan(100);
-    expect(longestCalm).toBeGreaterThanOrEqual(40);
-    expect(resumed).toBe(true);
+    expect(gentleCompared).toBeGreaterThan(100);
     expect(strengths.size).toBeGreaterThan(10);
     manager.stop();
   });
 
-  it.each([4, 10])("settles to fewer rain drops in a %i-row calm and restores their number with the wind", (rainRows) => {
+  it.each([4, 10])("keeps %i-row automatic rain sparse and scales it to the panel width", (rainRows) => {
     let seed = 12345;
     vi.spyOn(Math, "random").mockImplementation(() => {
       seed = Math.imul(seed, 1664525) + 1013904223 | 0;
       return (seed >>> 0) / 4294967296;
     });
-    const manager = new RainAnimationManager(
-      makeConfig({ rainRows, rainTickMs: 50, maxRainDrops: 100 }), { requestRender: vi.fn() },
-    );
-    const windy: number[] = [], calm: number[] = [], restored: number[] = [];
-    manager.start();
-    manager.setRenderWidth(1000, rainRows);
-    for (let tick = 0; tick < 400; tick++) {
-      vi.advanceTimersByTime(50);
-      const frame = manager.getSnapshot();
-      if (frame.time! >= 2 && frame.time! <= 5) windy.push(frame.drops.length);
-      if (frame.time! >= 12.2 && frame.time! <= 13.8) {
-        expect(frame.wind).toBe(0);
-        calm.push(frame.drops.length);
+    const config = makeConfig({ rainRows });
+    const profile = resolveRainRuntimeProfile(config.get(), "tools");
+    const peakAtWidth = (width: number) => {
+      const manager = new RainAnimationManager(config, { requestRender: vi.fn() });
+      manager.setRenderWidth(width, rainRows);
+      manager.start(profile);
+      let peak = 0;
+      for (let tick = 0; tick < 90; tick++) {
+        vi.advanceTimersByTime(profile.tickMs);
+        peak = Math.max(peak, manager.getSnapshot().drops.length);
       }
-      if (frame.time! >= 16 && frame.time! <= 19) restored.push(frame.drops.length);
-    }
-    const average = (counts: number[]) => counts.reduce((sum, count) => sum + count, 0) / counts.length;
-    expect(average(calm) / average(windy)).toBeGreaterThan(0.6);
-    expect(average(calm) / average(windy)).toBeLessThan(0.8);
-    expect(average(restored) / average(windy)).toBeGreaterThan(0.9);
-    manager.stop();
+      manager.stop();
+      return peak;
+    };
+    const narrow = peakAtWidth(12);
+    const wide = peakAtWidth(120);
+    expect(narrow).toBeGreaterThan(0);
+    expect(narrow).toBeLessThanOrEqual(3);
+    expect(wide).toBeGreaterThan(narrow);
+    expect(wide).toBeLessThanOrEqual(10);
   });
 
   it("advances drops continuously with a shared wind instead of jumping on alternating rows", () => {

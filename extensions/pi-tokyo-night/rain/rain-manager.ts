@@ -4,7 +4,7 @@ import {
 } from "../core/errors";
 import { TokyoConfigManager } from "../core/config";
 import type { RainRuntimeProfile } from "./rain-profile";
-import { rainDrift, rainHorizon, rainLandingRow, rainMoonBounds, rainRippleLife, rainStarRows, rainVerticalScale, rainWaterMarkLife, rainWind } from "./rain-geometry";
+import { RAIN_CONTACT_LIFE, rainDrift, rainHorizon, rainLandingRow, rainMoonBounds, rainRippleLife, rainStarRows, rainVerticalScale, rainWind } from "./rain-geometry";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -58,6 +58,10 @@ export interface RainManagerDependencies {
 
 const LAYER_SPEEDS = [5, 9, 14];
 const DEPTH_ORDER = [0, 1, 0, 2, 1, 0];
+const AUTO_LAYER_SPEEDS = [4.2, 7.2, 10.5];
+const AUTO_DEPTH_ORDER = [0, 1, 1, 2, 0, 1];
+const AUTO_DENSITY_SCALE = 0.42 * 0.48;
+const AUTO_SPEED_SCALE = 0.78;
 const MAX_RENDER_FAILURES = 3;
 
 // ── RainAnimationManager ───────────────────────────────────────────────────
@@ -87,9 +91,11 @@ export class RainAnimationManager {
   private waterMarks: RainWaterMark[] = [];
   private lastWidth = 80;
   private lastHeight: number | undefined;
+  private viewportCollapsed = false;
   private time = 0;
   private wind = rainWind(0);
   private fallSpeed = 1;
+  private targetFallSpeed = 1;
   private speedTransition: { from: number; to: number; startedAt: number; durationMs: number } | undefined;
   private lastTickAt = 0;
   private spawnRemainder = 0;
@@ -136,7 +142,8 @@ export class RainAnimationManager {
     this.waterMarks = [];
     this.time = 0;
     this.wind = rainWind(0);
-    this.fallSpeed = profile?.fallSpeed ?? 1;
+    this.targetFallSpeed = this.profileFallSpeed(profile);
+    this.fallSpeed = this.targetFallSpeed;
     this.speedTransition = undefined;
     this.spawnRemainder = 0;
     this.dropSequence = 0;
@@ -156,19 +163,25 @@ export class RainAnimationManager {
     const currentDensity = this.getDensity();
     const wasStatic = this.active && this.scheduledTickMs === 0;
     if (!wasStatic) this.fallSpeed = this.getFallSpeed(Date.now());
-    const sameSpeedTarget = !wasStatic && this.profile?.fallSpeed === profile.fallSpeed &&
+    const targetFallSpeed = this.profileFallSpeed(profile);
+    const sameSpeedTarget = !wasStatic && this.targetFallSpeed === targetFallSpeed &&
       this.profile?.fallSpeedTransitionMs === profile.fallSpeedTransitionMs;
     const sameDensityTarget = this.profile?.maxDrops === profile.maxDrops &&
       this.profile?.densityTransitionMs === profile.densityTransitionMs;
     this.profile = profile;
+    this.targetFallSpeed = targetFallSpeed;
     if (profile.tickMs === 0) this.speedTransition = undefined;
     else if (!sameSpeedTarget) {
       this.speedTransition = {
-        from: this.fallSpeed, to: profile.fallSpeed ?? 1,
+        from: this.fallSpeed, to: targetFallSpeed,
         startedAt: Date.now(), durationMs: profile.fallSpeedTransitionMs ?? 1000,
       };
     }
     if (profile.maxDrops === 0) this.spawnRemainder = 0;
+    else if (currentDensity === 0 && this.config.get().rainMode === "auto") {
+      // Start a new burst promptly even when the steady-state rain is sparse.
+      this.spawnRemainder = 1;
+    }
     if (!sameDensityTarget) {
       this.densityTransition = this.active && profile.densityTransitionMs && currentDensity !== profile.maxDrops
         ? {
@@ -241,7 +254,10 @@ export class RainAnimationManager {
       : Number.isFinite(rows) ? Math.max(0, Math.floor(rows)) : 0;
     // A collapsed viewport has no coordinate space to scale into. Keep the last
     // valid simulation so expanding it doesn't pile every drop into the corner.
-    if (width === 0 || height === 0) return;
+    const collapsed = width === 0 || height === 0;
+    if (this.viewportCollapsed !== collapsed) this.lastTickAt = Date.now();
+    this.viewportCollapsed = collapsed;
+    if (collapsed) return;
     if (width === this.lastWidth && height === this.lastHeight) return;
     const oldHeight = this.lastHeight ?? this.config.get().rainRows;
     const oldWidth = this.lastWidth;
@@ -340,6 +356,23 @@ export class RainAnimationManager {
     return transition.to + (transition.from - transition.to) * Math.exp(-3 * elapsed / transition.durationMs);
   }
 
+  private profileFallSpeed(profile?: RainRuntimeProfile): number {
+    const speed = profile?.fallSpeed ?? 1;
+    return profile && this.config.get().rainMode === "auto" ? speed * AUTO_SPEED_SCALE : speed;
+  }
+
+  private autoSpawnColumn(): number {
+    let col = 0;
+    for (let attempt = 0; attempt < 24; attempt++) {
+      const x = Math.random();
+      col = x * this.lastWidth;
+      const ridge = 0.5 + 0.5 * Math.sin(x * Math.PI * 4.1 - this.time * 0.52 + 0.7 * Math.sin(this.time * 0.21));
+      const detail = 0.5 + 0.5 * Math.sin(x * Math.PI * 8.6 - this.time * 0.31 + 1.3);
+      if (Math.random() < 0.1 + 0.9 * ridge * ridge * (0.55 + detail * 0.45)) break;
+    }
+    return col;
+  }
+
   private schedule(tickMs: number): void {
     this.scheduledTickMs = tickMs;
     this.pendingTickMs = undefined;
@@ -366,23 +399,29 @@ export class RainAnimationManager {
   private tick(): void {
     const cfg = this.config.get();
     const density = this.getDensity();
+    const auto = cfg.rainMode === "auto" && this.profile !== undefined;
+    const depthOrder = auto ? AUTO_DEPTH_ORDER : DEPTH_ORDER;
+    const layerSpeeds = auto ? AUTO_LAYER_SPEEDS : LAYER_SPEEDS;
+    const rows = this.lastHeight ?? cfg.rainRows;
+    const verticalScale = rainVerticalScale(rows);
+    const widthFactor = Math.max(0.4, Math.min(1.4, this.lastWidth / 60));
     const now = Date.now();
     // A stalled terminal must not replay seconds of missed simulation.
-    let remaining = Math.max(0, Math.min(
+    let remaining = this.viewportCollapsed ? 0 : Math.max(0, Math.min(
       Math.max(0.18, (this.scheduledTickMs ?? cfg.rainTickMs) / 1000),
       (now - this.lastTickAt) / 1000,
     ));
     this.lastTickAt = now;
     while (remaining > 0.000001) {
-      const dt = Math.min(0.05, remaining);
+      const dt = Math.min(auto ? 0.01 : 0.05, remaining);
       remaining -= dt;
       this.fallSpeed = this.getFallSpeed(now - remaining * 1000);
       this.time += dt;
       this.wind = rainWind(this.time);
-      const breeze = Math.min(1, this.wind / 0.2);
-      const maxDrops = Math.round(density * (0.7 + 0.3 * breeze * breeze * (3 - 2 * breeze)));
-      const rows = this.lastHeight ?? cfg.rainRows;
-      const verticalScale = rainVerticalScale(rows);
+      const pulse = 0.82 + 0.12 * Math.sin(this.time * 0.67) + 0.06 * Math.sin(this.time * 1.13 + 0.8);
+      const maxDrops = auto && density > 0
+        ? Math.max(1, Math.round(density * AUTO_DENSITY_SCALE * widthFactor * pulse))
+        : Math.round(density);
       this.stars = this.stars.map((star) => ({ ...star, age: star.age + dt }))
         .filter((star) => star.age < star.life && star.row < rainStarRows(rows));
       if (this.time >= this.nextStarAt) {
@@ -394,7 +433,7 @@ export class RainAnimationManager {
         .filter((splash) => splash.age < rainRippleLife(splash.depth));
       this.waterMarks = this.waterMarks
         .map((mark) => ({ ...mark, age: mark.age + dt }))
-        .filter((mark) => mark.age < rainWaterMarkLife(mark.depth));
+        .filter((mark) => mark.age < RAIN_CONTACT_LIFE);
 
       const falling: RainDrop[] = [];
       for (const drop of this.drops) {
@@ -417,7 +456,7 @@ export class RainAnimationManager {
             if (impact.seed < 0x80000000) this.splashes.push(impact);
             this.waterMarks.push({ ...impact });
           }
-        } else if (drop.col >= -4 && drop.col < this.lastWidth + 4) {
+        } else if (drop.col >= (auto ? 0 : -4) && drop.col < this.lastWidth + (auto ? 0 : 4)) {
           falling.push(drop);
         }
       }
@@ -427,19 +466,19 @@ export class RainAnimationManager {
 
       // Births depend on elapsed time and travel distance, independently of FPS.
       if (rows > 0 && this.lastWidth > 0 && this.drops.length < maxDrops) {
-        this.spawnRemainder += maxDrops * dt * 9 * this.fallSpeed * verticalScale / Math.max(1, rows);
+        this.spawnRemainder += maxDrops * dt * (auto ? 6.4 : 9) * this.fallSpeed * verticalScale / Math.max(1, rows);
         const spawnCount = Math.min(
           Math.floor(this.spawnRemainder),
           maxDrops - this.drops.length,
         );
         this.spawnRemainder -= spawnCount;
         for (let i = 0; i < spawnCount; i++) {
-          const depth = DEPTH_ORDER[this.dropSequence++ % DEPTH_ORDER.length];
+          const depth = depthOrder[this.dropSequence++ % depthOrder.length];
           this.drops.push({
-            col: Math.random() * (this.lastWidth + 4) - 2,
-            row: -Math.random() * 1.5 * verticalScale,
+            col: auto ? this.autoSpawnColumn() : Math.random() * (this.lastWidth + 4) - 2,
+            row: auto ? -0.15 - Math.random() * 0.65 * verticalScale : -Math.random() * 1.5 * verticalScale,
             depth,
-            speed: LAYER_SPEEDS[depth] * (0.85 + Math.random() * 0.3),
+            speed: layerSpeeds[depth] * (auto ? 0.91 + Math.random() * 0.18 : 0.85 + Math.random() * 0.3),
           });
         }
       } else {
@@ -447,7 +486,7 @@ export class RainAnimationManager {
       }
       }
 
-      this.revision += 1;
+      if (!this.viewportCollapsed) this.revision += 1;
 
       // Notify the renderer. Stale-context errors are expected during shutdown
       // and silently discarded; all other errors are logged with the extension prefix.

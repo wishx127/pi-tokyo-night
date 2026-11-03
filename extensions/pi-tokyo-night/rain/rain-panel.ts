@@ -55,9 +55,7 @@ function paletteSignature(palette: TokyoNightThemePalette | undefined): string {
     palette.fg("moon", MOON), palette.fg("frame", "│"),
     ...(["rain", "moon", "star", "water"] as const)
       .map((role) => palette.rainShade?.(role, 0.5, ".") ?? ""),
-    palette.rippleShade?.(0.5, 0, ".", "water") ?? "",
-    palette.rippleShade?.(0.5, 0.5, ".", "water") ?? "",
-    palette.rippleShade?.(0.5, 0.5, ".", "moon") ?? "",
+    palette.rippleShade?.(0.5, 0.12, ".", "water") ?? "",
   ].join("\0") : "";
 }
 

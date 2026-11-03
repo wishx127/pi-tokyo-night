@@ -1831,7 +1831,8 @@ describe("public layout and lifecycle contract", () => {
     const sample = async () => {
       await vi.advanceTimersByTimeAsync(1200);
       let strokes = 0;
-      for (let frame = 0; frame < 10; frame++) {
+      // Sample several births because the waiting phase leaves long gaps between drops.
+      for (let frame = 0; frame < 60; frame++) {
         await vi.advanceTimersByTimeAsync(100);
         strokes += (rain.render(180).join("").match(/[\\╻]/g) ?? []).length;
       }

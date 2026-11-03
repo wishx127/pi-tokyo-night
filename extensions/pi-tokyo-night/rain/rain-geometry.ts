@@ -1,6 +1,6 @@
-/** Four rows keep a complete crescent above a single row of water. */
+/** Four rows leave two rows each for sky and water. */
 export function rainHorizon(rows: number): number {
-  return rows >= 6 ? rows - Math.max(2, Math.round(rows * 0.33)) : rows >= 2 ? rows - 1 : rows;
+  return rows >= 4 ? rows - Math.max(2, Math.round(rows * 0.4)) : rows >= 2 ? rows - 1 : rows;
 }
 
 /** Use the upper half of the sky above the water, rounded to whole text rows. */
@@ -13,9 +13,10 @@ export function rainVerticalScale(rows: number): number {
   return Math.min(1, Math.max(1, rainHorizon(rows)) / 5);
 }
 
-/** Rightward wind eases into sustained calms before picking up again. */
+/** A steady rightward breeze eases in strength without stopping. */
 export function rainWind(time: number): number {
-  return Math.max(0, 0.25 + 0.32 * Math.sin(time * 0.37) + 0.13 * Math.sin(time * 0.91));
+  const gust = Math.max(0, 0.25 + 0.32 * Math.sin(time * 0.37) + 0.13 * Math.sin(time * 0.91));
+  return 0.32 + 0.54 * gust;
 }
 
 /** Share a rightward slope between simulation, rain tails and impact droplets. */
@@ -30,15 +31,13 @@ export function rainLandingRow(rows: number, depth: number): number {
   return horizon === rows ? rows : horizon + depth * (rows - horizon - 0.5) / 2;
 }
 
-/** Preserve the original ripple's stages while playing them more slowly. */
+/** Nearer impacts hold their ripples a little longer. */
 export function rainRippleLife(depth: number): number {
-  return (0.45 + depth * 0.35) * 1.6;
+  return 1.22 + Math.max(0, Math.min(2, depth)) * 0.16;
 }
 
-/** Wet traces hold through the ripple, then use their full fade-out duration. */
-export function rainWaterMarkLife(depth: number): number {
-  return rainRippleLife(depth) + 5 + depth * 0.8;
-}
+/** Contact flashes last less than a second. */
+export const RAIN_CONTACT_LIFE = 0.72;
 
 /** Keep a smaller moon at the top, with open sky before the water plane. */
 export function rainMoonBounds(width: number, rows: number) {
