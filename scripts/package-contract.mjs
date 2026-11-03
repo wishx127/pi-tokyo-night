@@ -150,6 +150,9 @@ function main() {
     "LICENSE",
     "README.md",
     "assets/screenshot.png",
+    "assets/rain-moon/dark.png",
+    "assets/rain-moon/light.png",
+    "assets/rain-moon/LICENSE",
     "themes/tokyo-night-dark.json",
     "themes/tokyo-night-light.json",
   ]) {

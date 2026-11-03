@@ -26,6 +26,7 @@ export function renderRainScene(
   rows: number,
   snapshot: RainFrameSnapshot,
   palette?: TokyoNightThemePalette,
+  moonGraphicColumns = 0,
 ): string[] {
   const cells: Array<Cell | undefined> = new Array(width * rows);
   const time = Number.isFinite(snapshot.time) ? snapshot.time! : 0;
@@ -34,7 +35,7 @@ export function renderRainScene(
   const starRows = rainStarRows(rows);
   const verticalScale = rainVerticalScale(rows);
   const moon = rainMoonBounds(width, rows);
-  const moonWidth = moon.columns;
+  const moonWidth = Math.max(moon.columns, moonGraphicColumns);
   const moonCol = moon.col, moonRow = moon.row, curvedMoon = moon.curved;
   const inMoon = (col: number, row: number) =>
     col >= moonCol && col < moonCol + moonWidth && row >= moonRow && row < moonRow + moon.reservedHeight;
@@ -65,9 +66,9 @@ export function renderRainScene(
   }
 
   if (curvedMoon) {
-    // The emoji spans two terminal columns; its continuation emits no extra space.
+    // Reserve the graphic footprint, or the emoji and its empty continuation cell.
     for (let r = 0; r < moon.reservedHeight; r++) for (let c = 0; c < moonWidth; c++) {
-      const glyph = r === 0 ? c === 0 ? MOON : "" : " ";
+      const glyph = r === 0 && !moonGraphicColumns ? c === 0 ? MOON : "" : " ";
       put(moonCol + c, moonRow + r, glyph, "moon", glyph === " " ? 1 : 0.75, 50);
     }
   }

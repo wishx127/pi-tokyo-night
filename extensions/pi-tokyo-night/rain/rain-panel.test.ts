@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { Theme } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { getCapabilities, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
 import { RainPanelComponent, renderRainPanelLines } from "./rain-panel";
 import type { RainFrameSnapshot } from "./rain-manager";
 import { RainAnimationManager } from "./rain-manager";
@@ -75,6 +75,55 @@ function makeConfig(panel: boolean, editorFrame = true) {
 }
 
 describe("RainPanelComponent", () => {
+  it("places the amber graphic inside four sky and water rows, with a text fallback", () => {
+    const originalCapabilities = getCapabilities();
+    const config = new TokyoConfigManager();
+    config.set("rainRows", 4);
+    config.set("editorFrame", true);
+    const rain = new RainAnimationManager(config, { requestRender: vi.fn() });
+    const theme = readTokyoTheme("dark");
+    const write = vi.fn();
+    let overlay = false;
+    const panel = new RainPanelComponent({ hasOverlay: () => overlay, terminal: { write } } as any, {
+      config, rain, getTheme: () => theme,
+    });
+    vi.stubEnv("TERM_PROGRAM", "kitty");
+    vi.stubEnv("TERM", "xterm-kitty");
+    vi.stubEnv("TMUX", undefined);
+    try {
+      setCapabilities({ ...originalCapabilities, images: null });
+      const text = panel.render(60);
+      expect(text[1]).toContain("🌙");
+      expect(panel.hasVisibleChanges()).toBe(false);
+      setCapabilities({ ...originalCapabilities, images: "kitty" });
+      expect(panel.hasVisibleChanges()).toBe(true);
+      const graphic = panel.render(60);
+      expect(graphic).toHaveLength(5);
+      expect(graphic[0]).toBe(text[0]);
+      expect(graphic[1]).toMatch(/^\x1b\[6G\x1b_Ga=T,[^;]*C=1[^;]*;iVBORw0KGgo/);
+      expect(graphic[1]).not.toContain("🌙");
+      expect(graphic.slice(3)).toEqual(text.slice(3));
+      expect(visibleWidth(graphic[1])).toBe(60);
+      expect(panel.hasVisibleChanges()).toBe(false);
+      overlay = true;
+      expect(panel.hasVisibleChanges()).toBe(true);
+      expect(panel.render(60)).toEqual(text);
+      overlay = false;
+      vi.stubEnv("TERM_PROGRAM", "zed");
+      expect(panel.render(60)).toEqual(text);
+      vi.stubEnv("TERM_PROGRAM", "kitty");
+      vi.stubEnv("TMUX", "test");
+      expect(panel.render(60)).toEqual(text);
+      panel.dispose();
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(write).toHaveBeenCalledWith(expect.stringMatching(/^\x1b_Ga=d,d=I,i=\d+/));
+    } finally {
+      vi.unstubAllEnvs();
+      setCapabilities(originalCapabilities);
+      panel.dispose();
+    }
+  });
+
   it("draws the approved four-row scene with two compact arcs and no lingering trace", () => {
     const draw = (age: number) => {
       const impact = { col: 34.5, depth: 1, age, seed: 6547 };

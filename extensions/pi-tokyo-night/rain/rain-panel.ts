@@ -1,4 +1,4 @@
-import type { Component, TUI } from "@earendil-works/pi-tui";
+import { allocateImageId, deleteKittyImage, getCapabilities, type Component, type TUI } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { TokyoConfigManager } from "../core/config";
 import { handleExtensionError } from "../core/errors";
@@ -13,6 +13,8 @@ import {
 } from "../ui/theme-palette";
 import type { RainAnimationManager, RainFrameSnapshot } from "./rain-manager";
 import { MOON, STAR, RAIN_DROP, renderRainScene } from "./rain-scene";
+import { rainMoonBounds } from "./rain-geometry";
+import { getAmberMoonGraphic, type RainMoonGraphic } from "./rain-moon-graphic";
 
 export { MOON, STAR, RAIN_DROP } from "./rain-scene";
 
@@ -22,6 +24,7 @@ export interface RainPanelRenderOptions {
   rainRows: number;
   snapshot: RainFrameSnapshot;
   palette?: TokyoNightThemePalette;
+  moonGraphic?: RainMoonGraphic;
 }
 
 export function renderRainPanelLines(
@@ -30,14 +33,27 @@ export function renderRainPanelLines(
   const outputWidth = Number.isFinite(options.width) ? Math.max(0, Math.floor(options.width)) : 0;
   const bodyRows = Number.isFinite(options.rainRows) ? Math.max(0, Math.floor(options.rainRows)) : 0;
   const innerWidth = getFrameContentWidth(outputWidth, options.frameEnabled);
-  const lines = renderRainScene(innerWidth, bodyRows, options.snapshot, options.palette);
-  return renderFrameSegment({
+  const moon = rainMoonBounds(innerWidth, bodyRows);
+  const graphic = options.moonGraphic;
+  const visibleGraphic = moon.curved && graphic && moon.col + graphic.columns <= innerWidth ? graphic : undefined;
+  const lines = renderRainScene(innerWidth, bodyRows, options.snapshot, options.palette, visibleGraphic?.columns);
+  const frame = renderFrameSegment({
     width: outputWidth,
     lines,
     frameEnabled: options.frameEnabled,
     role: "top",
     palette: options.palette,
   });
+  if (visibleGraphic) {
+    const border = options.frameEnabled ? 1 : 0;
+    const col = moon.col + border;
+    const row = moon.row + border;
+    // Insert after width clipping so the host sees an image line without counting the image as text.
+    const forward = col ? `\x1b[${col + 1}G` : "";
+    const back = col ? "\x1b[1G" : "";
+    frame[row] = forward + visibleGraphic.sequence + back + frame[row] + "\x1b[0m";
+  }
+  return frame;
 }
 
 export interface RainPanelDependencies {
@@ -69,6 +85,7 @@ type RainPanelCacheEntry = {
   configuredRows: number;
   terminalRows: number | undefined;
   terminalColumns: number | undefined;
+  moonGraphic: RainMoonGraphic | undefined;
   lines: string[];
 };
 
@@ -77,6 +94,7 @@ export class RainPanelComponent implements Component {
   private invalidated = true;
   private cache: RainPanelCacheEntry | undefined;
   private pendingFrame: RainPanelCacheEntry | undefined;
+  private moonImageId: number | undefined;
 
   constructor(
     private readonly tui: TUI,
@@ -97,6 +115,16 @@ export class RainPanelComponent implements Component {
     ));
   }
 
+  private getMoonGraphic(theme: Theme | undefined): RainMoonGraphic | undefined {
+    const terminal = process.env.TERM_PROGRAM?.toLowerCase();
+    const term = process.env.TERM ?? "";
+    const nativeKitty = !process.env.TMUX && !/^(screen|tmux)/.test(term) &&
+      (terminal === "kitty" || (!terminal && term === "xterm-kitty"));
+    // Pi treats image rows as indivisible. Use text while an overlay can intersect the rain panel.
+    if (!theme || !nativeKitty || getCapabilities().images !== "kitty" || this.tui.hasOverlay?.()) return undefined;
+    return getAmberMoonGraphic(theme.name, this.moonImageId ??= allocateImageId());
+  }
+
   /** Whether a rain tick can change the last rendered panel. */
   hasVisibleChanges(): boolean {
     if (this.disposed) return false;
@@ -113,7 +141,10 @@ export class RainPanelComponent implements Component {
       const theme = this.dependencies.getTheme?.();
       const palette = theme ? createTokyoNightPalette(theme) : this.dependencies.palette;
       const colors = paletteSignature(palette);
+      const moonGraphic = this.getMoonGraphic(theme);
       if (cached.theme !== theme || cached.colors !== colors) return true;
+      if (cached.moonGraphic?.sequence !== moonGraphic?.sequence ||
+        cached.moonGraphic?.columns !== moonGraphic?.columns) return true;
       if (cached.effectiveRows === 0) return false;
       const lines = renderRainPanelLines({
         width: cached.width,
@@ -121,6 +152,7 @@ export class RainPanelComponent implements Component {
         rainRows: cached.effectiveRows,
         snapshot: this.dependencies.rain.getSnapshot(),
         palette,
+        moonGraphic,
       });
       this.pendingFrame = {
         ...cached, revision: this.dependencies.rain.frameRevision, lines,
@@ -150,6 +182,7 @@ export class RainPanelComponent implements Component {
         ? createTokyoNightPalette(theme)
         : this.dependencies.palette;
       const colors = paletteSignature(palette);
+      const moonGraphic = this.getMoonGraphic(theme);
       const outputWidth = Math.max(0, Math.floor(width));
       const effectiveRows = this.effectiveRows(outputWidth, config.rainRows, config.editorFrame);
       this.dependencies.rain.setRenderWidth(
@@ -163,6 +196,8 @@ export class RainPanelComponent implements Component {
         cached &&
         cached.theme === theme &&
         cached.colors === colors &&
+        cached.moonGraphic?.sequence === moonGraphic?.sequence &&
+        cached.moonGraphic?.columns === moonGraphic?.columns &&
         cached.revision === revision &&
         cached.width === outputWidth &&
         cached.frameEnabled === config.editorFrame &&
@@ -182,6 +217,7 @@ export class RainPanelComponent implements Component {
         rainRows: effectiveRows,
         snapshot: this.dependencies.rain.getSnapshot(),
         palette,
+        moonGraphic,
       });
       const lines = rendered;
       this.cache = {
@@ -194,6 +230,7 @@ export class RainPanelComponent implements Component {
         configuredRows: config.rainRows,
         terminalRows: this.tui.terminal?.rows,
         terminalColumns: this.tui.terminal?.columns,
+        moonGraphic,
         lines,
       };
       this.invalidated = false;
@@ -215,5 +252,14 @@ export class RainPanelComponent implements Component {
     this.invalidated = false;
     this.cache = undefined;
     this.pendingFrame = undefined;
+    const imageId = this.moonImageId;
+    this.moonImageId = undefined;
+    if (imageId !== undefined) {
+      try {
+        this.tui.terminal?.write(deleteKittyImage(imageId));
+      } catch (error) {
+        handleExtensionError(error, "rain moon cleanup");
+      }
+    }
   }
 }
