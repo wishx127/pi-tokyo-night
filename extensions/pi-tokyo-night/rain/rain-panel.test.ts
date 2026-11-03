@@ -124,7 +124,7 @@ describe("RainPanelComponent", () => {
     }
   });
 
-  it("draws the approved four-row scene with two compact arcs and no lingering trace", () => {
+  it("keeps the four-row water glint centered as the two arcs crossfade", () => {
     const draw = (age: number) => {
       const impact = { col: 34.5, depth: 1, age, seed: 6547 };
       return renderRainPanelLines({
@@ -134,8 +134,8 @@ describe("RainPanelComponent", () => {
     };
     const small = draw(0.6);
     const large = draw(0.9);
-    expect(draw(0.5)[2].slice(32, 37)).toBe(" ⟮.⟯ ");
-    expect(small[2].slice(32, 37)).toBe(" ⟮ ⟯ ");
+    expect(draw(0.5)[2].slice(32, 37)).toBe(" ⟮·⟯ ");
+    expect(small[2].slice(32, 37)).toBe("(⟮·⟯)");
     expect(large[2].slice(32, 37)).toBe("(   )");
     expect(large.every((line) => visibleWidth(line) === 60)).toBe(true);
     expect(draw(1.6).every((line) => line.slice(30).trim() === "")).toBe(true);
@@ -207,12 +207,12 @@ describe("RainPanelComponent", () => {
       snapshot: { time: 1, drops: [], stars: [],
         waterMarks: [{ col: 35.5, depth: 2, age, seed: 6547 }] },
     }).slice(skyRows).map((line) => line.slice(33, 38));
-    expect(draw(0.05).at(-1)).toBe("  o  ");
+    expect(draw(0.05).at(-1)).toBe("  •  ");
     expect(draw(0.05).slice(0, -1).every((line) => line.trim() === "")).toBe(true);
     expect(draw(0.72).every((line) => line.trim() === "")).toBe(true);
   });
 
-  it.each([4, 10])("shows one brief inner glint and then clears the %i-row expanding ring", (rainRows) => {
+  it.each([4, 10])("fades a single centered glint and clears the %i-row expanding ring", (rainRows) => {
     const draw = (age: number) => {
       const impact = { col: 35.5, depth: 2, age, seed: 6547 };
       return renderRainPanelLines({
@@ -220,14 +220,14 @@ describe("RainPanelComponent", () => {
         snapshot: { time: 1, drops: [], stars: [], waterMarks: [impact], splashes: [impact] },
       }).at(-1)!.slice(33, 38);
     };
-    expect(draw(0.05)).toBe("  o  ");
-    expect(draw(0.4)).toBe("  _  ");
+    expect(draw(0.05)).toBe("  •  ");
+    expect(draw(0.4)).toMatch(/^ ⟮[•·]⟯ $/);
     expect(draw(0.9)).toBe("(   )");
-    expect(draw(1.4)).toBe(".   .");
+    expect(draw(1.2)).toBe("(   )");
     expect(draw(1.54)).toBe("     ");
   });
 
-  it("keeps the brief inner glint visible on a 130ms cadence regardless of the contact's frame offset", () => {
+  it("keeps the single water glint visible on a 130ms cadence", () => {
     const tickMs = 130;
     const draw = (age: number, seed: number) => {
       const impact = { col: 35.5, depth: 2, age, seed };
@@ -239,8 +239,8 @@ describe("RainPanelComponent", () => {
     for (const seed of [0, 42, 6547]) {
       for (let offsetMs = 0; offsetMs < tickMs; offsetMs++) {
         const frames = [0, 1, 2, 3].map((tick) => draw((offsetMs + tick * tickMs) / 1000, seed));
-        expect(frames[0], `seed ${seed}, offset ${offsetMs}ms`).toBe("  o  ");
-        expect(frames.slice(1), `seed ${seed}, offset ${offsetMs}ms`).toContain("  _  ");
+        expect(frames[0], `seed ${seed}, offset ${offsetMs}ms`).toBe("  •  ");
+        expect(frames.every((frame) => /^[ ⟮⟯()]{2}[•·][ ⟮⟯()]{2}$/.test(frame))).toBe(true);
       }
       expect(draw(1.54, seed)).toBe("     ");
     }
@@ -271,12 +271,15 @@ describe("RainPanelComponent", () => {
 
   it.each(["dark", "light"] as const)("uses the rain's cyan for a fresh contact in the %s theme", (name) => {
     const theme = readTokyoTheme(name);
-    const lines = renderRainPanelLines({
+    const draw = (age: number) => renderRainPanelLines({
       width: 60, frameEnabled: false, rainRows: 4,
       palette: createTokyoNightPalette(theme),
-      snapshot: { drops: [], stars: [], waterMarks: [{ col: 35.5, depth: 2, age: 0.05, seed: 6547 }] },
-    });
-    expect(lines.at(-1)).toContain(theme.fg("thinkingLow", "o"));
+      snapshot: { drops: [], stars: [], waterMarks: [{ col: 35.5, depth: 2, age, seed: 6547 }] },
+    }).at(-1);
+    const peak = theme.fg("thinkingLow", "•");
+    expect(draw(0.05)).toContain(peak);
+    expect(draw(0.24)).toContain("•");
+    expect(draw(0.24)).not.toContain(peak);
   });
 
   it("styles arcs with the low water color base and preserves the palette fallbacks", () => {
@@ -620,7 +623,7 @@ describe("RainPanelComponent", () => {
     });
     expect(lines).toHaveLength(8);
     expect(lines.every((line) => visibleWidth(line) === 80)).toBe(true);
-    expect(lines.join("\n").replaceAll("\u{1f319}", "")).toMatch(/^[\x20-\x7e\n\u27ee\u27ef]+$/);
+    expect(lines.join("\n").replaceAll("\u{1f319}", "")).toMatch(/^[\x20-\x7e\n·•⟮⟯]+$/);
     expect(lines.slice(1, 4).join("\n")).toContain("\\");
     expect(lines.slice(5).join("")).toMatch(/[.-]/);
   });

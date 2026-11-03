@@ -29,6 +29,8 @@ export function rasterizeRainWater(width: number, rows: number, snapshot: RainFr
 
   const contact = new Float64Array(width * waterRows);
   const crests = new Float64Array(contact.length);
+  const arcCenters = new Int32Array(contact.length);
+  const interiors = new Uint8Array(contact.length);
   const tilt = new Float64Array(contact.length);
   const glyphs: Array<string | undefined> = new Array(contact.length);
   const moon = rainMoonBounds(width, rows);
@@ -36,22 +38,30 @@ export function rasterizeRainWater(width: number, rows: number, snapshot: RainFr
   const time = Number.isFinite(snapshot.time) ? snapshot.time! : 0;
   const index = (col: number, row: number) => (row - horizon) * width + col;
   const strengthAt = (depth: number, seed: number) => 0.18 * depth + 0.64 * variation(seed, 41);
-  const raise = (col: number, row: number, glyph: string, light: number) => {
+  const raise = (col: number, row: number, glyph: string, light: number, center: number) => {
     if (col < 0 || col >= width) return;
     const cell = index(col, row);
     const previous = glyphs[cell];
     if (light < crests[cell] || (light === crests[cell] && previous !== undefined && glyph >= previous)) return;
     crests[cell] = light;
+    arcCenters[cell] = center;
     glyphs[cell] = glyph;
+  };
+  const raisePair = (col: number, row: number, offset: number, left: string, right: string, light: number) => {
+    if (light < 0.055) return;
+    raise(col - offset, row, left, light, col);
+    raise(col + offset, row, right, light, col);
+    for (let x = Math.max(0, col - offset + 1); x < Math.min(width, col + offset); x++) {
+      interiors[index(x, row)] = 1;
+    }
   };
 
   for (const impact of snapshot.waterMarks ?? snapshot.splashes ?? []) {
     if (!isVisibleImpact(impact, width) || impact.age >= RAIN_CONTACT_LIFE) continue;
     const depth = clamp(impact.depth, 2);
-    const strength = strengthAt(depth, impact.seed ?? Math.floor(impact.col * 12345));
     const row = Math.floor(rainLandingRow(rows, depth));
     const cell = index(Math.floor(impact.col), row);
-    const light = (0.76 + 0.24 * strength) * (1 - smooth((impact.age - 0.12) / (0.45 + 0.14 * strength)));
+    const light = 1 - smooth((impact.age - 0.08) / (RAIN_CONTACT_LIFE - 0.08));
     contact[cell] = Math.max(contact[cell], light);
   }
 
@@ -66,23 +76,16 @@ export function rasterizeRainWater(width: number, rows: number, snapshot: RainFr
     const strength = strengthAt(depth, seed);
     const center = rainLandingRow(rows, depth);
     const row = Math.floor(center), col = Math.floor(splash.col);
-    const travel = smooth((age / life - 0.10) / (0.74 - 0.08 * strength));
-    const radius = 0.38 + 1.64 * travel;
-    const flash = smooth((age - 0.06) / (0.32 - 0.08 * strength));
-    const fade = 1 - smooth((age - life * 0.57) / (life * 0.43));
+    const travel = clamp((age - 0.12) / (life * 0.80));
+    const radius = 0.53 + 1.47 * (1 - (1 - travel) ** 2);
+    const flash = smooth((age - 0.12) / 0.22);
+    const fade = 1 - smooth((age - life * 0.38) / (life * 0.62));
     const envelope = flash * fade * (0.70 + 0.34 * strength);
-    const glint = (0.26 + 0.08 * strength) * smooth((age - 0.06) / 0.14) *
-      (1 - smooth((age - 0.35) / 0.15));
-    const outer = radius >= 1.5;
-    const offset = outer ? 2 : 1;
-    const edge = 0.63 * envelope * smooth((radius - 0.58) / 0.30) *
-      Math.exp(-(((offset - radius) / 0.69) ** 2));
-
-    if (glint >= 0.055) raise(col, row, glint >= 0.22 ? "_" : ".", glint);
-    if (edge >= 0.055) {
-      raise(col - offset, row, edge < 0.22 ? "." : outer ? "(" : "⟮", edge);
-      raise(col + offset, row, edge < 0.22 ? "." : outer ? ")" : "⟯", edge);
-    }
+    // Blend the two character-grid positions as the wave travels between them.
+    const outer = smooth((radius - 1.32) / 0.42);
+    const edge = 0.49 * envelope;
+    raisePair(col, row, 1, "⟮", "⟯", edge * (1 - outer));
+    raisePair(col, row, 2, "(", ")", edge * outer * 0.78);
 
     if (!moon.curved) continue;
     const stretch = 1.8 + variation(seed, 29) * 0.48;
@@ -115,9 +118,9 @@ export function rasterizeRainWater(width: number, rows: number, snapshot: RainFr
       const highlight = (0.5 + 0.5 * swell) ** 4;
       const beam = moon.curved ? Math.exp(-(((reflectedCol + 0.5 - beamCenter) / beamWidth) ** 2)) : 0;
       const reflection = beam * (0.1 + 0.48 * highlight) * (1 - 0.25 * Math.abs(refraction));
-      let light = reflection;
       let ink: WaterCell["ink"] = "moon";
       let glyph = highlight > 0.56 ? "-" : ".";
+      let light = glyph === "." && interiors[cell] ? 0 : reflection;
       const crest = glyphs[cell];
       if (crest !== undefined && crests[cell] > light) {
         light = crests[cell];
@@ -125,26 +128,28 @@ export function rasterizeRainWater(width: number, rows: number, snapshot: RainFr
         glyph = crest;
       }
       const flash = contact[cell];
-      if (flash > light || flash > 0.55) {
-        if (ink !== "ripple" || glyph !== "_") glyph = flash > 0.84 ? "o" : ".";
-        light = Math.max(light, flash);
+      if (flash >= 0.055) {
+        glyph = flash >= 0.52 ? "•" : "·";
+        // Ripple ink reaches full cyan at half intensity.
+        light = Math.max(0.055, flash * 0.5);
         ink = "ripple";
       }
       if (light >= 0.055) cells.push({ col, row, glyph, light: clamp(light), ink });
     }
   }
 
-  // Where two waves touch, show the outer arc and let both highlights fade independently.
+  // Where two waves touch, keep the outer edge without leaving a stray point.
   let previous: WaterCell | undefined;
   let previousDirection: string | undefined;
   for (const cell of cells) {
     const direction = arcDirection(cell.glyph);
-    if (previous && direction === previousDirection && cell.row === previous.row && cell.col === previous.col + 1) {
-      if (direction === "(") cell.glyph = ".";
-      if (direction === ")") previous.glyph = ".";
+    if (previous && direction === previousDirection && cell.row === previous.row && cell.col === previous.col + 1 &&
+      arcCenters[index(cell.col, cell.row)] !== arcCenters[index(previous.col, previous.row)]) {
+      if (direction === "(") cell.light = 0;
+      if (direction === ")") previous.light = 0;
     }
     previous = cell;
     previousDirection = direction;
   }
-  return cells;
+  return cells.filter((cell) => cell.light > 0);
 }
