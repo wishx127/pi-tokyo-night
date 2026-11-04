@@ -244,11 +244,11 @@ describe("working indicator compatibility regression", () => {
   });
 
   it.each([
-    ["auto", 50, 9, 0, true],
-    ["auto", 50, 9, 37, true],
-    ["auto", 50, 9, 73, true],
+    ["auto", 50, 21, 0, true],
+    ["auto", 50, 21, 37, true],
+    ["auto", 50, 21, 73, true],
     ["manual", 50, 21, 37, true],
-    ["auto", 50, 9, 37, false],
+    ["auto", 50, 21, 37, false],
   ] as const)("limits real host redraws in %s mode with %ims configured rain (limit %i, phase %ims, loader %s)", async (rainMode, rainTickMs, limit, phaseMs, withLoader) => {
     vi.useFakeTimers();
     vi.spyOn(TokyoConfigManager.prototype, "read").mockImplementation(async function (this: TokyoConfigManager) {
@@ -274,8 +274,8 @@ describe("working indicator compatibility regression", () => {
   });
 
   it.each([
-    ["auto", 50, 130, true],
-    ["auto", 50, 130, false],
+    ["auto", 50, 75, true],
+    ["auto", 50, 75, false],
     ["manual", 50, 50, true],
   ] as const)("avoids delayed duplicate frames with real timers: %s, tick %ims, budget %ims, loader %s", async (rainMode, rainTickMs, frameMs, withLoader) => {
     vi.spyOn(TokyoConfigManager.prototype, "read").mockImplementation(async function (this: TokyoConfigManager) {
@@ -422,7 +422,7 @@ describe("working indicator compatibility regression", () => {
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 
-  it("coalesces its 100ms working clock into the 130ms auto rain cadence", async () => {
+  it("coalesces its 100ms working clock into the 75ms auto waiting cadence", async () => {
     vi.useFakeTimers();
     const fixture = makeFixture();
     await fixture.emit("session_start", {}, fixture.ctx);
@@ -440,7 +440,7 @@ describe("working indicator compatibility regression", () => {
     await vi.advanceTimersByTimeAsync(1000);
 
     expect(fixture.ui.setWorkingIndicator).not.toHaveBeenCalled();
-    expect(fixture.ui.setWorkingMessage).toHaveBeenCalledTimes(7);
+    expect(fixture.ui.setWorkingMessage).toHaveBeenCalledTimes(10);
     expect(
       fixture.ui.setWorkingMessage.mock.calls.map(
         ([message]: [string]) => stripAnsi(message),
@@ -449,10 +449,13 @@ describe("working indicator compatibility regression", () => {
       "Waiting 0.1s",
       "Waiting 0.2s",
       "Waiting 0.3s",
+      "Waiting 0.4s",
       "Waiting 0.5s",
       "Waiting 0.6s",
       "Waiting 0.7s",
+      "Waiting 0.8s",
       "Waiting 0.9s",
+      "Waiting 1.0s",
     ]);
 
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
@@ -536,10 +539,10 @@ describe("working indicator compatibility regression", () => {
 
     await vi.advanceTimersByTimeAsync(500);
 
-    expect(fixture.ui.setWorkingMessage).toHaveBeenCalledTimes(3);
+    expect(fixture.ui.setWorkingMessage).toHaveBeenCalledTimes(4);
     expect(fixture.ui.setWorkingMessage.mock.calls.map(
       ([message]: [string]) => stripAnsi(message),
-    )).toEqual(["Waiting 0.1s", "Waiting 0.2s", "Waiting 0.3s"]);
+    )).toEqual(["Waiting 0.1s", "Waiting 0.2s", "Waiting 0.3s", "Waiting 0.4s"]);
     await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
   });
 });

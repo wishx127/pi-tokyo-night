@@ -1,6 +1,6 @@
 import type { TokyoNightThemePalette } from "../ui/theme-palette";
 import type { RainFrameSnapshot } from "./rain-manager";
-import { rainDrift, rainHorizon, rainLandingRow, rainMoonBounds, rainStarRows, rainVerticalScale, rainWind } from "./rain-geometry";
+import { rainDrift, rainHorizon, rainLandingRow, rainMoonBounds, rainStarRows, rainVariation, rainVerticalScale, rainWind } from "./rain-geometry";
 import { rasterizeRainWater } from "./rain-water";
 
 export type RainInk = "rain" | "moon" | "star" | "water" | "ripple";
@@ -82,7 +82,9 @@ export function renderRainScene(
     if (!Number.isFinite(drop.col) || !Number.isFinite(drop.row)) continue;
     const depth = Number.isFinite(drop.depth) ? clamp(drop.depth!, 0, 2) : 1;
     if (drop.row >= rainLandingRow(rows, depth)) continue;
-    const length = (0.4 + Math.max(0, depth - 1) * 0.55) * verticalScale;
+    const length = drop.seed === undefined
+      ? (0.4 + Math.max(0, depth - 1) * 0.55) * verticalScale
+      : (0.4 + 0.3 * rainVariation(drop.seed, 131) + Math.max(0, depth - 1) * 0.35) * verticalScale;
     const drift = rainDrift(wind, depth);
     put(drop.col, drop.row, RAIN_DROP, "rain", 0.58 + depth * 0.14, 25 + depth);
     if (depth > 1 && Math.floor(drop.row - length) < Math.floor(drop.row)) {

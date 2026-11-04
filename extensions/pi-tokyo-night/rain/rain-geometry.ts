@@ -31,9 +31,26 @@ export function rainLandingRow(rows: number, depth: number): number {
   return horizon === rows ? rows : horizon + depth * (rows - horizon - 0.5) / 2;
 }
 
-/** Nearer impacts hold their ripples a little longer. */
-export function rainRippleLife(depth: number): number {
-  return 1.22 + Math.max(0, Math.min(2, depth)) * 0.16;
+/** Stable appearance samples, shared by simulation and rendering. */
+export function rainVariation(seed: number, salt: number): number {
+  let value = Math.imul((seed >>> 0) ^ salt, 0x21f0aaad);
+  value = Math.imul(value ^ (value >>> 15), 0x735a2d97);
+  return ((value ^ (value >>> 15)) >>> 0) / 4294967296;
+}
+
+export function rainRippleTraits(seed: number) {
+  const size = rainVariation(seed, 311);
+  return {
+    size: 0.52 + 0.90 * size ** 1.2,
+    lifetime: 0.70 + 0.48 * size + 0.18 * rainVariation(seed, 661),
+    spread: 0.86 + 0.28 * rainVariation(seed, 997),
+  };
+}
+
+/** Keep the same lifetime in the manager and renderer, including older unseeded frames. */
+export function rainRippleLife(depth: number, seed?: number): number {
+  const base = 1.22 + Math.max(0, Math.min(2, depth)) * 0.16;
+  return seed === undefined ? base : base * rainRippleTraits(seed).lifetime;
 }
 
 /** Contact flashes last less than a second. */

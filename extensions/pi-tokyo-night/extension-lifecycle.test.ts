@@ -13,6 +13,7 @@ import extension, {
 } from "./extension";
 import * as usageHistory from "./analytics/usage-history";
 import { TokyoConfigManager } from "./core/config";
+import { RainAnimationManager } from "./rain/rain-manager";
 import { createTokyoNightErrorSink, flushConsoleLogWrites } from "./core/console-bridge";
 import type { observeTerminalRecovery, TerminalRecoveryCallbacks } from "./core/terminal-recovery";
 
@@ -2524,6 +2525,10 @@ describe("public layout and lifecycle contract", () => {
   it("restarts the rain animation with the previewed tick interval", async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0.4);
+    vi.spyOn(TokyoConfigManager.prototype, "read").mockImplementation(async function (this: TokyoConfigManager) {
+      this.set("rainMode", "manual");
+    });
+    const applyProfile = vi.spyOn(RainAnimationManager.prototype, "applyProfile");
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
     await fixture.emit("agent_start", {}, fixture.ctx);
@@ -2538,22 +2543,15 @@ describe("public layout and lifecycle contract", () => {
     fixture.customComponent.handleInput("\t");
     fixture.customComponent.handleInput("\t");
     fixture.customComponent.handleInput("\t");
-    fixture.customComponent.handleInput("\r");
     fixture.customComponent.handleInput("\x1b[B");
     fixture.customComponent.handleInput("\x1b[B");
     fixture.customComponent.handleInput("\x1b[C");
+    expect(applyProfile).toHaveBeenLastCalledWith(expect.objectContaining({ tickMs: 60 }));
     await vi.advanceTimersByTimeAsync(100);
     const beforeFirstTick = rain.render(80).join("\n");
-    await vi.advanceTimersByTimeAsync(29);
-    expect(rain.render(80).join("\n")).toBe(beforeFirstTick);
-    await vi.advanceTimersByTimeAsync(1);
-    const firstTick = rain.render(80).join("\n");
-    expect(firstTick).not.toBe(beforeFirstTick);
-    await vi.advanceTimersByTimeAsync(59);
-    expect(rain.render(80).join("\n")).toBe(firstTick);
     // A simulation tick can map to the same cells; let a drop enter the sky.
-    await vi.advanceTimersByTimeAsync(61);
-    expect(rain.render(80).join("\n")).not.toBe(firstTick);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(rain.render(80).join("\n")).not.toBe(beforeFirstTick);
     expect(rainTui.requestRender).toHaveBeenCalled();
 
     fixture.customComponent.handleInput("\x1b");

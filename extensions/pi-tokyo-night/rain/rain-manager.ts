@@ -14,6 +14,7 @@ export interface RainFrameSnapshot {
     readonly row: number;
     readonly depth?: number;
     readonly speed?: number;
+    readonly seed?: number;
   }[];
   readonly stars: readonly RainStar[];
   readonly time?: number;
@@ -45,7 +46,7 @@ export interface RainWaterMark {
   readonly seed?: number;
 }
 
-type RainDrop = { col: number; row: number; depth: number; speed: number };
+type RainDrop = { col: number; row: number; depth: number; speed: number; seed: number };
 
 export interface RainManagerDependencies {
   /** Called once per animation tick (no arguments). */
@@ -430,7 +431,7 @@ export class RainAnimationManager {
       }
       this.splashes = this.splashes
         .map((splash) => ({ ...splash, age: splash.age + dt }))
-        .filter((splash) => splash.age < rainRippleLife(splash.depth));
+        .filter((splash) => splash.age < rainRippleLife(splash.depth, splash.seed));
       this.waterMarks = this.waterMarks
         .map((mark) => ({ ...mark, age: mark.age + dt }))
         .filter((mark) => mark.age < RAIN_CONTACT_LIFE);
@@ -450,7 +451,7 @@ export class RainAnimationManager {
               col: contactCol,
               depth: drop.depth,
               age: (drop.row - landingRow) / speed,
-              seed: Math.floor(Math.random() * 2 ** 32),
+              seed: drop.seed,
             };
             // Reuse the impact's random seed so half raise visible ripples.
             if (impact.seed < 0x80000000) this.splashes.push(impact);
@@ -475,6 +476,7 @@ export class RainAnimationManager {
         for (let i = 0; i < spawnCount; i++) {
           const depth = depthOrder[this.dropSequence++ % depthOrder.length];
           this.drops.push({
+            seed: Math.floor(Math.random() * 2 ** 32),
             col: auto ? this.autoSpawnColumn() : Math.random() * (this.lastWidth + 4) - 2,
             row: auto ? -0.15 - Math.random() * 0.65 * verticalScale : -Math.random() * 1.5 * verticalScale,
             depth,

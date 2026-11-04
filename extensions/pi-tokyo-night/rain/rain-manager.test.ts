@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { RainAnimationManager } from "./rain-manager";
 import { TokyoConfigManager, DEFAULT_CONFIG } from "../core/config";
 import { resolveRainRuntimeProfile } from "./rain-profile";
+import { rainRippleLife } from "./rain-geometry";
 
 // ---------------------------------------------------------------------------
 // Minimal fake config that doesn't touch the filesystem.
@@ -130,6 +131,40 @@ describe("RainAnimationManager", () => {
     const next = manager.getSnapshot();
     expect(next.time).toBeCloseTo(0.45);
     expect(next.drops.some((drop) => drop.row > 0 && drop.row < 1)).toBe(true);
+    manager.stop();
+  });
+
+  it("keeps each drop's appearance seed through its fall, resize and actual impact", () => {
+    let state = 6791;
+    vi.spyOn(Math, "random").mockImplementation(() => {
+      state = Math.imul(state, 1664525) + 1013904223;
+      return (state >>> 0) / 4294967296;
+    });
+    const manager = new RainAnimationManager(
+      makeConfig({ rainRows: 4, rainTickMs: 50, maxRainDrops: 40 }), { requestRender: vi.fn() },
+    );
+    manager.start();
+    manager.setRenderWidth(60, 4);
+    const born = new Set<number>();
+    let impacts = 0;
+    for (let tick = 0; tick < 100; tick++) {
+      vi.advanceTimersByTime(50);
+      const frame = manager.getSnapshot();
+      for (const drop of frame.drops) {
+        expect(drop.seed).toEqual(expect.any(Number));
+        born.add(drop.seed!);
+      }
+      for (const impact of frame.waterMarks ?? []) {
+        expect(born.has(impact.seed!)).toBe(true);
+        impacts++;
+      }
+      if (tick === 30) {
+        manager.setRenderWidth(80, 4);
+        expect(manager.getSnapshot().drops.map((drop) => drop.seed)).toEqual(frame.drops.map((drop) => drop.seed));
+      }
+    }
+    expect(born.size).toBeGreaterThan(20);
+    expect(impacts).toBeGreaterThan(0);
     manager.stop();
   });
 
@@ -434,7 +469,7 @@ describe("RainAnimationManager", () => {
     const frame = manager.getSnapshot();
     expect(frame.splashes!.length).toBeGreaterThan(0);
     expect(frame.splashes!.length).toBeLessThanOrEqual(256);
-    expect(frame.splashes!.every((splash) => splash.age >= 0 && splash.age < 1.84)).toBe(true);
+    expect(frame.splashes!.every((splash) => splash.age >= 0 && splash.age < rainRippleLife(splash.depth, splash.seed))).toBe(true);
     expect(frame.waterMarks!.length).toBeGreaterThan(0);
     expect(frame.waterMarks!.length).toBeLessThanOrEqual(1024);
     expect(frame.waterMarks!.every((mark) => mark.age >= 0 && mark.age < 0.72)).toBe(true);

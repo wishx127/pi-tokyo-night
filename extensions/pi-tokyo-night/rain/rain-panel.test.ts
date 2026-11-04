@@ -9,6 +9,8 @@ import { RainAnimationManager } from "./rain-manager";
 import { TokyoConfigManager } from "../core/config";
 import { RefreshScheduler } from "../ui/refresh-scheduler";
 import { createTokyoNightPalette } from "../ui/theme-palette";
+import { rasterizeRainWater } from "./rain-water";
+import { rainLandingRow } from "./rain-geometry";
 type ThemeDocument = {
   name: string;
   vars?: Record<string, string | number>;
@@ -124,7 +126,7 @@ describe("RainPanelComponent", () => {
     }
   });
 
-  it("keeps the four-row water glint centered as the two arcs crossfade", () => {
+  it("draws G's character-density wave around a centered ASCII contact in four rows", () => {
     const draw = (age: number) => {
       const impact = { col: 34.5, depth: 1, age, seed: 6547 };
       return renderRainPanelLines({
@@ -132,14 +134,26 @@ describe("RainPanelComponent", () => {
         snapshot: { time: 6, drops: [], stars: [], waterMarks: [impact], splashes: [impact] },
       });
     };
-    const small = draw(0.6);
-    const large = draw(0.9);
-    expect(draw(0.5)[2].slice(32, 37)).toBe(" ⟮·⟯ ");
-    expect(small[2].slice(32, 37)).toBe("(⟮·⟯)");
-    expect(large[2].slice(32, 37)).toBe("(   )");
-    expect(large.every((line) => visibleWidth(line) === 60)).toBe(true);
-    expect(draw(1.6).every((line) => line.slice(30).trim() === "")).toBe(true);
-    expect(draw(1.6).slice(2).some((line) => line.trim() !== "")).toBe(true);
+    expect(draw(0.05)[2][34]).toBe("*");
+    const wave = draw(0.7).slice(2).map((line) => line.slice(29, 40)).join("");
+    expect(wave).toMatch(/[,;:+*\-]/);
+    expect(wave).not.toMatch(/[()⟮⟯o_=~•·]/);
+    expect(draw(0.7).every((line) => visibleWidth(line) === 60)).toBe(true);
+    expect(draw(2.3).every((line) => line.slice(30).trim() === "")).toBe(true);
+    expect(draw(2.3).slice(2).some((line) => line.trim() !== "")).toBe(true);
+  });
+
+  it("varies each seeded rain tail without changing its bold head or wind direction", () => {
+    const frames = Array.from({ length: 32 }, (_, seed) => renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows: 4,
+      palette: createTokyoNightPalette(readTokyoTheme("dark")),
+      snapshot: { time: 1, wind: 0.5, stars: [], drops: [{ col: 30.5, row: 1.34, depth: 2, seed }] },
+    }));
+    expect(frames.every((lines) => lines.join("").includes("\x1b[1m\\\x1b[22m"))).toBe(true);
+    const tails = frames.map((lines) => lines[0].replace(/\x1b\[[0-9;]*m/g, "").slice(28, 33));
+    expect(tails.some((tail) => tail.includes("."))).toBe(true);
+    expect(tails.some((tail) => tail.trim() === "")).toBe(true);
+    expect(tails.every((tail) => tail[4] === " ")).toBe(true);
   });
 
   it("resumes publishing animation after a layout releases a zero-row rain budget", () => {
@@ -207,12 +221,12 @@ describe("RainPanelComponent", () => {
       snapshot: { time: 1, drops: [], stars: [],
         waterMarks: [{ col: 35.5, depth: 2, age, seed: 6547 }] },
     }).slice(skyRows).map((line) => line.slice(33, 38));
-    expect(draw(0.05).at(-1)).toBe("  •  ");
+    expect(draw(0.05).at(-1)).toBe("  *  ");
     expect(draw(0.05).slice(0, -1).every((line) => line.trim() === "")).toBe(true);
     expect(draw(0.72).every((line) => line.trim() === "")).toBe(true);
   });
 
-  it.each([4, 10])("fades a single centered glint and clears the %i-row expanding ring", (rainRows) => {
+  it.each([4, 10])("fades a single centered ASCII glint and clears the %i-row density wave", (rainRows) => {
     const draw = (age: number) => {
       const impact = { col: 35.5, depth: 2, age, seed: 6547 };
       return renderRainPanelLines({
@@ -220,11 +234,11 @@ describe("RainPanelComponent", () => {
         snapshot: { time: 1, drops: [], stars: [], waterMarks: [impact], splashes: [impact] },
       }).at(-1)!.slice(33, 38);
     };
-    expect(draw(0.05)).toBe("  •  ");
-    expect(draw(0.4)).toMatch(/^ ⟮[•·]⟯ $/);
-    expect(draw(0.9)).toBe("(   )");
-    expect(draw(1.2)).toBe("(   )");
-    expect(draw(1.54)).toBe("     ");
+    expect(draw(0.05)).toBe("  *  ");
+    expect(draw(0.4)[2]).toBe("*");
+    expect(draw(0.9)).toMatch(/[,;:+*\-]/);
+    expect(draw(0.9)).not.toMatch(/[()⟮⟯o_=~•·]/);
+    expect(draw(2.3)).toBe("     ");
   });
 
   it("keeps the single water glint visible on a 130ms cadence", () => {
@@ -239,14 +253,48 @@ describe("RainPanelComponent", () => {
     for (const seed of [0, 42, 6547]) {
       for (let offsetMs = 0; offsetMs < tickMs; offsetMs++) {
         const frames = [0, 1, 2, 3].map((tick) => draw((offsetMs + tick * tickMs) / 1000, seed));
-        expect(frames[0], `seed ${seed}, offset ${offsetMs}ms`).toBe("  •  ");
-        expect(frames.every((frame) => /^[ ⟮⟯()]{2}[•·][ ⟮⟯()]{2}$/.test(frame))).toBe(true);
+        expect(frames[0], `seed ${seed}, offset ${offsetMs}ms`).toBe("  *  ");
+        expect(frames.every((frame) => /^[ ,:;+*\-]{2}\*[ ,:;+*\-]{2}$/.test(frame))).toBe(true);
       }
-      expect(draw(1.54, seed)).toBe("     ");
+      expect(draw(2.3, seed)).toBe("     ");
     }
   });
 
-  it("keeps seeded overlapping arcs stable across redraws and impact order", () => {
+  it("never flashes the center again when the contact fades into the density wave", () => {
+    for (const seed of [0, 42, 6547, 2147483647]) {
+      let previous = 1;
+      for (let tick = 0; tick <= 110; tick++) {
+        const impact = { col: 34.5, depth: 1, age: tick / 50, seed };
+        const center = rasterizeRainWater(60, 4, {
+          drops: [], stars: [], splashes: [impact], waterMarks: [impact],
+        }).find((cell) => cell.col === 34 && cell.row === Math.floor(rainLandingRow(4, impact.depth)));
+        const light = center?.light ?? 0;
+        expect(light, `seed ${seed}, age ${impact.age}`).toBeLessThanOrEqual(previous);
+        previous = light;
+      }
+    }
+  });
+
+  it("gives seeded waves different footprints and fade times within the four-row water", () => {
+    const spans = new Set<number>();
+    let visible = 0, cleared = 0, extended = false;
+    for (let seed = 0; seed < 128; seed++) {
+      const draw = (age: number) => rasterizeRainWater(80, 4, {
+        drops: [], stars: [], splashes: [{ col: 40.5, depth: 1, age, seed }], waterMarks: [],
+      }).filter((cell) => cell.ink === "ripple");
+      const peak = draw(0.8);
+      if (peak.length) spans.add(Math.max(...peak.map((cell) => cell.col)) - Math.min(...peak.map((cell) => cell.col)));
+      extended ||= new Set(peak.map((cell) => cell.row)).size > 1;
+      if (draw(1.45).length) visible++;
+      else cleared++;
+    }
+    expect(spans.size).toBeGreaterThanOrEqual(3);
+    expect(visible).toBeGreaterThan(0);
+    expect(cleared).toBeGreaterThan(0);
+    expect(extended).toBe(true);
+  });
+
+  it("keeps seeded overlapping density waves stable across redraws and impact order", () => {
     const impacts = [
       { col: 30.5, depth: 1, age: 0.9, seed: 42 },
       { col: 31.5, depth: 1, age: 0.55, seed: 17 },
@@ -276,13 +324,13 @@ describe("RainPanelComponent", () => {
       palette: createTokyoNightPalette(theme),
       snapshot: { drops: [], stars: [], waterMarks: [{ col: 35.5, depth: 2, age, seed: 6547 }] },
     }).at(-1);
-    const peak = theme.fg("thinkingLow", "•");
+    const peak = theme.fg("thinkingLow", "*");
     expect(draw(0.05)).toContain(peak);
-    expect(draw(0.24)).toContain("•");
+    expect(draw(0.24)).toContain("*");
     expect(draw(0.24)).not.toContain(peak);
   });
 
-  it("styles arcs with the low water color base and preserves the palette fallbacks", () => {
+  it("styles density waves with the low water color base and preserves the palette fallbacks", () => {
     const rippleShade = vi.fn((_wave: number, _water: number, glyph: string) => glyph);
     const rainShade = vi.fn((_role: string, _light: number, glyph: string) => glyph);
     const fg = vi.fn((_role: string, glyph: string) => glyph);
@@ -291,12 +339,11 @@ describe("RainPanelComponent", () => {
       snapshot: { drops: [], stars: [], splashes: [{ col: 34.5, depth: 1, age: 0.9, seed: 6547 }] },
     });
     render({ ...palette, rippleShade });
-    expect(rippleShade).toHaveBeenCalledWith(expect.any(Number), 0.12, "(", "water");
-    expect(rippleShade).toHaveBeenCalledWith(expect.any(Number), 0.12, ")", "water");
+    expect(rippleShade).toHaveBeenCalledWith(expect.any(Number), 0.12, expect.stringMatching(/^[,:;+*\-]$/), "water");
     render({ ...palette, rainShade });
-    expect(rainShade).toHaveBeenCalledWith("water", expect.any(Number), "(");
+    expect(rainShade).toHaveBeenCalledWith("water", expect.any(Number), expect.stringMatching(/^[,:;+*\-]$/));
     render({ ...palette, rainShade: undefined, fg });
-    expect(fg).toHaveBeenCalledWith("rain", "(");
+    expect(fg).toHaveBeenCalledWith("rain", expect.stringMatching(/^[,:;+*\-]$/));
   });
 
   it("refreshes a static frame when only the approved ripple base color changes", () => {
