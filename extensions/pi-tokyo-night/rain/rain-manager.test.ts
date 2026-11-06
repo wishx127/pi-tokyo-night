@@ -513,6 +513,30 @@ describe("RainAnimationManager", () => {
     expect(manager.getSnapshot().waterMarks).toEqual([]);
   });
 
+  it("accumulates wet traces from ordinary landings and freezes them with the scene", () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.8);
+    const manager = new RainAnimationManager(
+      makeConfig({ rainRows: 4, rainTickMs: 50, maxRainDrops: 25 }),
+      { requestRender: vi.fn() },
+    );
+    manager.start();
+    manager.setRenderWidth(60, 4);
+    try {
+      vi.advanceTimersByTime(2500);
+      const frame = manager.getSnapshot();
+      expect(frame.splashes).toEqual([]);
+      expect(frame.wetTraces?.length).toBeGreaterThan(0);
+      manager.applyProfile({tickMs: 0, maxDrops: 0});
+      vi.advanceTimersByTime(4000);
+      expect(manager.getSnapshot().wetTraces).toEqual(frame.wetTraces);
+      manager.setRenderWidth(30, 4);
+      expect(manager.getSnapshot().wetTraces).toEqual([]);
+    } finally {
+      manager.stop();
+    }
+    expect(manager.getSnapshot().wetTraces).toEqual([]);
+  });
+
   it("preserves contact flashes through static mode, resizing and a collapsed viewport", () => {
     vi.spyOn(Math, "random").mockReturnValue(0.4);
     const manager = new RainAnimationManager(

@@ -150,8 +150,6 @@ function main() {
     "LICENSE",
     "README.md",
     "assets/screenshot.png",
-    "assets/rain-moon/dark.png",
-    "assets/rain-moon/light.png",
     "themes/tokyo-night-dark.json",
     "themes/tokyo-night-light.json",
   ]) {
@@ -163,7 +161,6 @@ function main() {
   }
 
   for (const packagedFile of packagedFiles) {
-    assert(packagedFile !== "assets/rain-moon/LICENSE", "Original moon art must not ship the retired font notice");
     assert(
       !/(^|\/)(?:[^/]+\.(?:test|spec)\.[^/]+|tests?|__tests__)(?:\/|$)/i.test(packagedFile),
       `Package must not contain test files: ${packagedFile}`,

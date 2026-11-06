@@ -4,6 +4,7 @@ import {
 } from "../core/errors";
 import { TokyoConfigManager } from "../core/config";
 import type { RainRuntimeProfile } from "./rain-profile";
+import { RainWetTraces, type RainWetTrace } from "./rain-wet-traces";
 import { RAIN_CONTACT_LIFE, rainDrift, rainHorizon, rainLandingRow, rainMoonBounds, rainRippleLife, rainStarRows, rainVerticalScale, rainWind } from "./rain-geometry";
 
 // ── Types ──────────────────────────────────────────────────────────────────
@@ -21,6 +22,7 @@ export interface RainFrameSnapshot {
   readonly wind?: number;
   readonly splashes?: readonly RainSplash[];
   readonly waterMarks?: readonly RainWaterMark[];
+  readonly wetTraces?: readonly RainWetTrace[];
 }
 
 export interface RainStar {
@@ -90,6 +92,7 @@ export class RainAnimationManager {
   private drops: RainDrop[] = [];
   private splashes: RainSplash[] = [];
   private waterMarks: RainWaterMark[] = [];
+  private readonly wetTraces = new RainWetTraces();
   private lastWidth = 80;
   private lastHeight: number | undefined;
   private viewportCollapsed = false;
@@ -141,6 +144,7 @@ export class RainAnimationManager {
     this.drops = [];
     this.splashes = [];
     this.waterMarks = [];
+    this.wetTraces.clear();
     this.time = 0;
     this.wind = rainWind(0);
     this.targetFallSpeed = this.profileFallSpeed(profile);
@@ -224,6 +228,7 @@ export class RainAnimationManager {
     this.drops = [];
     this.splashes = [];
     this.waterMarks = [];
+    this.wetTraces.clear();
     this.stars = [];
     this.consecutiveRenderFailures = 0;
     this.profile = undefined;
@@ -262,6 +267,9 @@ export class RainAnimationManager {
     if (width === this.lastWidth && height === this.lastHeight) return;
     const oldHeight = this.lastHeight ?? this.config.get().rainRows;
     const oldWidth = this.lastWidth;
+    if (width !== oldWidth || (height ?? this.config.get().rainRows) !== oldHeight) {
+      this.wetTraces.clear();
+    }
     const previousStars = this.stars;
     for (const drop of this.drops) {
       drop.col *= width / Math.max(1, this.lastWidth);
@@ -305,6 +313,7 @@ export class RainAnimationManager {
       wind: this.wind,
       splashes: this.splashes.map((splash) => ({ ...splash })),
       waterMarks: this.waterMarks.map((mark) => ({ ...mark })),
+      wetTraces: this.wetTraces.get(this.time),
     };
   }
 
@@ -413,6 +422,7 @@ export class RainAnimationManager {
       (now - this.lastTickAt) / 1000,
     ));
     this.lastTickAt = now;
+    const landings: Array<{ col: number; row: number; time: number }> = [];
     while (remaining > 0.000001) {
       const dt = Math.min(auto ? 0.01 : 0.05, remaining);
       remaining -= dt;
@@ -453,9 +463,10 @@ export class RainAnimationManager {
               age: (drop.row - landingRow) / speed,
               seed: drop.seed,
             };
-            // Reuse the impact's random seed so half raise visible ripples.
+            // Half the drops disturb the reflected moonlight.
             if (impact.seed < 0x80000000) this.splashes.push(impact);
             this.waterMarks.push({ ...impact });
+            landings.push({ col: contactCol, row: Math.floor(landingRow), time: this.time - impact.age });
           }
         } else if (drop.col >= (auto ? 0 : -4) && drop.col < this.lastWidth + (auto ? 0 : 4)) {
           falling.push(drop);
@@ -487,6 +498,8 @@ export class RainAnimationManager {
         this.spawnRemainder = 0;
       }
       }
+      landings.sort((a, b) => a.time - b.time);
+      for (const landing of landings) this.wetTraces.record(landing.col, landing.row, landing.time);
 
       if (!this.viewportCollapsed) this.revision += 1;
 

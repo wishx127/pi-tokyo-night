@@ -77,7 +77,7 @@ function makeConfig(panel: boolean, editorFrame = true) {
 }
 
 describe("RainPanelComponent", () => {
-  it("places the amber graphic inside four sky and water rows, with a text fallback", () => {
+  it("renders the text moon even in terminals with Kitty image support", () => {
     const originalCapabilities = getCapabilities();
     const config = new TokyoConfigManager();
     config.set("rainRows", 4);
@@ -85,40 +85,22 @@ describe("RainPanelComponent", () => {
     const rain = new RainAnimationManager(config, { requestRender: vi.fn() });
     const theme = readTokyoTheme("dark");
     const write = vi.fn();
-    let overlay = false;
-    const panel = new RainPanelComponent({ hasOverlay: () => overlay, terminal: { write } } as any, {
+    const panel = new RainPanelComponent({ hasOverlay: () => false, terminal: { write } } as any, {
       config, rain, getTheme: () => theme,
     });
     vi.stubEnv("TERM_PROGRAM", "kitty");
     vi.stubEnv("TERM", "xterm-kitty");
     vi.stubEnv("TMUX", undefined);
     try {
-      setCapabilities({ ...originalCapabilities, images: null });
-      const text = panel.render(60);
-      expect(text[1]).toContain("🌙");
-      expect(panel.hasVisibleChanges()).toBe(false);
       setCapabilities({ ...originalCapabilities, images: "kitty" });
-      expect(panel.hasVisibleChanges()).toBe(true);
-      const graphic = panel.render(60);
-      expect(graphic).toHaveLength(5);
-      expect(graphic[0]).toBe(text[0]);
-      expect(graphic[1]).toMatch(/^\x1b\[6G\x1b_Ga=T,[^;]*C=1[^;]*;iVBORw0KGgo/);
-      expect(graphic[1]).not.toContain("🌙");
-      expect(graphic.slice(3)).toEqual(text.slice(3));
-      expect(visibleWidth(graphic[1])).toBe(60);
+      const lines = panel.render(60);
+      expect(lines).toHaveLength(5);
+      expect(lines[1]).toContain("🌙");
+      expect(lines[1]).not.toContain("\x1b_G");
+      expect(visibleWidth(lines[1])).toBe(60);
       expect(panel.hasVisibleChanges()).toBe(false);
-      overlay = true;
-      expect(panel.hasVisibleChanges()).toBe(true);
-      expect(panel.render(60)).toEqual(text);
-      overlay = false;
-      vi.stubEnv("TERM_PROGRAM", "zed");
-      expect(panel.render(60)).toEqual(text);
-      vi.stubEnv("TERM_PROGRAM", "kitty");
-      vi.stubEnv("TMUX", "test");
-      expect(panel.render(60)).toEqual(text);
       panel.dispose();
-      expect(write).toHaveBeenCalledTimes(1);
-      expect(write).toHaveBeenCalledWith(expect.stringMatching(/^\x1b_Ga=d,d=I,i=\d+/));
+      expect(write).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllEnvs();
       setCapabilities(originalCapabilities);
@@ -126,7 +108,7 @@ describe("RainPanelComponent", () => {
     }
   });
 
-  it("draws restored inner and outer arcs around a centered ASCII contact in four rows", () => {
+  it("draws a centered contact without outline arcs in four rows", () => {
     const draw = (age: number) => {
       const impact = { col: 34.5, depth: 1, age, seed: 6547 };
       return renderRainPanelLines({
@@ -134,10 +116,8 @@ describe("RainPanelComponent", () => {
         snapshot: { time: 6, drops: [], stars: [], waterMarks: [impact], splashes: [impact] },
       });
     };
-    expect(draw(0.05)[2][34]).toBe("*");
-    const wave = draw(0.7).slice(2).map((line) => line.slice(29, 40)).join("");
-    expect(wave).toMatch(/[()⟮⟯]/);
-    expect(wave).not.toMatch(/[o_=~•·,:;+]/);
+    expect(draw(0.05)[2].slice(29, 40)).toBe("     ·     ");
+    expect(draw(0.7).slice(2).every((line) => line.slice(29).trim() === "")).toBe(true);
     expect(draw(0.7).every((line) => visibleWidth(line) === 60)).toBe(true);
     expect(draw(2.3).every((line) => line.slice(30).trim() === "")).toBe(true);
     expect(draw(2.3).slice(2).some((line) => line.trim() !== "")).toBe(true);
@@ -215,18 +195,18 @@ describe("RainPanelComponent", () => {
     expect(draw([{ col: 30, row: 0 }, { col: 45, row: 0 }])).toEqual(water);
   });
 
-  it.each([[4, 2], [10, 6]])("flashes at a %i-row landing without leaving a trace when no ripple is selected", (rainRows, skyRows) => {
+  it.each([[4, 2], [10, 6]])("flashes at a %i-row landing without leaving a trace from one drop", (rainRows, skyRows) => {
     const draw = (age: number) => renderRainPanelLines({
       width: 60, frameEnabled: false, rainRows,
       snapshot: { time: 1, drops: [], stars: [],
         waterMarks: [{ col: 35.5, depth: 2, age, seed: 6547 }] },
     }).slice(skyRows).map((line) => line.slice(33, 38));
-    expect(draw(0.05).at(-1)).toBe("  *  ");
+    expect(draw(0.05).at(-1)).toBe("  ·  ");
     expect(draw(0.05).slice(0, -1).every((line) => line.trim() === "")).toBe(true);
     expect(draw(0.72).every((line) => line.trim() === "")).toBe(true);
   });
 
-  it.each([4, 10])("fades a single centered ASCII glint and clears the %i-row arc wave", (rainRows) => {
+  it.each([4, 10])("fades a single centered glint on a %i-row surface outside the reflection", (rainRows) => {
     const draw = (age: number) => {
       const impact = { col: 35.5, depth: 2, age, seed: 6547 };
       return renderRainPanelLines({
@@ -234,10 +214,9 @@ describe("RainPanelComponent", () => {
         snapshot: { time: 1, drops: [], stars: [], waterMarks: [impact], splashes: [impact] },
       }).at(-1)!.slice(33, 38);
     };
-    expect(draw(0.05)).toBe("  *  ");
-    expect(draw(0.4)[2]).toBe("*");
-    expect(draw(0.9)).toMatch(/[()⟮⟯]/);
-    expect(draw(0.9)).not.toMatch(/[o_=~•·,:;+]/);
+    expect(draw(0.05)).toBe("  ·  ");
+    expect(draw(0.4)).toBe("  ·  ");
+    expect(draw(0.9)).toBe("     ");
     expect(draw(2.3)).toBe("     ");
   });
 
@@ -253,14 +232,14 @@ describe("RainPanelComponent", () => {
     for (const seed of [0, 42, 6547]) {
       for (let offsetMs = 0; offsetMs < tickMs; offsetMs++) {
         const frames = [0, 1, 2, 3].map((tick) => draw((offsetMs + tick * tickMs) / 1000, seed));
-        expect(frames[0], `seed ${seed}, offset ${offsetMs}ms`).toBe("  *  ");
-        expect(frames.every((frame) => /^[ ()⟮⟯]{2}\*[ ()⟮⟯]{2}$/.test(frame))).toBe(true);
+        expect(frames[0], `seed ${seed}, offset ${offsetMs}ms`).toBe("  ·  ");
+        expect(frames.every((frame) => frame === "  ·  ")).toBe(true);
       }
       expect(draw(2.3, seed)).toBe("     ");
     }
   });
 
-  it("never flashes the center again when the contact fades into the arc wave", () => {
+  it("never flashes the center again after the contact fades", () => {
     for (const seed of [0, 42, 6547, 2147483647]) {
       let previous = 1;
       for (let tick = 0; tick <= 110; tick++) {
@@ -268,7 +247,7 @@ describe("RainPanelComponent", () => {
         const center = rasterizeRainWater(60, 4, {
           drops: [], stars: [], splashes: [impact], waterMarks: [impact],
         }).find((cell) => cell.col === 34 && cell.row === Math.floor(rainLandingRow(4, impact.depth)));
-        if (center) expect(center.glyph).toBe("*");
+        if (center) expect(center.glyph).toBe("·");
         const light = center?.light ?? 0;
         expect(light, `seed ${seed}, age ${impact.age}`).toBeLessThanOrEqual(previous);
         previous = light;
@@ -276,26 +255,27 @@ describe("RainPanelComponent", () => {
     }
   });
 
-  it("crossfades compact inner arcs into outer arcs on the landing row", () => {
-    const draw = (age: number) => rasterizeRainWater(60, 4, {
-      drops: [], stars: [], splashes: [{ col: 35.5, depth: 2, age, seed: 6547 }], waterMarks: [],
-    }).filter((cell) => cell.ink === "ripple");
-    const inner = draw(0.4);
-    const overlap = draw(0.7);
-    const outer = draw(1.1);
-    expect(inner.map((cell) => cell.glyph)).toEqual(["⟮", "⟯"]);
-    expect(overlap.map((cell) => cell.glyph)).toEqual(["(", "⟮", "⟯", ")"]);
-    expect(outer.map((cell) => cell.glyph)).toEqual(["(", ")"]);
-    expect(outer.map((cell) => cell.col)).toEqual([33, 37]);
-    expect([...inner, ...overlap, ...outer].every((cell) => cell.row === 3)).toBe(true);
-    expect(draw(2)).toEqual([]);
+  it("renders an accumulated trace on the water and gives a fresh contact priority", () => {
+    const trace = { col: 35, row: 3, light: 0.2 };
+    const waterMarks = [{ col: 35.5, depth: 2, age: 0.05, seed: 6547 }];
+    const draw = (marks: typeof waterMarks) => rasterizeRainWater(60, 4, {
+      drops: [], stars: [], wetTraces: [trace], waterMarks: marks,
+    }).find((cell) => cell.col === trace.col && cell.row === trace.row);
+    expect(draw([])).toMatchObject({ ...trace, glyph: "-", ink: "water" });
+    expect(draw(waterMarks)).toMatchObject({ glyph: "·", ink: "ripple" });
+
+    const lines = renderRainPanelLines({
+      width: 60, frameEnabled: false, rainRows: 4,
+      snapshot: { drops: [], stars: [], wetTraces: [trace] },
+    });
+    expect(lines[3].slice(33, 38)).toBe("  -  ");
   });
 
-  it("keeps seeded overlapping arc waves stable across redraws and impact order", () => {
+  it("keeps seeded overlapping reflection disturbances stable across redraws and impact order", () => {
     const impacts = [
-      { col: 30.5, depth: 1, age: 0.9, seed: 42 },
-      { col: 31.5, depth: 1, age: 0.55, seed: 17 },
-      { col: 32.5, depth: 2, age: 0.7, seed: 6547 },
+      { col: 5.5, depth: 1, age: 0.9, seed: 42 },
+      { col: 6.5, depth: 1, age: 0.55, seed: 17 },
+      { col: 7.5, depth: 2, age: 0.7, seed: 6547 },
     ];
     const draw = (records: typeof impacts) => renderRainPanelLines({
       width: 60, frameEnabled: false, rainRows: 4,
@@ -307,7 +287,6 @@ describe("RainPanelComponent", () => {
       const first = draw(impacts);
       expect(draw(impacts)).toEqual(first);
       expect(draw([...impacts].reverse())).toEqual(first);
-      expect(draw([...impacts, ...impacts])).toEqual(first);
       expect(random).not.toHaveBeenCalled();
     } finally {
       random.mockRestore();
@@ -321,34 +300,34 @@ describe("RainPanelComponent", () => {
       palette: createTokyoNightPalette(theme),
       snapshot: { drops: [], stars: [], waterMarks: [{ col: 35.5, depth: 2, age, seed: 6547 }] },
     }).at(-1);
-    const peak = theme.fg("thinkingLow", "*");
+    const peak = theme.fg("thinkingLow", "·");
     expect(draw(0.05)).toContain(peak);
-    expect(draw(0.24)).toContain("*");
+    expect(draw(0.24)).toContain("·");
     expect(draw(0.24)).not.toContain(peak);
   });
 
-  it("styles arc waves with the low water color base and preserves the palette fallbacks", () => {
+  it("styles the contact with the low water color base and preserves the palette fallbacks", () => {
     const rippleShade = vi.fn((_wave: number, _water: number, glyph: string) => glyph);
     const rainShade = vi.fn((_role: string, _light: number, glyph: string) => glyph);
     const fg = vi.fn((_role: string, glyph: string) => glyph);
     const render = (ink: ReturnType<typeof createTokyoNightPalette>) => renderRainPanelLines({
       width: 60, frameEnabled: false, rainRows: 4, palette: ink,
-      snapshot: { drops: [], stars: [], splashes: [{ col: 34.5, depth: 1, age: 0.9, seed: 6547 }] },
+      snapshot: { drops: [], stars: [], waterMarks: [{ col: 34.5, depth: 1, age: 0.1, seed: 6547 }] },
     });
     render({ ...palette, rippleShade });
-    expect(rippleShade).toHaveBeenCalledWith(expect.any(Number), 0.12, expect.stringMatching(/^[()⟮⟯]$/), "water");
+    expect(rippleShade).toHaveBeenCalledWith(expect.any(Number), 0.12, "·", "water");
     render({ ...palette, rainShade });
-    expect(rainShade).toHaveBeenCalledWith("water", expect.any(Number), expect.stringMatching(/^[()⟮⟯]$/));
+    expect(rainShade).toHaveBeenCalledWith("water", expect.any(Number), "·");
     render({ ...palette, rainShade: undefined, fg });
-    expect(fg).toHaveBeenCalledWith("rain", expect.stringMatching(/^[()⟮⟯]$/));
+    expect(fg).toHaveBeenCalledWith("rain", "·");
   });
 
-  it("refreshes a static frame when only the approved ripple base color changes", () => {
+  it("refreshes a static frame when only the contact base color changes", () => {
     let color = 1;
     const config = makeConfig(true, false);
     config.get.mockReturnValue({ ...config.get(), rainRows: 10 });
     const rain = { frameRevision: 1, setRenderWidth() {}, getSnapshot: () => ({
-      drops: [], stars: [], splashes: [{ col: 30.5, depth: 2, age: 0.9, seed: 6547 }],
+      drops: [], stars: [], waterMarks: [{ col: 30.5, depth: 2, age: 0.1, seed: 6547 }],
     }) };
     const panel = new RainPanelComponent({ requestRender() {} } as any, {
       config: config as any, rain: rain as any,
@@ -370,9 +349,9 @@ describe("RainPanelComponent", () => {
   it("disturbs moonlight locally without changing a distant reflection", () => {
     const draw = (col?: number) => renderRainPanelLines({
       width: 60, frameEnabled: false, rainRows: 10,
-      palette: { ...createTokyoNightPalette(readTokyoTheme("dark")), rippleShade: (_wave, _water, glyph) => " ".repeat(glyph.length) },
+      palette: createTokyoNightPalette(readTokyoTheme("dark")),
       snapshot: { time: 1, drops: [], stars: [],
-        splashes: col === undefined ? [] : [{ col, depth: 1, age: 0.65, seed: 6547 }] },
+        splashes: col === undefined ? [] : [{ col, depth: 1, age: 0.65, seed: 6547 }], waterMarks: [] },
     }).slice(6);
     const resting = draw();
     expect(draw(7.5)[2]).not.toBe(resting[2]);
@@ -667,7 +646,7 @@ describe("RainPanelComponent", () => {
     });
     expect(lines).toHaveLength(8);
     expect(lines.every((line) => visibleWidth(line) === 80)).toBe(true);
-    expect(lines.join("\n").replaceAll("\u{1f319}", "")).toMatch(/^[\x20-\x7e\n·•⟮⟯]+$/);
+    expect(lines.join("\n").replaceAll("\u{1f319}", "")).toMatch(/^[\x20-\x7e\n·]+$/);
     expect(lines.slice(1, 4).join("\n")).toContain("\\");
     expect(lines.slice(5).join("")).toMatch(/[.-]/);
   });

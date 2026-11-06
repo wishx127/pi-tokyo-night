@@ -48,8 +48,7 @@
     "!extensions/**/*.spec.ts",
     "README.md",
     "README.zh-CN.md",
-    "assets/screenshot.png",
-    "assets/rain-moon/*.png"
+    "assets/screenshot.png"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
