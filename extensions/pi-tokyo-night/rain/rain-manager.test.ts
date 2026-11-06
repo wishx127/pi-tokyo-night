@@ -459,6 +459,37 @@ describe("RainAnimationManager", () => {
     expect(travel(10000)).toBeCloseTo(immediate, 8);
   });
 
+  it("retains every live arc through the restored fade regardless of its seed", () => {
+    let seed = 12345;
+    vi.spyOn(Math, "random").mockImplementation(() => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) | 0;
+      return (seed >>> 0) / 4294967296;
+    });
+    const manager = new RainAnimationManager(
+      makeConfig({ rainRows: 4, rainTickMs: 50, maxRainDrops: 25 }),
+      { requestRender: vi.fn() },
+    );
+    manager.start();
+    manager.setRenderWidth(60, 4);
+    let checked = 0;
+    try {
+      for (let tick = 0; tick < 160; tick++) {
+        const before = manager.getSnapshot().splashes ?? [];
+        vi.advanceTimersByTime(50);
+        const after = manager.getSnapshot().splashes ?? [];
+        for (const impact of before) {
+          if (impact.age + 0.05 >= rainRippleLife(impact.depth) - 0.000001) continue;
+          expect(after.some((candidate) => candidate.seed === impact.seed && candidate.col === impact.col)).toBe(true);
+          checked++;
+        }
+        expect(after.every((impact) => impact.age < rainRippleLife(impact.depth))).toBe(true);
+      }
+      expect(checked).toBeGreaterThan(0);
+    } finally {
+      manager.stop();
+    }
+  });
+
   it("keeps impact history bounded and snapshots isolated during sustained rain", () => {
     const manager = new RainAnimationManager(
       makeConfig({ rainRows: 8, rainTickMs: 50, maxRainDrops: 100 }),
@@ -469,7 +500,7 @@ describe("RainAnimationManager", () => {
     const frame = manager.getSnapshot();
     expect(frame.splashes!.length).toBeGreaterThan(0);
     expect(frame.splashes!.length).toBeLessThanOrEqual(256);
-    expect(frame.splashes!.every((splash) => splash.age >= 0 && splash.age < rainRippleLife(splash.depth, splash.seed))).toBe(true);
+    expect(frame.splashes!.every((splash) => splash.age >= 0 && splash.age < rainRippleLife(splash.depth))).toBe(true);
     expect(frame.waterMarks!.length).toBeGreaterThan(0);
     expect(frame.waterMarks!.length).toBeLessThanOrEqual(1024);
     expect(frame.waterMarks!.every((mark) => mark.age >= 0 && mark.age < 0.72)).toBe(true);

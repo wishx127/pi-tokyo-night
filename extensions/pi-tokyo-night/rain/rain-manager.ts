@@ -431,7 +431,7 @@ export class RainAnimationManager {
       }
       this.splashes = this.splashes
         .map((splash) => ({ ...splash, age: splash.age + dt }))
-        .filter((splash) => splash.age < rainRippleLife(splash.depth, splash.seed));
+        .filter((splash) => splash.age < rainRippleLife(splash.depth));
       this.waterMarks = this.waterMarks
         .map((mark) => ({ ...mark, age: mark.age + dt }))
         .filter((mark) => mark.age < RAIN_CONTACT_LIFE);

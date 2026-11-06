@@ -126,7 +126,7 @@ describe("RainPanelComponent", () => {
     }
   });
 
-  it("draws G's character-density wave around a centered ASCII contact in four rows", () => {
+  it("draws restored inner and outer arcs around a centered ASCII contact in four rows", () => {
     const draw = (age: number) => {
       const impact = { col: 34.5, depth: 1, age, seed: 6547 };
       return renderRainPanelLines({
@@ -136,8 +136,8 @@ describe("RainPanelComponent", () => {
     };
     expect(draw(0.05)[2][34]).toBe("*");
     const wave = draw(0.7).slice(2).map((line) => line.slice(29, 40)).join("");
-    expect(wave).toMatch(/[,;:+*\-]/);
-    expect(wave).not.toMatch(/[()⟮⟯o_=~•·]/);
+    expect(wave).toMatch(/[()⟮⟯]/);
+    expect(wave).not.toMatch(/[o_=~•·,:;+]/);
     expect(draw(0.7).every((line) => visibleWidth(line) === 60)).toBe(true);
     expect(draw(2.3).every((line) => line.slice(30).trim() === "")).toBe(true);
     expect(draw(2.3).slice(2).some((line) => line.trim() !== "")).toBe(true);
@@ -226,7 +226,7 @@ describe("RainPanelComponent", () => {
     expect(draw(0.72).every((line) => line.trim() === "")).toBe(true);
   });
 
-  it.each([4, 10])("fades a single centered ASCII glint and clears the %i-row density wave", (rainRows) => {
+  it.each([4, 10])("fades a single centered ASCII glint and clears the %i-row arc wave", (rainRows) => {
     const draw = (age: number) => {
       const impact = { col: 35.5, depth: 2, age, seed: 6547 };
       return renderRainPanelLines({
@@ -236,8 +236,8 @@ describe("RainPanelComponent", () => {
     };
     expect(draw(0.05)).toBe("  *  ");
     expect(draw(0.4)[2]).toBe("*");
-    expect(draw(0.9)).toMatch(/[,;:+*\-]/);
-    expect(draw(0.9)).not.toMatch(/[()⟮⟯o_=~•·]/);
+    expect(draw(0.9)).toMatch(/[()⟮⟯]/);
+    expect(draw(0.9)).not.toMatch(/[o_=~•·,:;+]/);
     expect(draw(2.3)).toBe("     ");
   });
 
@@ -254,13 +254,13 @@ describe("RainPanelComponent", () => {
       for (let offsetMs = 0; offsetMs < tickMs; offsetMs++) {
         const frames = [0, 1, 2, 3].map((tick) => draw((offsetMs + tick * tickMs) / 1000, seed));
         expect(frames[0], `seed ${seed}, offset ${offsetMs}ms`).toBe("  *  ");
-        expect(frames.every((frame) => /^[ ,:;+*\-]{2}\*[ ,:;+*\-]{2}$/.test(frame))).toBe(true);
+        expect(frames.every((frame) => /^[ ()⟮⟯]{2}\*[ ()⟮⟯]{2}$/.test(frame))).toBe(true);
       }
       expect(draw(2.3, seed)).toBe("     ");
     }
   });
 
-  it("never flashes the center again when the contact fades into the density wave", () => {
+  it("never flashes the center again when the contact fades into the arc wave", () => {
     for (const seed of [0, 42, 6547, 2147483647]) {
       let previous = 1;
       for (let tick = 0; tick <= 110; tick++) {
@@ -268,6 +268,7 @@ describe("RainPanelComponent", () => {
         const center = rasterizeRainWater(60, 4, {
           drops: [], stars: [], splashes: [impact], waterMarks: [impact],
         }).find((cell) => cell.col === 34 && cell.row === Math.floor(rainLandingRow(4, impact.depth)));
+        if (center) expect(center.glyph).toBe("*");
         const light = center?.light ?? 0;
         expect(light, `seed ${seed}, age ${impact.age}`).toBeLessThanOrEqual(previous);
         previous = light;
@@ -275,26 +276,22 @@ describe("RainPanelComponent", () => {
     }
   });
 
-  it("gives seeded waves different footprints and fade times within the four-row water", () => {
-    const spans = new Set<number>();
-    let visible = 0, cleared = 0, extended = false;
-    for (let seed = 0; seed < 128; seed++) {
-      const draw = (age: number) => rasterizeRainWater(80, 4, {
-        drops: [], stars: [], splashes: [{ col: 40.5, depth: 1, age, seed }], waterMarks: [],
-      }).filter((cell) => cell.ink === "ripple");
-      const peak = draw(0.8);
-      if (peak.length) spans.add(Math.max(...peak.map((cell) => cell.col)) - Math.min(...peak.map((cell) => cell.col)));
-      extended ||= new Set(peak.map((cell) => cell.row)).size > 1;
-      if (draw(1.45).length) visible++;
-      else cleared++;
-    }
-    expect(spans.size).toBeGreaterThanOrEqual(3);
-    expect(visible).toBeGreaterThan(0);
-    expect(cleared).toBeGreaterThan(0);
-    expect(extended).toBe(true);
+  it("crossfades compact inner arcs into outer arcs on the landing row", () => {
+    const draw = (age: number) => rasterizeRainWater(60, 4, {
+      drops: [], stars: [], splashes: [{ col: 35.5, depth: 2, age, seed: 6547 }], waterMarks: [],
+    }).filter((cell) => cell.ink === "ripple");
+    const inner = draw(0.4);
+    const overlap = draw(0.7);
+    const outer = draw(1.1);
+    expect(inner.map((cell) => cell.glyph)).toEqual(["⟮", "⟯"]);
+    expect(overlap.map((cell) => cell.glyph)).toEqual(["(", "⟮", "⟯", ")"]);
+    expect(outer.map((cell) => cell.glyph)).toEqual(["(", ")"]);
+    expect(outer.map((cell) => cell.col)).toEqual([33, 37]);
+    expect([...inner, ...overlap, ...outer].every((cell) => cell.row === 3)).toBe(true);
+    expect(draw(2)).toEqual([]);
   });
 
-  it("keeps seeded overlapping density waves stable across redraws and impact order", () => {
+  it("keeps seeded overlapping arc waves stable across redraws and impact order", () => {
     const impacts = [
       { col: 30.5, depth: 1, age: 0.9, seed: 42 },
       { col: 31.5, depth: 1, age: 0.55, seed: 17 },
@@ -330,7 +327,7 @@ describe("RainPanelComponent", () => {
     expect(draw(0.24)).not.toContain(peak);
   });
 
-  it("styles density waves with the low water color base and preserves the palette fallbacks", () => {
+  it("styles arc waves with the low water color base and preserves the palette fallbacks", () => {
     const rippleShade = vi.fn((_wave: number, _water: number, glyph: string) => glyph);
     const rainShade = vi.fn((_role: string, _light: number, glyph: string) => glyph);
     const fg = vi.fn((_role: string, glyph: string) => glyph);
@@ -339,11 +336,11 @@ describe("RainPanelComponent", () => {
       snapshot: { drops: [], stars: [], splashes: [{ col: 34.5, depth: 1, age: 0.9, seed: 6547 }] },
     });
     render({ ...palette, rippleShade });
-    expect(rippleShade).toHaveBeenCalledWith(expect.any(Number), 0.12, expect.stringMatching(/^[,:;+*\-]$/), "water");
+    expect(rippleShade).toHaveBeenCalledWith(expect.any(Number), 0.12, expect.stringMatching(/^[()⟮⟯]$/), "water");
     render({ ...palette, rainShade });
-    expect(rainShade).toHaveBeenCalledWith("water", expect.any(Number), expect.stringMatching(/^[,:;+*\-]$/));
+    expect(rainShade).toHaveBeenCalledWith("water", expect.any(Number), expect.stringMatching(/^[()⟮⟯]$/));
     render({ ...palette, rainShade: undefined, fg });
-    expect(fg).toHaveBeenCalledWith("rain", expect.stringMatching(/^[,:;+*\-]$/));
+    expect(fg).toHaveBeenCalledWith("rain", expect.stringMatching(/^[()⟮⟯]$/));
   });
 
   it("refreshes a static frame when only the approved ripple base color changes", () => {

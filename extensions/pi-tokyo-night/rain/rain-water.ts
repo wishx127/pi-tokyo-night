@@ -1,17 +1,27 @@
 import type { RainFrameSnapshot, RainSplash } from "./rain-manager";
-import { RAIN_CONTACT_LIFE, rainHorizon, rainLandingRow, rainMoonBounds, rainRippleLife, rainRippleTraits, rainVariation } from "./rain-geometry";
+import { RAIN_CONTACT_LIFE, rainHorizon, rainLandingRow, rainMoonBounds, rainRippleLife } from "./rain-geometry";
 
 type WaterCell = { col: number; row: number; light: number; glyph: string; ink: "moon" | "ripple" };
 
 const clamp = (value: number, max = 1) => Math.max(0, Math.min(max, value));
 const smooth = (value: number) => { const t = clamp(value); return t * t * (3 - 2 * t); };
 
+function variation(seed: number, salt: number): number {
+  let value = Math.imul((seed >>> 0) ^ (salt + 0x9e3779b9), 0x21f0aaad);
+  value = Math.imul(value ^ (value >>> 15), 0x735a2d97);
+  return ((value ^ (value >>> 16)) >>> 0) / 4294967296;
+}
+
 function isVisibleImpact(impact: RainSplash, width: number): boolean {
   return Number.isFinite(impact.col) && impact.col >= 0 && impact.col < width &&
     Number.isFinite(impact.depth) && Number.isFinite(impact.age) && impact.age >= 0;
 }
 
-/** Sample G's shallow character-density wave over the reflected moonlight. */
+function arcDirection(glyph: string): string {
+  return glyph === "⟮" ? "(" : glyph === "⟯" ? ")" : glyph;
+}
+
+/** Draw brief contacts and compact waves over a moon reflection that bends as waves pass. */
 export function rasterizeRainWater(width: number, rows: number, snapshot: RainFrameSnapshot): WaterCell[] {
   const horizon = rainHorizon(rows);
   const waterRows = rows - horizon;
@@ -19,6 +29,7 @@ export function rasterizeRainWater(width: number, rows: number, snapshot: RainFr
 
   const contact = new Float64Array(width * waterRows);
   const crests = new Float64Array(contact.length);
+  const arcCenters = new Int32Array(contact.length);
   const interiors = new Uint8Array(contact.length);
   const tilt = new Float64Array(contact.length);
   const glyphs: Array<string | undefined> = new Array(contact.length);
@@ -26,13 +37,23 @@ export function rasterizeRainWater(width: number, rows: number, snapshot: RainFr
   const moonCenter = moon.col + moon.columns / 2;
   const time = Number.isFinite(snapshot.time) ? snapshot.time! : 0;
   const index = (col: number, row: number) => (row - horizon) * width + col;
-  const raise = (col: number, row: number, glyph: string, light: number) => {
+  const strengthAt = (depth: number, seed: number) => 0.18 * depth + 0.64 * variation(seed, 41);
+  const raise = (col: number, row: number, glyph: string, light: number, center: number) => {
     if (col < 0 || col >= width) return;
     const cell = index(col, row);
     const previous = glyphs[cell];
     if (light < crests[cell] || (light === crests[cell] && previous !== undefined && glyph >= previous)) return;
     crests[cell] = light;
+    arcCenters[cell] = center;
     glyphs[cell] = glyph;
+  };
+  const raisePair = (col: number, row: number, offset: number, left: string, right: string, light: number) => {
+    if (light < 0.055) return;
+    raise(col - offset, row, left, light, col);
+    raise(col + offset, row, right, light, col);
+    for (let x = Math.max(0, col - offset + 1); x < Math.min(width, col + offset); x++) {
+      interiors[index(x, row)] = 1;
+    }
   };
 
   for (const impact of snapshot.waterMarks ?? snapshot.splashes ?? []) {
@@ -47,49 +68,30 @@ export function rasterizeRainWater(width: number, rows: number, snapshot: RainFr
   for (const splash of snapshot.splashes ?? []) {
     if (!isVisibleImpact(splash, width)) continue;
     const depth = clamp(splash.depth, 2);
-    const life = rainRippleLife(depth, splash.seed);
+    const life = rainRippleLife(depth);
     const age = splash.age;
     if (age >= life) continue;
 
     const seed = splash.seed ?? Math.floor(splash.col * 12345);
-    const traits = rainRippleTraits(seed);
+    const strength = strengthAt(depth, seed);
     const center = rainLandingRow(rows, depth);
     const row = Math.floor(center), col = Math.floor(splash.col);
-    const travel = clamp((age - 0.12) * traits.spread / (life * 0.80));
-    const radius = (0.53 + 1.16 * (1 - (1 - travel) ** 2)) * traits.size;
+    const travel = clamp((age - 0.12) / (life * 0.80));
+    const radius = 0.53 + 1.47 * (1 - (1 - travel) ** 2);
     const flash = smooth((age - 0.12) / 0.22);
     const fade = 1 - smooth((age - life * 0.38) / (life * 0.62));
-    const envelope = 0.78 * flash * fade;
-    const reach = Math.ceil(radius + 0.5);
-    const waveGlyphs = [",", ":", ";", "+", "*", "-"];
-    for (let y = Math.max(horizon, row - 1); y <= Math.min(rows - 1, row + 1); y++) {
-      for (let x = Math.max(0, col - reach); x <= Math.min(width - 1, col + reach); x++) {
-        // Keep the fading contact hollow instead of relighting it with a crest.
-        if (x === col && y === row) continue;
-        const salt = (y - row + 16) * 101 + x - col + 32;
-        const grain = 0.55 + 0.45 * rainVariation(seed, salt);
-        let coverage = 0;
-        // Integrate the wave over the cell so thin crests survive a four-row grid.
-        for (let sy = 0; sy < 3; sy++) for (let sx = 0; sx < 3; sx++) {
-          const dx = x + (sx + 0.5) / 3 - col - 0.5;
-          const dy = (y + (sy + 0.5) / 3 - row - 0.5) * 2.2;
-          const distance = Math.hypot(dx, dy) / radius;
-          if (distance < 0.36 || distance > 1.18) continue;
-          coverage += Math.exp(-(((distance - 0.78) / 0.24) ** 2));
-        }
-        const light = coverage / 9 * envelope * grain * 1.6;
-        if (light < 0.055) continue;
-        const glyph = waveGlyphs[Math.floor(rainVariation(seed, salt + 993) * waveGlyphs.length)];
-        raise(x, y, glyph, Math.min(0.5, light));
-        interiors[index(x, y)] = 1;
-      }
-    }
+    const envelope = flash * fade * (0.70 + 0.34 * strength);
+    // Blend the two character-grid positions as the wave travels between them.
+    const outer = smooth((radius - 1.32) / 0.42);
+    const edge = 0.49 * envelope;
+    raisePair(col, row, 1, "⟮", "⟯", edge * (1 - outer));
+    raisePair(col, row, 2, "(", ")", edge * outer * 0.78);
 
     if (!moon.curved) continue;
-    const stretch = 1.8 + rainVariation(seed, 29) * 0.48;
-    const thickness = 0.45 + rainVariation(seed, 53) * 0.14;
-    const left = Math.max(0, col - reach);
-    const right = Math.min(width - 1, col + reach);
+    const stretch = 1.8 + variation(seed, 29) * 0.48;
+    const thickness = 0.45 + variation(seed, 53) * 0.14;
+    const left = Math.max(0, col - 2);
+    const right = Math.min(width - 1, col + 2);
     for (let x = left; x <= right; x++) {
       if (Math.abs(x + 0.5 - moonCenter) >= 9) continue;
       const dx = x + 0.5 - splash.col;
@@ -136,5 +138,18 @@ export function rasterizeRainWater(width: number, rows: number, snapshot: RainFr
     }
   }
 
-  return cells;
+  // Where two waves touch, keep the outer edge without leaving a stray point.
+  let previous: WaterCell | undefined;
+  let previousDirection: string | undefined;
+  for (const cell of cells) {
+    const direction = arcDirection(cell.glyph);
+    if (previous && direction === previousDirection && cell.row === previous.row && cell.col === previous.col + 1 &&
+      arcCenters[index(cell.col, cell.row)] !== arcCenters[index(previous.col, previous.row)]) {
+      if (direction === "(") cell.light = 0;
+      if (direction === ")") previous.light = 0;
+    }
+    previous = cell;
+    previousDirection = direction;
+  }
+  return cells.filter((cell) => cell.light > 0);
 }
