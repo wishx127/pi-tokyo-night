@@ -50,6 +50,7 @@ import {
   type LiveSessionUsage,
 } from "./ui/status-bar";
 import { StatusRenderCache } from "./ui/status-render-cache";
+import { renderExtensionStatusLines } from "./ui/extension-statuses";
 import { RefreshScheduler } from "./ui/refresh-scheduler";
 import { RenderRecoveryCoordinator } from "./ui/render-recovery";
 import {
@@ -1032,6 +1033,8 @@ export function registerTokyoNightExtension(
       scheduleTick: (tick, intervalMs) => session.refreshScheduler!.repeat(intervalMs, tick),
     });
 
+    const renderFooterLines = (footerData: ReadonlyFooterDataProvider, width: number, theme: Theme) =>
+      renderExtensionStatusLines(footerData.getExtensionStatuses?.(), width, theme);
     const rainFactory = (tui: TUI): RainPanelComponent => {
       const panel = new RainPanelComponent(tui, {
         config: configManager,
@@ -1063,10 +1066,15 @@ export function registerTokyoNightExtension(
             workingLayout.setText(message ?? "");
             measuredWorkingMessage = message;
           }
+          // The owned footer renders extension statuses below the dock in
+          // both regular and fullscreen layouts.
+          const footerRows = session.footerData
+            ? renderFooterLines(session.footerData, width, session.ui.theme).length
+            : 0;
           const workingRows = Math.max(2, 1 + workingLayout.render(width).length);
           // One above-widget separator and one history row, plus the loader
           // (including wrapped tool names), must stay below the animated rows.
-          return Math.max(0, Math.floor(terminalRows) - editorRows - statusRows - workingRows - 2);
+          return Math.max(0, Math.floor(terminalRows) - editorRows - statusRows - footerRows - workingRows - 2);
         },
       });
       if (isCurrent(session)) session.resources.rainPanel = panel;
@@ -1088,7 +1096,7 @@ export function registerTokyoNightExtension(
         dispose: () => { if (session.resources.statusTui === tui) session.resources.statusTui = null; },
       };
     };
-    const footerFactory = (_tui: TUI, _theme: Theme, footerData: ReadonlyFooterDataProvider) => {
+    const footerFactory = (_tui: TUI, theme: Theme, footerData: ReadonlyFooterDataProvider) => {
       session.footerData = footerData;
       session.resources.footerOwned = true;
       syncFooterBranch(session, footerData);
@@ -1109,7 +1117,7 @@ export function registerTokyoNightExtension(
       session.resources.footerSubscription = subscription;
       return {
         invalidate: () => session.requestStatusRender?.(),
-        render: () => [],
+        render: (width: number): string[] => renderFooterLines(footerData, width, session.ui.theme ?? theme),
         dispose: () => subscription.dispose(),
       };
     };

@@ -1919,6 +1919,63 @@ describe("public layout and lifecycle contract", () => {
     expect(fixture.ui.setFooter).not.toHaveBeenCalledWith(undefined);
   });
 
+  it("renders extension statuses from setStatus as one footer line", async () => {
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const statuses = new Map<string, string>();
+    const footerData = {
+      getGitBranch: () => "main",
+      getExtensionStatuses: () => statuses,
+      onBranchChange: () => () => {},
+    } as any;
+    const footer = fixture.footerFactory({ requestRender: vi.fn() }, theme, footerData);
+
+    expect(footer.render(80)).toEqual([]);
+
+    statuses.set("sandbox", "🔒 Sandbox: 24 domains,\n20 write paths");
+    statuses.set("mcp", "MCP: 1 server enabled");
+    expect(footer.render(80)).toEqual([
+      "MCP: 1 server enabled 🔒 Sandbox: 24 domains, 20 write paths",
+    ]);
+    expect(footer.render(12).map((line: string) => line.replace(/\x1b\[[0-9;]*m/g, ""))).toEqual(["MCP: 1 se..."]);
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it.each(["regular", "fullscreen"] as const)("budgets the extension status footer row out of the rain panel (%s)", async (mode) => {
+    vi.useFakeTimers();
+    vi.mocked(TokyoConfigManager.prototype.read).mockImplementation(async function (this: TokyoConfigManager) {
+      this.set("rainRows", 10);
+    });
+    const fixture = makeFixture();
+    await fixture.emit("session_start", {}, fixture.ctx);
+    const tui = {
+      requestRender: vi.fn(),
+      ...(mode === "fullscreen" ? { mode } : {}),
+      terminal: { rows: 16, columns: 40 },
+    };
+    const editor = fixture.editorFactory(tui, { borderColor: () => "" }, {});
+    const rain = fixture.widgets.get("tokyo-rain")(tui);
+    const status = fixture.widgets.get("tokyo-status")(tui, theme);
+    const statuses = new Map<string, string>();
+    const footer = fixture.footerFactory(tui, theme, {
+      getGitBranch: () => "main",
+      getExtensionStatuses: () => statuses,
+      onBranchChange: () => () => {},
+    } as any);
+    editor.setText(Array.from({ length: 4 }, (_, index) => `input ${index}`).join("\n"));
+    const dock = () => [...rain.render(40), ...editor.render(40), ...status.render(40), ...footer.render(40)];
+
+    const withoutStatuses = dock();
+    statuses.set("mcp", "MCP: 1 server enabled");
+    const withStatuses = dock();
+
+    expect(withStatuses).toHaveLength(withoutStatuses.length);
+    expect(withStatuses.at(-1)).toBe("MCP: 1 server enabled");
+    // Leave space for the host widget separator, working indicator and history.
+    expect(withStatuses.length + 4).toBeLessThanOrEqual(16);
+    await fixture.emit("session_shutdown", {}, fixture.ctx);
+  });
+
   it("does not open a second Studio while the first one is active", async () => {
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);

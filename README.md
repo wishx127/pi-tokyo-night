@@ -34,7 +34,7 @@ Restart Pi, then open `/tokyo-night` to choose Dark, Light, or Automatic and cus
 
 **Animated rain panel** — Cyan raindrops drift beneath a crescent moon and purple stars, with speed and density responding to Pi activity.
 
-**Powerline status bar** — See the model, thinking level, path, Git branch, provider limits, tokens, cost, and context progress at a glance.
+**Powerline status bar** — See the model, thinking level, path, Git branch, provider limits, tokens, cost, and context progress at a glance. Statuses from other extensions (`ctx.ui.setStatus`) appear on one line below it, as in Pi's default footer.
 
 **Neon Studio** — Open `/tokyo-night` to preview Dark and Light themes. Automatic immediately follows the current IDE terminal background and saves the light/dark pair for the next Pi start. You can also customize the frame, rain, quota, icons, and status modules live, and browse local token trends and model distribution.
 
