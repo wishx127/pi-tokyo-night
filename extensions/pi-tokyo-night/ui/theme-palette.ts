@@ -23,7 +23,8 @@ export type TokyoNightForegroundRole =
   | "statusLimit"
   | "statusTokens"
   | "statusCost"
-  | "statusContext";
+  | "statusContext"
+  | "statusExtensions";
 
 export type TokyoNightBackgroundRole =
   | "model"
@@ -87,6 +88,13 @@ const WORKING_TEXT_COLORS = {
   },
 } as const satisfies Record<"dark" | "light", Record<"base" | "shimmer", RgbColor>>;
 
+// Extension statuses sit on the terminal surface inside the frame, so they use
+// Tokyo Night's muted "dark5" tone per variant instead of a static chrome color.
+const STATUS_EXTENSION_COLORS = {
+  dark: [115, 122, 162], // #737aa2
+  light: [104, 112, 154], // #68709a
+} as const satisfies Record<"dark" | "light", RgbColor>;
+
 const STATIC_BACKGROUND_COLORS: Record<
   TokyoNightBackgroundRole,
   RgbColor
@@ -138,9 +146,8 @@ function renderChromeTransition(
 export function createTokyoNightPalette(
   theme: Theme,
 ): TokyoNightThemePalette {
-  const workingColors = theme.name?.includes("light")
-    ? WORKING_TEXT_COLORS.light
-    : WORKING_TEXT_COLORS.dark;
+  const variant = theme.name?.includes("light") ? "light" : "dark";
+  const workingColors = WORKING_TEXT_COLORS[variant];
 
   return {
     fg: (role, text) => {
@@ -149,6 +156,9 @@ export function createTokyoNightPalette(
       }
       if (role === "workingTextShimmer") {
         return renderRgbForeground(workingColors.shimmer, text);
+      }
+      if (role === "statusExtensions") {
+        return renderRgbForeground(STATUS_EXTENSION_COLORS[variant], text);
       }
 
       const staticColor = STATIC_FOREGROUND_COLORS[role];

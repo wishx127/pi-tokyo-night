@@ -1,30 +1,45 @@
-import type { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
+import type { TokyoNightThemePalette } from "./theme-palette";
 
-type StatusTheme = Pick<Theme, "fg">;
+// CSI (colors, cursor) and OSC/APC (hyperlinks, markers) sequences. Kept local
+// because older supported pi-tui releases do not export a strip helper.
+const TERMINAL_SEQUENCE = /\x1b(?:\[[0-?]*[ -/]*[@-~]|[\]_][^\x07\x1b]*(?:\x07|\x1b\\))/g;
 
-/** Collapse control whitespace so one status can never span multiple rows. */
+/** Drop foreign styling and control whitespace so one status stays one themed row. */
 function sanitizeStatusText(text: string): string {
   return text
+    .replace(TERMINAL_SEQUENCE, "")
     .replace(/[\r\n\t]/g, " ")
     .replace(/ +/g, " ")
     .trim();
 }
 
 /**
- * Render `ctx.ui.setStatus` entries the way Pi's built-in footer does: one
- * line, sorted by key, sanitized, joined by spaces and truncated with a dim
- * ellipsis. Each status keeps its own ANSI styling. Empty maps render nothing.
+ * Join `ctx.ui.setStatus` entries the way Pi's built-in footer does: sorted by
+ * key, sanitized and space-joined. Returns "" when there is nothing to show, so
+ * the result doubles as a render-cache key.
  */
-export function renderExtensionStatusLines(
+export function formatExtensionStatusText(
   statuses: ReadonlyMap<string, string> | undefined,
-  width: number,
-  theme: StatusTheme,
-): string[] {
-  if (!statuses || statuses.size === 0 || width <= 0) return [];
-  const line = Array.from(statuses.entries())
+): string {
+  if (!statuses || statuses.size === 0) return "";
+  return Array.from(statuses.entries())
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([, text]) => sanitizeStatusText(text))
+    .filter((text) => text.length > 0)
     .join(" ");
-  return [truncateToWidth(line, width, theme.fg("dim", "..."))];
+}
+
+/** Render the joined status text as one Tokyo Night status row, or nothing. */
+export function renderExtensionStatusLines(
+  text: string,
+  width: number,
+  palette: TokyoNightThemePalette,
+): string[] {
+  if (text.length === 0 || width <= 0) return [];
+  return [truncateToWidth(
+    palette.fg("statusExtensions", text),
+    width,
+    palette.fg("statusExtensions", "..."),
+  )];
 }
