@@ -50,6 +50,7 @@ import {
   type LiveSessionUsage,
 } from "./ui/status-bar";
 import { StatusRenderCache } from "./ui/status-render-cache";
+import { formatExtensionStatusText, renderExtensionStatusLines } from "./ui/extension-statuses";
 import { RefreshScheduler } from "./ui/refresh-scheduler";
 import { RenderRecoveryCoordinator } from "./ui/render-recovery";
 import {
@@ -58,6 +59,7 @@ import {
 } from "./ui/frame-layout";
 import {
   createTokyoNightPalette,
+  DEFAULT_TOKYO_NIGHT_PALETTE,
   type TokyoNightThemePalette,
 } from "./ui/theme-palette";
 import { renderWorkingText } from "./ui/working-shimmer";
@@ -966,6 +968,11 @@ export function registerTokyoNightExtension(
       const codexUsage = codexUsageStore.getSnapshot();
       expireKimiSnapshot(session);
       const kimiUsage = session.kimiUsageStore.getSnapshot();
+      // Statuses from ctx.ui.setStatus join the framed status body; only the
+      // owned footer exposes them, and another footer renders its own.
+      const extensionStatuses = formatExtensionStatusText(
+        session.footerData?.getExtensionStatuses?.(),
+      );
 
       return session.statusRenderCache.render({
         width: outputWidth,
@@ -978,6 +985,7 @@ export function registerTokyoNightExtension(
         codexUsage,
         kimiUsage,
         liveUsageRevision: session.liveUsageRevision,
+        extensionStatuses,
       }, () => {
         void updateBranch(session);
         const lines = buildStatusLines(
@@ -994,11 +1002,17 @@ export function registerTokyoNightExtension(
             ? undefined : session.liveUsage,
           session.outputTps ?? session.outputTpsLast,
         );
+        const palette = theme ? createTokyoNightPalette(theme) : undefined;
+        lines.push(...renderExtensionStatusLines(
+          extensionStatuses,
+          statusWidth,
+          palette ?? DEFAULT_TOKYO_NIGHT_PALETTE,
+        ));
         return buildStatusWidgetLines(
           outputWidth,
           lines,
           config.editorFrame,
-          theme ? createTokyoNightPalette(theme) : undefined,
+          palette,
         );
       });
     };
@@ -1109,6 +1123,7 @@ export function registerTokyoNightExtension(
       session.resources.footerSubscription = subscription;
       return {
         invalidate: () => session.requestStatusRender?.(),
+        // Extension statuses render inside the framed status widget instead.
         render: () => [],
         dispose: () => subscription.dispose(),
       };

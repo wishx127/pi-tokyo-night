@@ -1919,6 +1919,97 @@ describe("public layout and lifecycle contract", () => {
     expect(fixture.ui.setFooter).not.toHaveBeenCalledWith(undefined);
   });
 
+  const plainText = (line: string) => line.replace(/\x1b\[[0-9;]*m/g, "");
+  const mountExtensionStatuses = (fixture: ReturnType<typeof makeFixture>, tui: any) => {
+    const statuses = new Map<string, string>();
+    const footer = fixture.footerFactory(tui, theme, {
+      getGitBranch: () => "main",
+      getExtensionStatuses: () => statuses,
+      onBranchChange: () => () => {},
+    } as any);
+    return { statuses, footer };
+  };
+
+  it("renders setStatus entries inside the status frame, themed, above the bottom edge", async () => {
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const tui = { requestRender: vi.fn() };
+    const status = fixture.widgets.get("tokyo-status")(tui, theme);
+    const { statuses, footer } = mountExtensionStatuses(fixture, tui);
+
+    const before = status.render(80);
+    statuses.set("sandbox", "🔒 Sandbox: 24 domains,\n20 write paths");
+    statuses.set("mcp", "\x1b[32mMCP: 1 server enabled\x1b[39m");
+    // The render cache is keyed on the statuses, so the change repaints at once.
+    const after = status.render(80);
+
+    expect(after).toHaveLength(before.length + 1);
+    expect(after.slice(0, -2)).toEqual(before.slice(0, -1));
+    expect(plainText(after.at(-1)!)).toMatch(/^╰─+╯$/);
+    const row = after.at(-2)!;
+    expect(plainText(row)).toMatch(/^│MCP: 1 server enabled 🔒 Sandbox: 24 domains, 20 write paths +│$/);
+    expect(row).toContain("\x1b[38;2;115;122;162mMCP: 1 server enabled");
+    expect(row).not.toContain("\x1b[32m");
+    expect(footer.render(80)).toEqual([]);
+
+    statuses.set("sandbox", "x".repeat(100));
+    expect(plainText(status.render(80).at(-2)!)).toMatch(/^│MCP: 1 server enabled x+\.\.\.│$/);
+    statuses.clear();
+    expect(status.render(80)).toEqual(before);
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it("renders the setStatus row unframed when the editor frame is off", async () => {
+    vi.mocked(TokyoConfigManager.prototype.read).mockImplementation(async function (this: TokyoConfigManager) {
+      this.set("editorFrame", false);
+    });
+    const fixture = makeFixture();
+    await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);
+    const tui = { requestRender: vi.fn() };
+    const status = fixture.widgets.get("tokyo-status")(tui, theme);
+    const { statuses } = mountExtensionStatuses(fixture, tui);
+    const before = status.render(40);
+    statuses.set("mcp", "MCP: 1 server enabled");
+
+    const after = status.render(40);
+
+    expect(after).toHaveLength(before.length + 1);
+    expect(plainText(after.at(-1)!)).toBe("MCP: 1 server enabled".padEnd(40));
+    await fixture.emit("session_shutdown", { reason: "quit" }, fixture.ctx);
+  });
+
+  it.each(["regular", "fullscreen"] as const)("budgets the setStatus row out of the rain panel (%s)", async (mode) => {
+    vi.useFakeTimers();
+    vi.mocked(TokyoConfigManager.prototype.read).mockImplementation(async function (this: TokyoConfigManager) {
+      this.set("rainRows", 10);
+    });
+    const fixture = makeFixture();
+    await fixture.emit("session_start", {}, fixture.ctx);
+    const tui = {
+      requestRender: vi.fn(),
+      ...(mode === "fullscreen" ? { mode } : {}),
+      terminal: { rows: 16, columns: 40 },
+    };
+    const editor = fixture.editorFactory(tui, { borderColor: () => "" }, {});
+    const rain = fixture.widgets.get("tokyo-rain")(tui);
+    const status = fixture.widgets.get("tokyo-status")(tui, theme);
+    const { statuses, footer } = mountExtensionStatuses(fixture, tui);
+    editor.setText(Array.from({ length: 4 }, (_, index) => `input ${index}`).join("\n"));
+    const dock = () => [...rain.render(40), ...editor.render(40), ...status.render(40), ...footer.render(40)];
+
+    const withoutStatuses = dock();
+    statuses.set("mcp", "MCP: 1 server enabled");
+    const withStatuses = dock();
+
+    // One rain row gives way to the status row, inside the closing frame edge.
+    expect(withStatuses).toHaveLength(withoutStatuses.length);
+    expect(plainText(withStatuses.at(-2)!)).toContain("│MCP: 1 server enabled");
+    expect(plainText(withStatuses.at(-1)!)).toMatch(/^╰─+╯$/);
+    // Leave space for the host widget separator, working indicator and history.
+    expect(withStatuses.length + 4).toBeLessThanOrEqual(16);
+    await fixture.emit("session_shutdown", {}, fixture.ctx);
+  });
+
   it("does not open a second Studio while the first one is active", async () => {
     const fixture = makeFixture();
     await fixture.emit("session_start", { reason: "startup" }, fixture.ctx);

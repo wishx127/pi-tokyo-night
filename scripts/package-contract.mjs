@@ -49,7 +49,9 @@ function runPackDryRun() {
     );
   }
 
-  const files = output?.[0]?.files;
+  // npm <12 prints an array of packs; npm 12 keys each pack by package name.
+  const pack = Array.isArray(output) ? output[0] : Object.values(output ?? {})[0];
+  const files = pack?.files;
   assert(Array.isArray(files), "npm pack output did not contain a files list");
   return new Set(files.map((file) => normalizePackagePath(file.path)));
 }
