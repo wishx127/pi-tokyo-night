@@ -32,8 +32,6 @@ import { RESET_BG } from "./ui-primitives";
 
 type Module = {
   text: string;
-  /** Width budget for grouping only; the displayed text always uses real values. */
-  layoutText?: string;
   bg: TokyoNightBackgroundRole | null;
   fg: TokyoNightForegroundRole;
   noEndArrow?: boolean;
@@ -388,10 +386,6 @@ const buildTransition = (
 
 const getModuleText = (m: Module): string => ` ${m.text} `;
 const getModuleWidth = (m: Module): number => visibleWidth(getModuleText(m));
-const getModuleLayoutWidth = (m: Module): number => Math.max(
-  getModuleWidth(m),
-  visibleWidth(m.layoutText ?? m.text) + 2,
-);
 const formatIconLabel = (icon: string, label: string): string =>
   icon ? `${icon} ${label}` : label;
 
@@ -428,7 +422,6 @@ const buildSection = (
 
 type StatusLayout = {
   oneLine: string;
-  requiredWidth: number;
   modules: Module[];
   icons: StatusIcons;
   palette: TokyoNightThemePalette;
@@ -482,7 +475,7 @@ function buildResponsiveRows(
   };
 
   for (const module of modules) {
-    const moduleWidth = getModuleLayoutWidth(module);
+    const moduleWidth = getModuleWidth(module);
     const endArrowWidth = visibleWidth(buildEndArrow(module, icons, palette));
 
     if (current.length > 0) {
@@ -505,15 +498,6 @@ function buildResponsiveRows(
     if (moduleWidth + endArrowWidth <= width) {
       current = [module];
       currentWidth = moduleWidth;
-      continue;
-    }
-
-    // The reserve only controls grouping; a complete actual module still fits
-    // on its own row before any narrow-screen fallback removes its details.
-    if (getModuleWidth(module) + endArrowWidth <= width) {
-      current = [module];
-      currentWidth = getModuleWidth(module);
-      flush();
       continue;
     }
 
@@ -571,13 +555,13 @@ function buildWideStatusLine(
 ): string {
   if (leftModules.length === 0 && rightModules.length === 0) return "";
 
-  const safeWidth = Math.max(1, width - 2);
+  const fillTargetWidth = Math.max(1, width - 2);
   if (leftModules.length === 0) {
-    const fillWidth = Math.max(1, safeWidth - rightSection.currentWidth);
+    const fillWidth = Math.max(0, fillTargetWidth - rightSection.currentWidth);
     return `${buildColoredFill(getModuleBg(rightModules[0]), fillWidth, palette)}${rightSection.result}`;
   }
   if (rightModules.length === 0) {
-    const fillWidth = Math.max(1, safeWidth - leftSection.currentWidth);
+    const fillWidth = Math.max(0, fillTargetWidth - leftSection.currentWidth);
     return `${leftSection.result}${buildColoredFill(
       getModuleBg(leftModules[leftModules.length - 1]),
       fillWidth,
@@ -592,8 +576,8 @@ function buildWideStatusLine(
     palette,
   );
   const paddingWidth = Math.max(
-    1,
-    safeWidth - leftSection.currentWidth - visibleWidth(bridgeTransition) - rightSection.currentWidth,
+    0,
+    fillTargetWidth - leftSection.currentWidth - visibleWidth(bridgeTransition) - rightSection.currentWidth,
   );
   if (!stretchSides) {
     return `${leftSection.result}${buildColoredFill(
@@ -628,9 +612,6 @@ function buildStatusLayout(
   liveUsage?: LiveSessionUsage,
   outputTps?: number,
 ): StatusLayout {
-  // Use a slightly smaller width to account for potential width miscalculations
-  // with Nerd Font glyphs that may be rendered as double-width by the terminal
-  // but counted as single-width by visibleWidth()
   const icons = resolveIcons(config.get().iconMode);
   const palette = createTokyoNightPalette(theme);
   const statusModules: StatusModulesConfig = {
@@ -784,29 +765,6 @@ function buildStatusLayout(
 
   const leftSection = buildSection(leftModules, icons, palette);
   const rightSection = buildSection(rightModules, icons, palette);
-  for (const module of rightModules) {
-    if (module.bg === "tokens") {
-      module.layoutText = module.text
-        .replace(/([↑↓RW])\d+(?:\.\d+)?[kM]?/g, (_match, prefix: string) => `${prefix}99.9M`)
-        .replace(/CH\d+\.\d%/, "CH100.0%")
-        .replace(/TPS \d+$/, "TPS 999");
-    } else if (module.fg === "statusContext") {
-      module.layoutText = module.text.replace(/(?:\d+%|\?)\//, "100%/");
-    } else if (module.bg === "cost") {
-      module.layoutText = "$999.99";
-    } else if (module.bg === "quota") {
-      module.layoutText = module.text
-        .replace(/\d+%/g, "100%")
-        .replace(/\((?:\d+h)?\d+m\)/, "(999h59m)");
-    }
-  }
-  const modules = [...leftModules, ...rightModules];
-  const requiredWidth = modules.reduce((total, module, index) => {
-    const transitionWidth = index > 0
-      ? visibleWidth(buildTransition(modules[index - 1], module, icons, palette))
-      : 0;
-    return total + getModuleLayoutWidth(module) + transitionWidth;
-  }, leftModules.length > 0 && rightModules.length > 0 ? 1 : 0);
 
   return {
     oneLine: buildWideStatusLine(
@@ -819,8 +777,7 @@ function buildStatusLayout(
       palette,
       stretchSides,
     ),
-    requiredWidth,
-    modules,
+    modules: [...leftModules, ...rightModules],
     icons,
     palette,
   };
@@ -881,7 +838,7 @@ export function buildStatusLines(
     outputTps,
   );
 
-  if (layout.requiredWidth <= renderWidth && visibleWidth(layout.oneLine) <= renderWidth) {
+  if (visibleWidth(layout.oneLine) <= renderWidth) {
     return [layout.oneLine];
   }
 
