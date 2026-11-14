@@ -48,7 +48,7 @@
     "!extensions/**/*.spec.ts",
     "README.md",
     "README.zh-CN.md",
-    "assets/screenshot.png"
+    "assets/rain-demo.gif"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",

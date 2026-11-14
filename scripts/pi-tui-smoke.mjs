@@ -84,8 +84,8 @@ export function createScenarioConfig(scenario) {
       context: true,
     },
     rainMode: "auto",
-    rainRows: 3,
-    rainTickMs: 130,
+    rainRows: 4,
+    rainTickMs: 50,
     maxRainDrops: 25,
   };
 }
@@ -101,7 +101,7 @@ export function createScenarioCheckpoints(scenario) {
     ? "Status Icons: ASCII"
     : "Status Icons: Nerd";
   return [
-    "🌙",
+    "╭",
     statusIconCheckpoint,
     "Neon Studio",
     themeCheckpoint,

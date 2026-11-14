@@ -1267,8 +1267,8 @@ describe("NeonStudioComponent", () => {
     studio.handleInput("\x1b[B");
     studio.handleInput("\x1b[C");
 
-    expect(config.get().rainTickMs).toBe(140);
-    expect(studio.render(80).join("\n")).toContain("Rain Tick (ms): 140");
+    expect(config.get().rainTickMs).toBe(60);
+    expect(studio.render(80).join("\n")).toContain("Rain Tick (ms): 60");
     expect(onConfigChange).toHaveBeenCalledWith({
       kind: "config",
       key: "rainTickMs",
@@ -1284,8 +1284,8 @@ describe("NeonStudioComponent", () => {
     studio.handleInput("\x1b[B");
     studio.handleInput("\x1b[C");
 
-    expect(config.get().rainRows).toBe(4);
-    expect(studio.render(80).join("\n")).toContain("Rain Rows: 4");
+    expect(config.get().rainRows).toBe(9);
+    expect(studio.render(80).join("\n")).toContain("Rain Rows: 9");
     expect(onConfigChange).toHaveBeenCalledWith({
       kind: "config",
       key: "rainRows",

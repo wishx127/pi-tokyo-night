@@ -9,7 +9,7 @@
 [English](README.md) · [npm](https://www.npmjs.com/package/@wishx127/pi-tokyo-night)
 
 <p>
-  <img src="assets/screenshot.png" alt="pi-tokyo-night" width="1100">
+  <img src="assets/rain-demo.gif" alt="pi-tokyo-night" width="1100">
 </p>
 
 ## 📦 安装

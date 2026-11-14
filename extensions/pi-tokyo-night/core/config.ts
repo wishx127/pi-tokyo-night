@@ -70,8 +70,8 @@ export const DEFAULT_CONFIG: Readonly<TokyoConfig> = Object.freeze({
   iconMode: DEFAULT_ICON_MODE,
   statusModules: DEFAULT_STATUS_MODULES,
   rainMode: "auto",
-  rainRows: 3,
-  rainTickMs: 130,
+  rainRows: 8,
+  rainTickMs: 50,
   maxRainDrops: 25,
 });
 
