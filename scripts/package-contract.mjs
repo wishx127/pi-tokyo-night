@@ -149,7 +149,7 @@ function main() {
   for (const requiredFile of [
     "LICENSE",
     "README.md",
-    "assets/screenshot.png",
+    "assets/rain-demo.gif",
     "themes/tokyo-night-dark.json",
     "themes/tokyo-night-light.json",
   ]) {

@@ -9,7 +9,7 @@ An animated [Pi](https://github.com/earendil-works/pi) theme + extension that br
 [简体中文](README.zh-CN.md) · [npm](https://www.npmjs.com/package/@wishx127/pi-tokyo-night)
 
 <p>
-  <img src="assets/screenshot.png" alt="pi-tokyo-night" width="1100">
+  <img src="assets/rain-demo.gif" alt="pi-tokyo-night" width="1100">
 </p>
 
 ## 📦 Install
