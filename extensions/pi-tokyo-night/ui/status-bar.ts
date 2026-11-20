@@ -850,6 +850,58 @@ export function buildStatusLines(
   );
 }
 
+// Extension statuses cycle the bar's own segment bg/fg pairs so the row matches it.
+const EXTENSION_SEGMENT_STYLES: ReadonlyArray<Pick<Module, "bg" | "fg">> = [
+  { bg: "model", fg: "statusModel" },
+  { bg: "thinking", fg: "statusThinking" },
+  { bg: "path", fg: "statusPath" },
+  { bg: "git", fg: "statusGit" },
+  { bg: "quota", fg: "statusLimit" },
+  { bg: "tokens", fg: "statusTokens" },
+];
+
+/**
+ * Render plain `ctx.ui.setStatus` entries as one Powerline row of segments in
+ * the status bar's colors. The last segment that fits is ellipsized and the
+ * rest are dropped.
+ */
+export function buildExtensionStatusRow(
+  statuses: readonly string[],
+  width: number,
+  palette: TokyoNightThemePalette,
+  icons: StatusIcons,
+): string[] {
+  if (!Number.isFinite(width) || width <= 0 || statuses.length === 0) return [];
+
+  const modules: Module[] = [];
+  let usedWidth = 0;
+  for (const [index, status] of statuses.entries()) {
+    const module: Module = {
+      text: status,
+      ...EXTENSION_SEGMENT_STYLES[index % EXTENSION_SEGMENT_STYLES.length]!,
+    };
+    const previous = modules[modules.length - 1];
+    const transitionWidth = previous
+      ? visibleWidth(buildTransition(previous, module, icons, palette))
+      : 0;
+    const endArrowWidth = visibleWidth(buildEndArrow(module, icons, palette));
+    const textRoom = Math.floor(width) - usedWidth - transitionWidth - endArrowWidth - 2;
+    if (visibleWidth(status) <= textRoom) {
+      modules.push(module);
+      usedWidth += transitionWidth + getModuleWidth(module);
+      continue;
+    }
+    if (textRoom >= 2) {
+      // Statuses are plain text, so the resets truncateToWidth wraps around
+      // the ellipsis would only clear the segment background.
+      const text = truncateToWidth(status, textRoom, "…").replaceAll("\x1b[0m", "");
+      modules.push({ ...module, text });
+    }
+    break;
+  }
+  return modules.length > 0 ? [buildRow(modules, icons, palette)] : [];
+}
+
 export function shortName(id: string): string {
   if (!id || id === "pi-agent") return "pi-agent";
   return id.length > 30 ? id.slice(0, 28) + ".." : id;

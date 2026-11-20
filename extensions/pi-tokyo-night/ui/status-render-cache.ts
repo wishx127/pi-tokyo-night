@@ -9,6 +9,8 @@ interface StatusRenderCacheKey {
   codexUsage: unknown;
   kimiUsage: unknown;
   liveUsageRevision?: number;
+  /** Joined `ctx.ui.setStatus` text, so a status change repaints at once. */
+  extensionStatuses?: string;
 }
 
 type StatusRenderCacheEntry = {
@@ -30,7 +32,8 @@ function keysEqual(
     left.leafId === right.leafId &&
     left.codexUsage === right.codexUsage &&
     left.kimiUsage === right.kimiUsage &&
-    (left.liveUsageRevision ?? 0) === (right.liveUsageRevision ?? 0);
+    (left.liveUsageRevision ?? 0) === (right.liveUsageRevision ?? 0) &&
+    (left.extensionStatuses ?? "") === (right.extensionStatuses ?? "");
 }
 
 /** Single-entry cache for the fully rendered status frame segment of one live session. */
